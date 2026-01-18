@@ -86,7 +86,7 @@ readonly TARGET_FILES=(
     "scale_down.desktop"
     "scale_up.desktop"
     "service_toggle.desktop"
-    "swaync_side_toggle.sh"
+    "swaync_side_toggle.desktop"
     "sysbench_benchmark.desktop"
     "tailscale_setup.desktop"
     "tailscale_uninstall.desktop"
