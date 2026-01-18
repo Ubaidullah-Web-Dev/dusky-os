@@ -44,6 +44,9 @@ tooltip {
     border: 2px solid @primary-mild;
     color: @on_surface;
 }
+/* ============================================================ */
+/* WORKSPACES                                                  */
+/* ============================================================ */
 #workspaces {
     background-color: @surface_container;
     padding: 5px 14px;
