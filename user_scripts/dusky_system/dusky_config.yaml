@@ -1,0 +1,133 @@
+# =============================================================================
+#  DUSKY CONTROL CENTER CONFIGURATION
+# =============================================================================
+#
+#  HOW TO ADD NEW ITEMS:
+#  Copy and paste the template below into the 'items' list of any group.
+#
+#  - title: "My Feature Name"
+#    description: "Brief explanation of what this does"
+#    icon: "system-run-symbolic"        # Find icons in 'gnome-adwaita-demo'
+#    command: "my_script.sh"            # The command to run
+#    terminal: false                    # Set to 'true' to open in a terminal window
+#    use_uwsm: true                     # Default 'true'. Set 'false' for background/CLI tasks.
+#
+# =============================================================================
+
+# WINDOW SETTINGS
+window:
+  title: "Arch Control Center"
+  width: 950
+  height: 650
+  icon_name: "preferences-system" 
+
+# PAGES & GROUPS
+pages:
+  - name: "Visuals"
+    icon: "preferences-desktop-display"
+    groups:
+      - title: "Theming & Colors"
+        items:
+          - title: "Cycle Matugen Theme"
+            description: "Generate a new color scheme from current wallpaper (Random)"
+            icon: "palette-symbolic"
+            command: "$HOME/user_scripts/theme_matugen/theme_ctl.sh random"
+          
+          - title: "Matugen Config"
+            description: "Open the Rofi menu for detailed theme configuration"
+            icon: "emblem-photos-symbolic"
+            command: "$HOME/user_scripts/rofi/rofi_theme.sh"
+
+      - title: "Wallpaper & Effects"
+        items:
+          - title: "Wallpaper Picker"
+            description: "Select wallpaper using Waypaper"
+            icon: "image-x-generic-symbolic"
+            # The script now automatically adds 'uwsm-app' for you
+            command: "waypaper"
+
+          - title: "Hyprsunset (Blue Light)"
+            description: "Adjust screen temperature and gamma"
+            icon: "display-brightness-symbolic"
+            command: "$HOME/user_scripts/sliders/hyprsunset_slider.sh"
+
+          - title: "Toggle Blur/Opacity"
+            description: "Enable or disable window transparency and blur effects"
+            icon: "view-reveal-symbolic"
+            command: "$HOME/user_scripts/hypr/hypr_blur_opacity_shadow_toggle.sh"
+
+  - name: "AI & Tools"
+    icon: "utilities-terminal"
+    groups:
+      - title: "Artificial Intelligence"
+        items:
+          - title: "TTS - Kokoro (GPU)"
+            description: "Text-to-Speech synthesis running on GPU"
+            icon: "audio-speakers-symbolic"
+            command: "$HOME/user_scripts/tts_stt/kokoro_gpu/speak.sh"
+
+          - title: "STT - Faster Whisper"
+            description: "Speech-to-Text dictation engine"
+            icon: "microphone-sensitivity-high-symbolic"
+            command: "$HOME/user_scripts/tts_stt/faster_whisper/faster_whisper_sst.sh"
+
+          - title: "OCR Selection"
+            description: "Select screen area and copy text to clipboard"
+            icon: "edit-find-symbolic"
+            # Complex pipes still work fine
+            command: "sh -c 'region=$(slurp); grim -g \"$region\" - | tesseract stdin stdout -l eng | wl-copy'"
+
+  - name: "System"
+    icon: "preferences-system-performance"
+    groups:
+      - title: "Maintenance"
+        items:
+          - title: "Cache Purge"
+            description: "Clear RAM cache (PageCache, dentries, inodes)"
+            icon: "user-trash-symbolic"
+            # CLEANER SYNTAX: Using 'terminal: true' instead of hardcoding kitty
+            command: "$HOME/user_scripts/desktop_apps/cache_purge.sh"
+            terminal: true
+
+          - title: "Process Terminator"
+            description: "Select and kill hung processes"
+            icon: "process-stop-symbolic"
+            command: "$HOME/user_scripts/performance/services_and_process_terminator.sh"
+            terminal: true
+
+      - title: "Network"
+        items:
+          - title: "Warp VPN"
+            description: "Toggle Cloudflare Warp connection"
+            icon: "network-vpn-symbolic"
+            command: "$HOME/user_scripts/networking/warp_toggle.sh"
+            
+          - title: "Wi-Fi TUI"
+            description: "Open terminal UI for wireless management"
+            icon: "network-wireless-symbolic"
+            command: "wifitui"
+            terminal: true
+
+  - name: "Configs"
+    icon: "preferences-desktop-font"
+    groups:
+      - title: "Hyprland Ecosystem"
+        items:
+          - title: "Hyprland Main"
+            description: "Edit hyprland.conf"
+            icon: "text-x-generic-symbolic"
+            # CLEANER SYNTAX: No more 'uwsm-app -- kitty -e' clutter!
+            command: "nvim $HOME/.config/hypr/hyprland.conf"
+            terminal: true
+
+          - title: "Keybindings"
+            description: "Edit input configuration and shortcuts"
+            icon: "input-keyboard-symbolic"
+            command: "nvim $HOME/.config/hypr/source/keybinds.conf"
+            terminal: true
+
+          - title: "Waybar"
+            description: "Edit status bar layout and style"
+            icon: "view-more-symbolic"
+            command: "nvim $HOME/.config/waybar/config.jsonc"
+            terminal: true
