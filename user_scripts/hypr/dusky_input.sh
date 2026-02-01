@@ -10,7 +10,7 @@ set -uo pipefail
 
 # --- Configuration ---
 readonly VERSION="1.1"
-readonly CONFIG_FILE="${HOME}/.config/hypr/source/input.conf"
+readonly CONFIG_FILE="${HOME}/.config/hypr/edit_here/source/input.conf"
 declare -ri MAX_DISPLAY_ROWS=14
 # 20ms timeout: Safe for SSH/fast typing, prevents split escape codes
 readonly ESC_READ_TIMEOUT=0.02
