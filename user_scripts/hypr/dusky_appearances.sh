@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# Dusky Appearances - Elite Edition v7.5.0
+# Dusky Appearances - Elite Edition v7.5.1
 # -----------------------------------------------------------------------------
 # Target: Arch Linux / Hyprland / UWSM
 # Description: Tabbed TUI to modify hyprland appearance.conf.
-# Refactored: Unified Registration Pattern (Single Source of Truth)
+# Refactored: Unified Registration Pattern & Crash Prevention Applied
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
@@ -15,7 +15,7 @@ export LC_NUMERIC=C
 # --- Configuration ---
 readonly CONFIG_FILE="${HOME}/.config/hypr/edit_here/source/appearance.conf"
 readonly APP_TITLE="Dusky Appearances"
-readonly APP_VERSION="v7.5.0"
+readonly APP_VERSION="v7.5.1"
 
 # UI Layout Constants
 declare -ri MAX_DISPLAY_ROWS=12
@@ -493,6 +493,7 @@ navigate() {
     (( count == 0 )) && return 0
     (( SELECTED_ROW += dir )) || :
     if (( SELECTED_ROW < 0 )); then SELECTED_ROW=$(( count - 1 )); elif (( SELECTED_ROW >= count )); then SELECTED_ROW=0; fi
+    return 0
 }
 
 navigate_page() {
@@ -502,6 +503,7 @@ navigate_page() {
     (( count == 0 )) && return 0
     (( SELECTED_ROW += dir * MAX_DISPLAY_ROWS )) || :
     (( SELECTED_ROW < 0 )) && SELECTED_ROW=0; (( SELECTED_ROW >= count )) && SELECTED_ROW=$(( count - 1 ))
+    return 0
 }
 
 navigate_end() {
@@ -510,6 +512,7 @@ navigate_end() {
     local -i count=${#items_ref[@]}
     (( count == 0 )) && return 0
     if (( target == 0 )); then SELECTED_ROW=0; else SELECTED_ROW=$(( count - 1 )); fi
+    return 0
 }
 
 adjust() {
@@ -517,6 +520,7 @@ adjust() {
     local -n items_ref="TAB_ITEMS_${CURRENT_TAB}"
     (( ${#items_ref[@]} == 0 )) && return 0
     modify_value "${items_ref[SELECTED_ROW]}" "$dir"
+    return 0
 }
 
 switch_tab() {
@@ -537,7 +541,11 @@ handle_mouse() {
     local input=$1
     local -i button x y i
     local type zone start end
-    if [[ $input =~ ^\[<([0-9]+)\;([0-9]+)\;([0-9]+)([Mm])$ ]]; then
+
+    # CRITICAL FIX: Safe regex to prevent parsing errors
+    local regex='^\[<([0-9]+);([0-9]+);([0-9]+)([Mm])$'
+
+    if [[ $input =~ $regex ]]; then
         button=${BASH_REMATCH[1]}; x=${BASH_REMATCH[2]}; y=${BASH_REMATCH[3]}; type=${BASH_REMATCH[4]}
         if (( button == 64 )); then navigate -1; return 0; elif (( button == 65 )); then navigate 1; return 0; fi
         [[ $type != "M" ]] && return 0

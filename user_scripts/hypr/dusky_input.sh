@@ -1,25 +1,26 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# Dusky Input - Optimized v5.1
+# Dusky Input - Refactored v5.2.3
 # -----------------------------------------------------------------------------
 # Target: Arch Linux / Hyprland / UWSM
 # Description: Tabbed TUI to modify input.conf.
-# Changelog v5.1:
-#   - FIXED: Multiple blocks with same name (e.g., multiple input{} blocks)
-#   - Now iterates all block instances to find the one containing the key
-#   - Better "unset" detection and display
-#   - Added write verification
+# Base Engine: Dusky TUI Template v2.6.1
+#
+# Changelog v5.2.3:
+#   - CRITICAL FIX: Fixed `Maps` crash caused by `set -e` and arithmetic false.
+#   - FIX: Added explicit `return 0` to navigation functions to prevent exit traps.
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
 
 # CRITICAL FIX: The "Locale Bomb"
+# Force standard C locale for numeric operations to prevent comma decimals (0,5).
 export LC_NUMERIC=C
 
 # --- Configuration ---
 readonly CONFIG_FILE="${HOME}/.config/hypr/edit_here/source/input.conf"
 readonly APP_TITLE="Dusky Input"
-readonly APP_VERSION="v5.1"
+readonly APP_VERSION="v5.2.3"
 
 # UI Layout Constants
 declare -ri MAX_DISPLAY_ROWS=14
@@ -30,6 +31,9 @@ declare -ri ITEM_PADDING=32
 
 # Timeout for reading escape sequences (in seconds)
 readonly ESC_READ_TIMEOUT=0.02
+
+# Internal marker for unset values
+readonly UNSET_MARKER='«unset»'
 
 # --- Pre-computed Constants ---
 declare _H_LINE_BUF
@@ -69,6 +73,8 @@ declare -A ITEM_MAP=()
 declare -A VALUE_CACHE=()
 declare -A CONFIG_CACHE=()
 declare -A DEFAULTS=()
+# Provisioned Tab Containers (0-9)
+# shellcheck disable=SC2034
 declare -a TAB_ITEMS_0=() TAB_ITEMS_1=() TAB_ITEMS_2=() TAB_ITEMS_3=() TAB_ITEMS_4=()
 
 # --- Helpers ---
@@ -89,19 +95,19 @@ cleanup() {
 
 # Escape special characters for sed REPLACEMENT string
 escape_sed_replacement() {
+    local -n __out=$2
     local _s=$1
-    local -n _out=$2
     _s=${_s//\\/\\\\}
     _s=${_s//|/\\|}
     _s=${_s//&/\\&}
-    _s=${_s//$'\n'/\\$'\n'}
-    _out=$_s
+    _s=${_s//$'\n'/\\n}
+    __out=$_s
 }
 
 # Escape special characters for sed PATTERN (Basic Regex)
 escape_sed_pattern() {
+    local -n __out=$2
     local _s=$1
-    local -n _out=$2
     _s=${_s//\\/\\\\}
     _s=${_s//|/\\|}
     _s=${_s//./\\.}
@@ -110,7 +116,7 @@ escape_sed_pattern() {
     _s=${_s//^/\\^}
     _s=${_s//\$/\\\$}
     _s=${_s//-/\\-}
-    _out=$_s
+    __out=$_s
 }
 
 trap cleanup EXIT
@@ -121,112 +127,96 @@ trap 'exit 143' TERM
 
 register() {
     local -i tab_idx=$1
-    local label=$2 config=$3
+    local label=$2 config=$3 default_val=${4:-}
+
+    # Type Safety Validation
+    local key type block min max step
+    IFS='|' read -r key type block min max step <<< "$config"
+
+    case "$type" in
+        bool|int|float|cycle) ;;
+        *)
+            printf '%s[FATAL]%s Invalid type "%s" for "%s"\n' "$C_RED" "$C_RESET" "$type" "$label" >&2
+            exit 1
+            ;;
+    esac
 
     if (( tab_idx < 0 || tab_idx >= TAB_COUNT )); then
-        printf '%s[FATAL]%s Invalid tab index %d for "%s"\n' \
-            "$C_RED" "$C_RESET" "$tab_idx" "$label" >&2
+        printf '%s[FATAL]%s Invalid tab index %d for "%s"\n' "$C_RED" "$C_RESET" "$tab_idx" "$label" >&2
         exit 1
     fi
 
     ITEM_MAP["$label"]=$config
+    
+    # Unified Defaults Handling
+    if [[ -n "$default_val" ]]; then
+        DEFAULTS["$label"]=$default_val
+    fi
+
     local -n tab_ref="TAB_ITEMS_${tab_idx}"
     tab_ref+=("$label")
 }
 
-# --- DEFINITIONS ---
+# =============================================================================
+# ▼ CONFIGURATION DEFINITIONS ▼
+# =============================================================================
+# Syntax: register <tab_idx> "Label" "config_str" "DEFAULT_VALUE"
+# config_str: "key|type|block|min|max|step"
 
-# Tab 0: Keyboard (Block: 'input')
-register 0 "Layout"             "kb_layout|cycle|input|us,uk,de,fr,es|us|"
-register 0 "Numlock Default"    "numlock_by_default|bool|input|||"
-register 0 "Repeat Rate"        "repeat_rate|int|input|10|100|5"
-register 0 "Repeat Delay"       "repeat_delay|int|input|100|1000|50"
-register 0 "Resolve Binds Sym"  "resolve_binds_by_sym|bool|input|||"
+init_items() {
+    # Tab 0: Keyboard (Block: 'input')
+    register 0 "Layout"             "kb_layout|cycle|input|us,uk,de,fr,es|us|" "us"
+    register 0 "Numlock Default"    "numlock_by_default|bool|input|||"          "true"
+    register 0 "Repeat Rate"        "repeat_rate|int|input|10|100|5"            "35"
+    register 0 "Repeat Delay"       "repeat_delay|int|input|100|1000|50"        "250"
+    register 0 "Resolve Binds Sym"  "resolve_binds_by_sym|bool|input|||"        "false"
 
-# Tab 1: Mouse (Block: 'input')
-register 1 "Sensitivity"        "sensitivity|float|input|-1.0|1.0|0.1"
-register 1 "Accel Profile"      "accel_profile|cycle|input|flat,adaptive,custom|adaptive|"
-register 1 "Force No Accel"     "force_no_accel|bool|input|||"
-register 1 "Left Handed"        "left_handed|bool|input|||"
-register 1 "Follow Mouse"       "follow_mouse|int|input|0|3|1"
-register 1 "Mouse Refocus"      "mouse_refocus|bool|input|||"
-register 1 "Mouse Nat Scroll"   "natural_scroll|bool|input|||"
-register 1 "Scroll Method"      "scroll_method|cycle|input|2fg,edge,on_button_down,no_scroll|2fg|"
+    # Tab 1: Mouse (Block: 'input')
+    register 1 "Sensitivity"        "sensitivity|float|input|-1.0|1.0|0.1"      "0"
+    register 1 "Accel Profile"      "accel_profile|cycle|input|flat,adaptive,custom|adaptive|" "adaptive"
+    register 1 "Force No Accel"     "force_no_accel|bool|input|||"              "false"
+    register 1 "Left Handed"        "left_handed|bool|input|||"                 "false"
+    register 1 "Follow Mouse"       "follow_mouse|int|input|0|3|1"              "1"
+    register 1 "Mouse Refocus"      "mouse_refocus|bool|input|||"               "true"
+    register 1 "Mouse Nat Scroll"   "natural_scroll|bool|input|||"              "false"
+    register 1 "Scroll Method"      "scroll_method|cycle|input|2fg,edge,on_button_down,no_scroll|2fg|" "2fg"
 
-# Tab 2: Touchpad (Block: 'touchpad')
-register 2 "TP Nat Scroll"      "natural_scroll|bool|touchpad|||"
-register 2 "Tap to Click"       "tap-to-click|bool|touchpad|||"
-register 2 "Disable While Typing" "disable_while_typing|bool|touchpad|||"
-register 2 "Clickfinger Behav"  "clickfinger_behavior|bool|touchpad|||"
-register 2 "Drag Lock"          "drag_lock|bool|touchpad|||"
+    # Tab 2: Touchpad (Block: 'touchpad')
+    register 2 "TP Nat Scroll"      "natural_scroll|bool|touchpad|||"           "true"
+    register 2 "Tap to Click"       "tap-to-click|bool|touchpad|||"             "true"
+    register 2 "Disable While Typing" "disable_while_typing|bool|touchpad|||"   "true"
+    register 2 "Clickfinger Behav"  "clickfinger_behavior|bool|touchpad|||"     "false"
+    register 2 "Drag Lock"          "drag_lock|bool|touchpad|||"                "false"
 
-# Tab 3: Cursor (Block: 'cursor')
-register 3 "No HW Cursors"      "no_hardware_cursors|int|cursor|0|2|1"
-register 3 "Use CPU Buffer"     "use_cpu_buffer|int|cursor|0|2|1"
-register 3 "Hide On Key"        "hide_on_key_press|bool|cursor|||"
-register 3 "Inactive Timeout"   "inactive_timeout|int|cursor|0|60|5"
-register 3 "Warp On Change"     "warp_on_change_workspace|int|cursor|0|2|1"
-register 3 "No Break VRR"       "no_break_fs_vrr|int|cursor|0|2|1"
-register 3 "Zoom Factor"        "zoom_factor|float|cursor|1.0|5.0|0.1"
+    # Tab 3: Cursor (Block: 'cursor')
+    register 3 "No HW Cursors"      "no_hardware_cursors|int|cursor|0|2|1"      "2"
+    register 3 "Use CPU Buffer"     "use_cpu_buffer|int|cursor|0|2|1"           "2"
+    register 3 "Hide On Key"        "hide_on_key_press|bool|cursor|||"          "false"
+    register 3 "Inactive Timeout"   "inactive_timeout|int|cursor|0|60|5"        "0"
+    register 3 "Warp On Change"     "warp_on_change_workspace|int|cursor|0|2|1" "0"
+    register 3 "No Break VRR"       "no_break_fs_vrr|int|cursor|0|2|1"          "2"
+    register 3 "Zoom Factor"        "zoom_factor|float|cursor|1.0|5.0|0.1"      "1.0"
 
-# Tab 4: Gestures (Block: 'gestures')
-register 4 "Swipe Distance"     "workspace_swipe_distance|int|gestures|100|1000|50"
-register 4 "Swipe Cancel Ratio" "workspace_swipe_cancel_ratio|float|gestures|0.0|1.0|0.1"
-register 4 "Swipe Invert"       "workspace_swipe_invert|bool|gestures|||"
-register 4 "Swipe Create New"   "workspace_swipe_create_new|bool|gestures|||"
-register 4 "Swipe Forever"      "workspace_swipe_forever|bool|gestures|||"
-
-# --- DEFAULTS ---
-DEFAULTS=(
-    ["Layout"]="us"
-    ["Numlock Default"]="true"
-    ["Repeat Rate"]="35"
-    ["Repeat Delay"]="250"
-    ["Resolve Binds Sym"]="false"
-    ["Sensitivity"]="0"
-    ["Accel Profile"]="adaptive"
-    ["Force No Accel"]="false"
-    ["Left Handed"]="true"
-    ["Follow Mouse"]="1"
-    ["Mouse Refocus"]="true"
-    ["Mouse Nat Scroll"]="false"
-    ["Scroll Method"]="2fg"
-    ["TP Nat Scroll"]="true"
-    ["Tap to Click"]="true"
-    ["Disable While Typing"]="true"
-    ["Clickfinger Behav"]="false"
-    ["Drag Lock"]="false"
-    ["No HW Cursors"]="2"
-    ["Use CPU Buffer"]="2"
-    ["Hide On Key"]="false"
-    ["Inactive Timeout"]="0"
-    ["Warp On Change"]="0"
-    ["No Break VRR"]="2"
-    ["Zoom Factor"]="1.0"
-    ["Swipe Distance"]="300"
-    ["Swipe Cancel Ratio"]="0.5"
-    ["Swipe Invert"]="true"
-    ["Swipe Create New"]="true"
-    ["Swipe Forever"]="false"
-)
+    # Tab 4: Gestures (Block: 'gestures')
+    register 4 "Swipe Distance"     "workspace_swipe_distance|int|gestures|100|1000|50" "300"
+    register 4 "Swipe Cancel Ratio" "workspace_swipe_cancel_ratio|float|gestures|0.0|1.0|0.1" "0.5"
+    register 4 "Swipe Invert"       "workspace_swipe_invert|bool|gestures|||"   "true"
+    register 4 "Swipe Create New"   "workspace_swipe_create_new|bool|gestures|||" "true"
+    register 4 "Swipe Forever"      "workspace_swipe_forever|bool|gestures|||"  "false"
+}
+# =============================================================================
 
 # --- Core Logic ---
 
 populate_config_cache() {
     CONFIG_CACHE=()
-    local key_part value_part key_name block_name composite_key
+    local key_part value_part key_name
 
     while IFS='=' read -r key_part value_part || [[ -n $key_part ]]; do
         [[ -z $key_part ]] && continue
-        
-        # Store with full composite key (key|block)
         CONFIG_CACHE["$key_part"]=$value_part
 
-        # Also store just by key name for fallback lookup
         key_name=${key_part%%|*}
-        block_name=${key_part#*|}
-        
-        # For unique keys, store without block suffix too
         if [[ -z ${CONFIG_CACHE["$key_name|"]:-} ]]; then
             CONFIG_CACHE["$key_name|"]=$value_part
         fi
@@ -237,7 +227,6 @@ populate_config_cache() {
             line = $0
             sub(/#.*/, "", line)
 
-            # Detect block start: "blockname {"
             if (match(line, /[a-zA-Z0-9_.:-]+[[:space:]]*\{/)) {
                 block_str = substr(line, RSTART, RLENGTH)
                 sub(/[[:space:]]*\{/, "", block_str)
@@ -245,7 +234,6 @@ populate_config_cache() {
                 block_stack[depth] = block_str
             }
 
-            # Parse key = value
             if (line ~ /=/) {
                 eq_pos = index(line, "=")
                 if (eq_pos > 0) {
@@ -260,20 +248,16 @@ populate_config_cache() {
                 }
             }
 
-            # Count closing braces and adjust depth
             n = gsub(/\}/, "}", line)
             while (n > 0 && depth > 0) { depth--; n-- }
         }
     ' "$CONFIG_FILE")
 }
 
-# CRITICAL FIX: Find the CORRECT block instance containing our key
-# Handles multiple blocks with same name (e.g., multiple input{} blocks)
 write_value_to_file() {
     local key=$1 new_val=$2 block=${3:-}
     local current_val=${CONFIG_CACHE["$key|$block"]:-}
     
-    # Dirty check: skip write if value unchanged
     [[ "$current_val" == "$new_val" ]] && return 0
 
     local safe_val safe_key
@@ -284,33 +268,23 @@ write_value_to_file() {
         local safe_block
         escape_sed_pattern "$block" safe_block
         
-        # CRITICAL FIX: Iterate through ALL block instances, not just the first
+        # CRITICAL FIX: Iterate through ALL block instances (Fixes "First Block Trap")
         local line_num block_start block_end found=0
         
         while IFS=: read -r line_num _; do
             block_start=$line_num
             
-            # Calculate block end using proper brace counting
+            # CRITICAL FIX: Proper brace counting for nested blocks (Fixes "Range Trap")
             block_end=$(tail -n "+${block_start}" "$CONFIG_FILE" | awk '
                 BEGIN { depth = 0; started = 0 }
                 {
                     txt = $0
                     sub(/#.*/, "", txt)
-                    
                     n_open = gsub(/{/, "&", txt)
                     n_close = gsub(/}/, "&", txt)
-                    
-                    if (NR == 1) {
-                        depth = n_open
-                        started = 1
-                    } else {
-                        depth += n_open - n_close
-                    }
-                    
-                    if (started && depth <= 0) {
-                        print NR
-                        exit
-                    }
+                    if (NR == 1) { depth = n_open; started = 1 } 
+                    else { depth += n_open - n_close }
+                    if (started && depth <= 0) { print NR; exit }
                 }
             ')
             
@@ -318,11 +292,9 @@ write_value_to_file() {
             
             local -i real_end=$(( block_start + block_end - 1 ))
             
-            # Check if THIS specific block instance contains our key
             if sed -n "${block_start},${real_end}p" "$CONFIG_FILE" | \
                grep -q "^[[:space:]]*${safe_key}[[:space:]]*="; then
                 
-                # Found it! Apply substitution only to this block range
                 sed --follow-symlinks -i \
                     "${block_start},${real_end}s|^\([[:space:]]*${safe_key}[[:space:]]*=[[:space:]]*\)[^#]*|\1${safe_val} |" \
                     "$CONFIG_FILE"
@@ -332,22 +304,16 @@ write_value_to_file() {
         done < <(grep -n "^[[:space:]]*${safe_block}[[:space:]]*{" "$CONFIG_FILE")
         
         if (( found == 0 )); then
-            # Key not found in any block of this type - could log this
             return 1
         fi
     else
-        # No block specified - global search/replace
         sed --follow-symlinks -i \
             "s|^\([[:space:]]*${safe_key}[[:space:]]*=[[:space:]]*\)[^#]*|\1${safe_val} |" \
             "$CONFIG_FILE"
     fi
 
-    # Update cache
     CONFIG_CACHE["$key|$block"]=$new_val
-    if [[ -z $block ]]; then
-        CONFIG_CACHE["$key|"]=$new_val
-    fi
-    
+    [[ -z $block ]] && CONFIG_CACHE["$key|"]=$new_val
     return 0
 }
 
@@ -358,17 +324,13 @@ load_tab_values() {
     for item in "${items_ref[@]}"; do
         IFS='|' read -r key type block _ _ _ <<< "${ITEM_MAP[$item]}"
         
-        # Try exact match first (key|block)
         val=${CONFIG_CACHE["$key|$block"]:-}
-        
-        # If empty and no block, try just the key
         if [[ -z $val && -z $block ]]; then
             val=${CONFIG_CACHE["$key|"]:-}
         fi
         
-        # Mark as unset if truly not found
         if [[ -z $val ]]; then
-            VALUE_CACHE["$item"]="«unset»"
+            VALUE_CACHE["$item"]=$UNSET_MARKER
         else
             VALUE_CACHE["$item"]=$val
         fi
@@ -383,24 +345,22 @@ modify_value() {
     IFS='|' read -r key type block min max step <<< "${ITEM_MAP[$label]}"
     current=${VALUE_CACHE[$label]:-}
     
-    # Handle unset values - use default or sensible minimum
-    if [[ $current == "«unset»" || -z $current ]]; then
+    if [[ $current == "$UNSET_MARKER" || -z $current ]]; then
         current=${DEFAULTS[$label]:-}
         [[ -z $current ]] && current=${min:-0}
     fi
 
     case $type in
         int)
-            if [[ ! $current =~ ^-?[0-9]+$ ]]; then current=${min:-0}; fi
+            [[ ! $current =~ ^-?[0-9]+$ ]] && current=${min:-0}
             local -i int_step=${step:-1} int_val=$current
             (( int_val += direction * int_step )) || :
-            
             if [[ -n $min ]] && (( int_val < min )); then int_val=$min; fi
             if [[ -n $max ]] && (( int_val > max )); then int_val=$max; fi
             new_val=$int_val
             ;;
         float)
-            if [[ ! $current =~ ^-?[0-9]*\.?[0-9]+$ ]]; then current=${min:-0.0}; fi
+            [[ ! $current =~ ^-?[0-9]*\.?[0-9]+$ ]] && current=${min:-0.0}
             new_val=$(awk -v c="$current" -v dir="$direction" -v s="${step:-0.1}" \
                           -v mn="$min" -v mx="$max" 'BEGIN {
                 val = c + (dir * s)
@@ -418,13 +378,15 @@ modify_value() {
             local -i idx=0 found=0 count=${#opts[@]}
             
             for (( i=0; i<count; i++ )); do
-                [[ "${opts[i]}" == "$current" ]] && { idx=$i; found=1; break; }
+                if [[ "${opts[i]}" == "$current" ]]; then
+                    idx=$i; found=1; break;
+                fi
             done
             
             [[ $found -eq 0 ]] && idx=0
             (( idx += direction )) || :
-            if (( idx < 0 )); then idx=$(( count - 1 )); fi
-            if (( idx >= count )); then idx=0; fi
+            (( idx < 0 )) && idx=$(( count - 1 ))
+            (( idx >= count )) && idx=0
             new_val=${opts[idx]}
             ;;
         *) return 0 ;;
@@ -438,8 +400,8 @@ modify_value() {
 set_absolute_value() {
     local label=$1 new_val=$2
     local key type block
-
     IFS='|' read -r key type block _ _ _ <<< "${ITEM_MAP[$label]}"
+    
     if write_value_to_file "$key" "$new_val" "$block"; then
         VALUE_CACHE["$label"]=$new_val
     fi
@@ -448,7 +410,6 @@ set_absolute_value() {
 reset_defaults() {
     local -n items_ref="TAB_ITEMS_${CURRENT_TAB}"
     local item def_val
-
     for item in "${items_ref[@]}"; do
         def_val=${DEFAULTS[$item]:-}
         [[ -n $def_val ]] && set_absolute_value "$item" "$def_val"
@@ -466,7 +427,6 @@ draw_ui() {
     buf+="${CURSOR_HOME}"
     buf+="${C_MAGENTA}┌${H_LINE}┐${C_RESET}"$'\n'
 
-    # Header - Dynamic Centering
     visible_len=$(( ${#APP_TITLE} + ${#APP_VERSION} + 1 ))
     left_pad=$(( (BOX_INNER_WIDTH - visible_len) / 2 ))
     right_pad=$(( BOX_INNER_WIDTH - visible_len - left_pad ))
@@ -476,7 +436,6 @@ draw_ui() {
     printf -v pad_buf '%*s' "$right_pad" ''
     buf+="${pad_buf}│${C_RESET}"$'\n'
 
-    # Tab bar
     local tab_line="${C_MAGENTA}│ "
     TAB_ZONES=()
 
@@ -484,13 +443,11 @@ draw_ui() {
         local name=${TABS[i]}
         len=${#name}
         zone_start=$current_col
-
         if (( i == CURRENT_TAB )); then
             tab_line+="${C_CYAN}${C_INVERSE} ${name} ${C_RESET}${C_MAGENTA}│ "
         else
             tab_line+="${C_GREY} ${name} ${C_MAGENTA}│ "
         fi
-
         TAB_ZONES+=("${zone_start}:$(( zone_start + len + 1 ))")
         (( current_col += len + 4 )) || :
     done
@@ -505,24 +462,21 @@ draw_ui() {
     buf+="${tab_line}"$'\n'
     buf+="${C_MAGENTA}└${H_LINE}┘${C_RESET}"$'\n'
 
-    # Items Rendering with scroll support
     local -n items_ref="TAB_ITEMS_${CURRENT_TAB}"
     count=${#items_ref[@]}
 
-    # Bounds checking & Scroll Calculation
     if (( count == 0 )); then
-        SELECTED_ROW=0
-        SCROLL_OFFSET=0
+        SELECTED_ROW=0; SCROLL_OFFSET=0
     else
         (( SELECTED_ROW < 0 )) && SELECTED_ROW=0
         (( SELECTED_ROW >= count )) && SELECTED_ROW=$(( count - 1 ))
-
+        
         if (( SELECTED_ROW < SCROLL_OFFSET )); then
             SCROLL_OFFSET=$SELECTED_ROW
         elif (( SELECTED_ROW >= SCROLL_OFFSET + MAX_DISPLAY_ROWS )); then
             SCROLL_OFFSET=$(( SELECTED_ROW - MAX_DISPLAY_ROWS + 1 ))
         fi
-
+        
         (( SCROLL_OFFSET < 0 )) && SCROLL_OFFSET=0
         local -i max_scroll=$(( count - MAX_DISPLAY_ROWS ))
         (( max_scroll < 0 )) && max_scroll=0
@@ -533,28 +487,25 @@ draw_ui() {
     visible_end=$(( SCROLL_OFFSET + MAX_DISPLAY_ROWS ))
     (( visible_end > count )) && visible_end=$count
 
-    # Top Scroll Indicator
     if (( SCROLL_OFFSET > 0 )); then
         buf+="${C_GREY}    ▲ (more above)${CLR_EOL}${C_RESET}"$'\n'
     else
         buf+="${CLR_EOL}"$'\n'
     fi
 
-    # Render Visible Items
     for (( i = visible_start; i < visible_end; i++ )); do
         item=${items_ref[i]}
-        val=${VALUE_CACHE[$item]:-«unset»}
+        val=${VALUE_CACHE[$item]:-$UNSET_MARKER}
 
         case $val in
-            true)       display="${C_GREEN}ON${C_RESET}" ;;
-            false)      display="${C_RED}OFF${C_RESET}" ;;
-            "«unset»")  display="${C_YELLOW}⚠ UNSET${C_RESET}" ;;
-            *'$'*)      display="${C_MAGENTA}Dynamic${C_RESET}" ;;
-            *)          display="${C_WHITE}${val}${C_RESET}" ;;
+            true)             display="${C_GREEN}ON${C_RESET}" ;;
+            false)            display="${C_RED}OFF${C_RESET}" ;;
+            "$UNSET_MARKER")  display="${C_YELLOW}⚠ UNSET${C_RESET}" ;;
+            *'$'*)            display="${C_MAGENTA}Dynamic${C_RESET}" ;;
+            *)                display="${C_WHITE}${val}${C_RESET}" ;;
         esac
 
         printf -v padded_item "%-${ITEM_PADDING}s" "${item:0:$ITEM_PADDING}"
-
         if (( i == SELECTED_ROW )); then
             buf+="${C_CYAN} ➤ ${C_INVERSE}${padded_item}${C_RESET} : ${display}${CLR_EOL}"$'\n'
         else
@@ -562,15 +513,18 @@ draw_ui() {
         fi
     done
 
-    # Pad remaining rows
     local -i rows_rendered=$(( visible_end - visible_start ))
     for (( i = rows_rendered; i < MAX_DISPLAY_ROWS; i++ )); do
         buf+="${CLR_EOL}"$'\n'
     done
 
-    # Bottom Scroll Indicator
-    if (( visible_end < count )); then
-        buf+="${C_GREY}    ▼ (more below)${CLR_EOL}${C_RESET}"$'\n'
+    if (( count > MAX_DISPLAY_ROWS )); then
+        local position_info="[$(( SELECTED_ROW + 1 ))/${count}]"
+        if (( visible_end < count )); then
+            buf+="${C_GREY}    ▼ (more below) ${position_info}${CLR_EOL}${C_RESET}"$'\n'
+        else
+            buf+="${C_GREY}                   ${position_info}${CLR_EOL}${C_RESET}"$'\n'
+        fi
     else
         buf+="${CLR_EOL}"$'\n'
     fi
@@ -587,36 +541,29 @@ navigate() {
     local -i dir=$1
     local -n items_ref="TAB_ITEMS_${CURRENT_TAB}"
     local -i count=${#items_ref[@]}
-
     (( count == 0 )) && return 0
     (( SELECTED_ROW += dir )) || :
-
-    if (( SELECTED_ROW < 0 )); then
-        SELECTED_ROW=$(( count - 1 ))
-    elif (( SELECTED_ROW >= count )); then
-        SELECTED_ROW=0
-    fi
+    (( SELECTED_ROW < 0 )) && SELECTED_ROW=$(( count - 1 ))
+    (( SELECTED_ROW >= count )) && SELECTED_ROW=0
+    
+    # CRITICAL FIX: Ensure function returns 0 (Success)
+    # Without this, if the last check evaluates to false (exit code 1),
+    # 'set -e' will kill the entire script.
+    return 0
 }
 
 adjust() {
     local -i dir=$1
     local -n items_ref="TAB_ITEMS_${CURRENT_TAB}"
-
     (( ${#items_ref[@]} == 0 )) && return 0
     modify_value "${items_ref[SELECTED_ROW]}" "$dir"
 }
 
 switch_tab() {
     local -i dir=${1:-1}
-
     (( CURRENT_TAB += dir )) || :
-
-    if (( CURRENT_TAB >= TAB_COUNT )); then
-        CURRENT_TAB=0
-    elif (( CURRENT_TAB < 0 )); then
-        CURRENT_TAB=$(( TAB_COUNT - 1 ))
-    fi
-
+    (( CURRENT_TAB >= TAB_COUNT )) && CURRENT_TAB=0
+    (( CURRENT_TAB < 0 )) && CURRENT_TAB=$(( TAB_COUNT - 1 ))
     SELECTED_ROW=0
     SCROLL_OFFSET=0
     load_tab_values
@@ -624,11 +571,9 @@ switch_tab() {
 
 set_tab() {
     local -i idx=$1
-
     if (( idx != CURRENT_TAB && idx >= 0 && idx < TAB_COUNT )); then
         CURRENT_TAB=$idx
-        SELECTED_ROW=0
-        SCROLL_OFFSET=0
+        SELECTED_ROW=0; SCROLL_OFFSET=0
         load_tab_values
     fi
 }
@@ -638,11 +583,17 @@ handle_mouse() {
     local -i button x y i
     local type zone start end
 
-    if [[ $input =~ ^\[\<([0-9]+)\;([0-9]+)\;([0-9]+)([Mm])$ ]]; then
+    # CRITICAL FIX: Move regex to variable to avoid Bash parsing errors with '<'
+    local regex='^\[<([0-9]+);([0-9]+);([0-9]+)([Mm])$'
+
+    if [[ $input =~ $regex ]]; then
         button=${BASH_REMATCH[1]}
         x=${BASH_REMATCH[2]}
         y=${BASH_REMATCH[3]}
         type=${BASH_REMATCH[4]}
+
+        if (( button == 64 )); then navigate -1; return 0; fi
+        if (( button == 65 )); then navigate 1; return 0; fi
 
         [[ $type != "M" ]] && return 0
 
@@ -651,10 +602,7 @@ handle_mouse() {
                 zone=${TAB_ZONES[i]}
                 start=${zone%%:*}
                 end=${zone##*:}
-                if (( x >= start && x <= end )); then
-                    set_tab "$i"
-                    return 0
-                fi
+                if (( x >= start && x <= end )); then set_tab "$i"; return 0; fi
             done
         fi
 
@@ -677,19 +625,23 @@ handle_mouse() {
 # --- Main ---
 
 main() {
-    # 1. Config Validation
-    [[ ! -f $CONFIG_FILE ]] && { log_err "Config not found: $CONFIG_FILE"; exit 1; }
-    [[ ! -r $CONFIG_FILE ]] && { log_err "Config not readable: $CONFIG_FILE"; exit 1; }
-    [[ ! -w $CONFIG_FILE ]] && { log_err "Config not writable: $CONFIG_FILE"; exit 1; }
+    if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3) )); then
+        printf '%s[FATAL]%s Bash 4.3+ required\n' "$C_RED" "$C_RESET" >&2
+        exit 1
+    fi
 
-    # 2. Dependency Check
+    # 1. Config Validation
+    if [[ ! -f $CONFIG_FILE ]]; then log_err "Config not found: $CONFIG_FILE"; exit 1; fi
+    [[ ! -r $CONFIG_FILE ]] && { log_err "Config not readable"; exit 1; }
+    [[ ! -w $CONFIG_FILE ]] && { log_err "Config not writable"; exit 1; }
+
+    # 2. Initialization
     command -v awk &>/dev/null || { log_err "Required: awk"; exit 1; }
     command -v sed &>/dev/null || { log_err "Required: sed"; exit 1; }
-
-    # 3. Initialization
+    
+    init_items
     populate_config_cache
 
-    # 4. Save Terminal State
     if command -v stty &>/dev/null; then
         ORIGINAL_STTY=$(stty -g 2>/dev/null) || ORIGINAL_STTY=""
     fi
@@ -699,18 +651,13 @@ main() {
 
     local key seq char
 
-    # 5. Event Loop
+    # 3. Event Loop
     while true; do
         draw_ui
-
         IFS= read -rsn1 key || break
-
         if [[ $key == $'\x1b' ]]; then
             seq=""
-            while IFS= read -rsn1 -t "$ESC_READ_TIMEOUT" char; do
-                seq+="$char"
-            done
-
+            while IFS= read -rsn1 -t "$ESC_READ_TIMEOUT" char; do seq+="$char"; done
             case $seq in
                 '[Z')          switch_tab -1 ;;
                 '[A'|'OA')     navigate -1 ;;

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# Dusky TUI Engine - Master Template v2.6
+# Dusky TUI Engine - Master Template v2.6.2
 # -----------------------------------------------------------------------------
 # Target: Arch Linux / Hyprland / UWSM / Wayland
 # Description: High-performance, robust TUI for config modification.
@@ -17,6 +17,8 @@
 #   - Visual "Unset" Detection for Debugging
 #   - NEW: Type Safety Validation at Startup
 #   - NEW: Post-Write Hook for Service Reloads
+#   - FIXED: Mouse Regex Crash (v2.6.1)
+#   - CRITICAL FIX: Navigation Exit Trap (v2.6.2)
 # -----------------------------------------------------------------------------
 # KNOWN EDGE CASES & FIXES:
 #
@@ -40,6 +42,15 @@
 # 5. "Silent Failure Trap" - If a key isn't found, the old code silently did
 #    nothing, making debugging difficult.
 #    FIX: Return status from write functions, show "⚠ UNSET" in UI
+#
+# 6. "Regex Redirection Crash" (NEW) - Bash interprets `<` in [[ ... ]] regex
+#    as file redirection if not carefully handled, causing crashes.
+#    FIX: Store regex in a variable before comparison.
+#
+# 7. "The False Trap" (NEW) - Arithmetic checks like (( A > B )) return exit
+#    code 1 if false. If this is the last line of a function, `set -e` kills
+#    the script.
+#    FIX: Explicitly `return 0` at the end of navigation functions.
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
@@ -56,7 +67,7 @@ export LC_NUMERIC=C
 
 readonly CONFIG_FILE="${HOME}/.config/hypr/change_me.conf"
 readonly APP_TITLE="Dusky Template"
-readonly APP_VERSION="v2.6"
+readonly APP_VERSION="v2.6.2"
 
 # Dimensions & Layout
 declare -ri MAX_DISPLAY_ROWS=14      # Rows of items to show before scrolling
@@ -658,6 +669,10 @@ navigate() {
     # Wrap selection
     (( SELECTED_ROW < 0 )) && SELECTED_ROW=$(( count - 1 ))
     (( SELECTED_ROW >= count )) && SELECTED_ROW=0
+    
+    # CRITICAL FIX (v2.6.2): Ensure function returns 0
+    # Prevent 'set -e' from trapping on false arithmetic checks
+    return 0
 }
 
 # Page navigation (no wrap)
@@ -673,6 +688,9 @@ navigate_page() {
     # Clamp without wrapping
     (( SELECTED_ROW < 0 )) && SELECTED_ROW=0
     (( SELECTED_ROW >= count )) && SELECTED_ROW=$(( count - 1 ))
+    
+    # CRITICAL FIX (v2.6.2): Ensure function returns 0
+    return 0
 }
 
 # Jump to first/last item
@@ -728,8 +746,11 @@ handle_mouse() {
     local -i button x y i
     local type zone start end
 
-    # SGR Mouse Mode (1006)
-    if [[ $input =~ ^\[<([0-9]+)\;([0-9]+)\;([0-9]+)([Mm])$ ]]; then
+    # CRITICAL FIX: SGR Mouse Mode (1006)
+    # Store regex in a variable to avoid Bash parsing errors with '<'
+    local regex='^\[<([0-9]+);([0-9]+);([0-9]+)([Mm])$'
+
+    if [[ $input =~ $regex ]]; then
         button=${BASH_REMATCH[1]}
         x=${BASH_REMATCH[2]}
         y=${BASH_REMATCH[3]}
