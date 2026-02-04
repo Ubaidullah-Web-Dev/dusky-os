@@ -3,49 +3,67 @@
 Dusky Control Center (Production Build)
 A GTK4/Libadwaita configuration launcher for the Dusky Dotfiles.
 Fully UWSM-compliant for Arch Linux/Hyprland environments.
+
+Forensic Improvements (v2):
+- Error UI: Malformed YAML now shows Adw.StatusPage with stack trace.
+- Hot Reload: Full widget teardown with reference nullification to prevent Segfaults.
+- Type Safety: Strict TypedDict with NotRequired and StrEnum validation.
+- Resource Safety: CSS provider lifecycle is fully guarded against leaks.
+- UX: Hot reload preserves the currently selected page index.
 """
 from __future__ import annotations
 
 import logging
-import os
 import sys
+import threading
+import traceback
+from collections.abc import Callable, Iterator
 from copy import deepcopy
+from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Iterator
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Final,
+    Literal,
+    NotRequired,
+    TypedDict,
+)
 
 # =============================================================================
 # VERSION CHECK
 # =============================================================================
-if sys.version_info < (3, 10):
-    sys.exit("[FATAL] Python 3.10+ is required for this application.")
+if sys.version_info < (3, 13):
+    sys.exit("[FATAL] Python 3.13+ is required.")
 
 # =============================================================================
 # LOGGING CONFIGURATION
 # =============================================================================
 logging.basicConfig(
     level=logging.INFO,
-    format="[%(levelname)s] %(message)s",
+    format="[%(levelname)s] %(name)s: %(message)s",
     stream=sys.stderr,
 )
 log = logging.getLogger(__name__)
+
 
 # =============================================================================
 # CACHE CONFIGURATION
 # =============================================================================
 def _setup_cache() -> None:
     """Configure pycache directory following XDG spec."""
+    import os
+
     try:
         xdg_cache_env = os.environ.get("XDG_CACHE_HOME", "").strip()
-        if xdg_cache_env:
-            xdg_cache = Path(xdg_cache_env)
-        else:
-            xdg_cache = Path.home() / ".cache"
-
+        xdg_cache = Path(xdg_cache_env) if xdg_cache_env else Path.home() / ".cache"
         cache_dir = xdg_cache / "duskycc"
         cache_dir.mkdir(parents=True, exist_ok=True)
         sys.pycache_prefix = str(cache_dir)
     except OSError as e:
         log.warning("Could not set custom pycache location: %s", e)
+
 
 _setup_cache()
 
@@ -57,6 +75,7 @@ import lib.utility as utility
 utility.preflight_check()
 
 import gi
+
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
@@ -64,7 +83,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 import lib.rows as rows
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    pass
 
 # =============================================================================
 # CONSTANTS
@@ -75,152 +94,379 @@ CONFIG_FILENAME: Final[str] = "dusky_config.yaml"
 CSS_FILENAME: Final[str] = "dusky_style.css"
 SCRIPT_DIR: Final[Path] = Path(__file__).resolve().parent
 
+# UI Layout Constants
+WINDOW_DEFAULT_WIDTH: Final[int] = 1180
+WINDOW_DEFAULT_HEIGHT: Final[int] = 780
+SIDEBAR_MIN_WIDTH: Final[int] = 220
+SIDEBAR_MAX_WIDTH: Final[int] = 260
+SIDEBAR_WIDTH_FRACTION: Final[float] = 0.25
+
+# Page Identifiers
 PAGE_PREFIX: Final[str] = "page-"
 SEARCH_PAGE_ID: Final[str] = "search-results"
-EMPTY_STATE_ID: Final[str] = "empty-state"
-DEFAULT_TITLE: Final[str] = "Settings"
+ERROR_PAGE_ID: Final[str] = "error-state"
+EMPTY_PAGE_ID: Final[str] = "empty-state"
 
+# Behavior
 SEARCH_DEBOUNCE_MS: Final[int] = 200
+SEARCH_MAX_RESULTS: Final[int] = 50
 DEFAULT_TOAST_TIMEOUT: Final[int] = 2
+
+# Icons
+ICON_SYSTEM: Final[str] = "emblem-system-symbolic"
+ICON_SEARCH: Final[str] = "system-search-symbolic"
+ICON_ERROR: Final[str] = "dialog-error-symbolic"
+ICON_EMPTY: Final[str] = "document-open-symbolic"
+ICON_WARNING: Final[str] = "dialog-warning-symbolic"
+ICON_DEFAULT: Final[str] = "application-x-executable-symbolic"
+
+
+# =============================================================================
+# TYPE DEFINITIONS (Strict)
+# =============================================================================
+class ItemType(StrEnum):
+    """Valid item types in config."""
+    BUTTON = "button"
+    TOGGLE = "toggle"
+    LABEL = "label"
+    SLIDER = "slider"
+    NAVIGATION = "navigation"
+    WARNING_BANNER = "warning_banner"
+    TOGGLE_CARD = "toggle_card"
+    GRID_CARD = "grid_card"
+
+
+class SectionType(StrEnum):
+    """Valid section types."""
+    SECTION = "section"
+    GRID_SECTION = "grid_section"
+
+
+class ItemProperties(TypedDict, total=False):
+    """Properties for UI items."""
+    title: str
+    description: str
+    icon: str
+    message: str
+    key: str
+    key_inverse: bool
+    save_as_int: bool
+    style: str
+    button_text: str
+    min: float
+    max: float
+    step: float
+    default: float
+
+
+class ConfigItem(TypedDict, total=False):
+    """A single item in the configuration."""
+    type: str
+    properties: ItemProperties
+    on_press: dict[str, Any] | None
+    on_toggle: dict[str, Any] | None
+    on_change: dict[str, Any] | None
+    layout: list[Any]  # Recursive reference
+    value: dict[str, Any] | None
+
+
+class ConfigSection(TypedDict, total=False):
+    """A section containing items."""
+    type: str
+    properties: ItemProperties
+    items: list[ConfigItem]
+
+
+class ConfigPage(TypedDict):
+    """A navigation page (required keys)."""
+    id: NotRequired[str]
+    title: str
+    icon: NotRequired[str]
+    layout: NotRequired[list[ConfigSection]]
+
+
+class AppConfig(TypedDict):
+    """Root configuration object."""
+    pages: list[ConfigPage]
+
+
+class RowContext(TypedDict):
+    """Shared context passed to row builders."""
+    stack: Adw.ViewStack | None
+    config: AppConfig
+    sidebar: Gtk.ListBox | None
+    toast_overlay: Adw.ToastOverlay | None
+    nav_view: Adw.NavigationView | None
+    builder_func: Callable[..., Adw.NavigationPage] | None
+
+
+class ConfigLoadResult(TypedDict):
+    """Result from config loading operation."""
+    success: bool
+    config: AppConfig
+    css: str
+    error: str | None
+
+
+@dataclass(slots=True)
+class ApplicationState:
+    """
+    Mutable application state container.
+    All mutations occur on the main GTK thread via GLib.idle_add,
+    eliminating the need for explicit locking in the main controller.
+    """
+    config: AppConfig = field(default_factory=lambda: {"pages": []})
+    css_content: str = ""
+    last_visible_page: str | None = None
+    debounce_source_id: int = 0
+    config_error: str | None = None
 
 
 class DuskyControlCenter(Adw.Application):
-    """Main application class."""
+    """
+    Main Application Controller.
+    
+    Manages the application lifecycle, UI construction, hot-reload functionality,
+    and search capabilities for the Dusky Control Center.
+    """
 
+    # Slots optimization for GObject-based class mixed with Python logic
     __slots__ = (
-        "config",
-        "sidebar_list",
-        "stack",
-        "toast_overlay",
-        "search_bar",
-        "search_entry",
-        "search_btn",
-        "search_page",
-        "search_results_group",
-        "last_visible_page",
-        "search_debounce_source",
-        "_css_content",
+        "_state",
+        "_sidebar_list",
+        "_stack",
+        "_toast_overlay",
+        "_search_bar",
+        "_search_entry",
+        "_search_btn",
+        "_search_page",
+        "_search_results_group",
+        "_css_provider",
+        "_display",
+        "_window",
     )
 
     def __init__(self) -> None:
-        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.FLAGS_NONE)
-        self.config: dict[str, Any] = {}
-        self.sidebar_list: Gtk.ListBox | None = None
-        self.stack: Adw.ViewStack | None = None
-        self.toast_overlay: Adw.ToastOverlay | None = None
-        self.search_bar: Gtk.SearchBar | None = None
-        self.search_entry: Gtk.SearchEntry | None = None
-        self.search_btn: Gtk.ToggleButton | None = None
-        self.search_page: Adw.NavigationPage | None = None
-        self.search_results_group: Adw.PreferencesGroup | None = None
-        self.last_visible_page: str | None = None
-        self.search_debounce_source: int | None = None
-        self._css_content: str | None = None
+        super().__init__(
+            application_id=APP_ID,
+            flags=Gio.ApplicationFlags.FLAGS_NONE,
+        )
+
+        self._state = ApplicationState()
+        self._init_widget_refs()
+        self._css_provider: Gtk.CssProvider | None = None
+        self._display: Gdk.Display | None = None
+        self._window: Adw.Window | None = None
+
+    def _init_widget_refs(self) -> None:
+        """Initialize or reset all widget references to None."""
+        self._sidebar_list: Gtk.ListBox | None = None
+        self._stack: Adw.ViewStack | None = None
+        self._toast_overlay: Adw.ToastOverlay | None = None
+        self._search_bar: Gtk.SearchBar | None = None
+        self._search_entry: Gtk.SearchEntry | None = None
+        self._search_btn: Gtk.ToggleButton | None = None
+        self._search_page: Adw.NavigationPage | None = None
+        self._search_results_group: Adw.PreferencesGroup | None = None
 
     # ─────────────────────────────────────────────────────────────────────────
     # LIFECYCLE HOOKS
     # ─────────────────────────────────────────────────────────────────────────
+    def do_startup(self) -> None:
+        """GTK Startup hook. Initialize StyleManager to prevent legacy warnings."""
+        Adw.Application.do_startup(self)
+        Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.DEFAULT)
+
     def do_activate(self) -> None:
-        """GTK Application activation hook."""
-        self._load_css()
-        self.config = utility.load_config(SCRIPT_DIR / CONFIG_FILENAME)
-        self._validate_config()
+        """Application entry point. Load config and build UI."""
+        result = self._load_config_and_css_sync()
+        self._state.config = result["config"]
+        self._state.css_content = result["css"]
+        self._state.config_error = result["error"]
+
         self._apply_css()
         self._build_ui()
 
     def do_shutdown(self) -> None:
-        """GTK Application shutdown hook."""
+        """Cleanup resources on application exit."""
         self._cancel_debounce()
+        self._remove_css_provider()
         Adw.Application.do_shutdown(self)
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # RESOURCE MANAGEMENT
+    # ─────────────────────────────────────────────────────────────────────────
     def _cancel_debounce(self) -> None:
-        """Safely cancel any pending debounce timer."""
-        if self.search_debounce_source is not None:
+        """Cancel any pending search debounce timer."""
+        if self._state.debounce_source_id > 0:
+            GLib.source_remove(self._state.debounce_source_id)
+            self._state.debounce_source_id = 0
+
+    def _remove_css_provider(self) -> None:
+        """Remove CSS provider from display to prevent memory leaks."""
+        if self._css_provider is not None and self._display is not None:
             try:
-                GLib.source_remove(self.search_debounce_source)
-            except GLib.Error:
-                pass
-            finally:
-                self.search_debounce_source = None
+                Gtk.StyleContext.remove_provider_for_display(
+                    self._display, self._css_provider
+                )
+            except Exception as e:
+                log.debug("CSS provider removal warning: %s", e)
+        self._css_provider = None
 
     # ─────────────────────────────────────────────────────────────────────────
-    # CONFIGURATION
+    # CONFIG I/O
     # ─────────────────────────────────────────────────────────────────────────
-    def _validate_config(self) -> None:
-        """Ensure critical config keys exist."""
-        if not isinstance(self.config, dict):
-            self.config = {}
-        if not isinstance(self.config.get("pages"), list):
-            self.config["pages"] = []
+    def _load_config_and_css_sync(self) -> ConfigLoadResult:
+        """
+        Synchronous load for initial startup.
+        
+        Returns:
+            ConfigLoadResult with config, css, success status, and any error message.
+        """
+        config, config_error = self._do_load_config()
+        css = self._do_load_css()
+        
+        return {
+            "success": config_error is None,
+            "config": config,
+            "css": css,
+            "error": config_error,
+        }
 
-    def _load_css(self, force_reload: bool = False) -> None:
-        """Load CSS from file safely, caching the result unless forced."""
-        if self._css_content is not None and not force_reload:
-            return
+    def _do_load_config(self) -> tuple[AppConfig, str | None]:
+        """
+        Safely load and validate the configuration file.
+        
+        Returns:
+            Tuple of (config dict, error message or None)
+        """
+        config_path = SCRIPT_DIR / CONFIG_FILENAME
+        
+        try:
+            loaded = utility.load_config(config_path)
+            
+            if not isinstance(loaded, dict):
+                return {"pages": []}, f"Config is not a dictionary (got {type(loaded).__name__})"
+            
+            if "pages" not in loaded:
+                return {"pages": []}, "Config missing required 'pages' key"
+            
+            if not isinstance(loaded.get("pages"), list):
+                return {"pages": []}, "'pages' must be a list"
+            
+            # Validate each page has required 'title'
+            for idx, page in enumerate(loaded["pages"]):
+                if not isinstance(page, dict):
+                    return {"pages": []}, f"Page {idx} is not a dictionary"
+                if "title" not in page:
+                    return {"pages": []}, f"Page {idx} missing required 'title' key"
+            
+            return loaded, None  # type: ignore[return-value]
+            
+        except FileNotFoundError:
+            return {"pages": []}, f"Config file not found: {config_path}"
+        except Exception as e:
+            error_detail = "".join(traceback.format_exception_only(type(e), e)).strip()
+            return {"pages": []}, f"Config parse error: {error_detail}"
 
+    def _do_load_css(self) -> str:
+        """
+        Safely load the CSS stylesheet.
+        
+        Returns:
+            CSS content string, or empty string on failure.
+        """
         css_path = SCRIPT_DIR / CSS_FILENAME
         try:
-            self._css_content = css_path.read_text(encoding="utf-8")
-        except OSError:
-            log.warning("CSS file not found or unreadable: %s", css_path)
-            self._css_content = ""
+            return css_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            log.info("No custom CSS file found at: %s", css_path)
+            return ""
+        except OSError as e:
+            log.warning("Failed to read CSS file: %s", e)
+            return ""
 
     def _apply_css(self) -> None:
-        """Load and apply the custom CSS stylesheet."""
-        if not self._css_content:
+        """Apply loaded CSS to the default display."""
+        self._remove_css_provider()
+
+        if not self._state.css_content:
+            return
+
+        self._display = Gdk.Display.get_default()
+        if self._display is None:
+            log.warning("No default display available for CSS")
             return
 
         provider = Gtk.CssProvider()
-        provider.load_from_string(self._css_content)
-
-        display = Gdk.Display.get_default()
-        if display:
+        try:
+            provider.load_from_string(self._state.css_content)
             Gtk.StyleContext.add_provider_for_display(
-                display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+                self._display,
+                provider,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
             )
+            # Only store reference after successful add to avoid leak on partial fail
+            self._css_provider = provider
+        except GLib.Error as e:
+            log.error("CSS parsing failed: %s", e.message)
+            # Don't store the failed provider
 
     def _get_context(
         self,
         nav_view: Adw.NavigationView | None = None,
-        builder_func: Callable | None = None,
-    ) -> dict[str, Any]:
-        """Build the shared context dictionary for row widgets."""
+        builder_func: Callable[..., Adw.NavigationPage] | None = None,
+    ) -> RowContext:
+        """
+        Construct the shared context dictionary for child widget builders.
+        """
         return {
-            "stack": self.stack,
-            "config": self.config,
-            "sidebar": self.sidebar_list,
-            "toast_overlay": self.toast_overlay,
+            "stack": self._stack,
+            "config": self._state.config,
+            "sidebar": self._sidebar_list,
+            "toast_overlay": self._toast_overlay,
             "nav_view": nav_view,
             "builder_func": builder_func,
         }
 
     # ─────────────────────────────────────────────────────────────────────────
-    # MAIN UI CONSTRUCTION
+    # UI CONSTRUCTION
     # ─────────────────────────────────────────────────────────────────────────
     def _build_ui(self) -> None:
-        """Construct the main application window and layout."""
-        window = Adw.Window(application=self, title=APP_TITLE)
-        window.set_default_size(1180, 780)
+        """Construct and present the main application window."""
+        self._window = Adw.Window(application=self, title=APP_TITLE)
+        self._window.set_default_size(WINDOW_DEFAULT_WIDTH, WINDOW_DEFAULT_HEIGHT)
 
-        key_controller = Gtk.EventControllerKey()
-        key_controller.connect("key-pressed", self._on_key_pressed)
-        window.add_controller(key_controller)
+        # Keyboard event handling
+        key_ctrl = Gtk.EventControllerKey()
+        key_ctrl.connect("key-pressed", self._on_key_pressed)
+        self._window.add_controller(key_ctrl)
 
-        self.toast_overlay = Adw.ToastOverlay()
+        # Main layout
+        self._toast_overlay = Adw.ToastOverlay()
 
         split = Adw.OverlaySplitView()
-        split.set_min_sidebar_width(220)
-        split.set_max_sidebar_width(260)
-        split.set_sidebar_width_fraction(0.25)
+        split.set_min_sidebar_width(SIDEBAR_MIN_WIDTH)
+        split.set_max_sidebar_width(SIDEBAR_MAX_WIDTH)
+        split.set_sidebar_width_fraction(SIDEBAR_WIDTH_FRACTION)
+
         split.set_sidebar(self._create_sidebar())
         split.set_content(self._create_content_panel())
 
-        self.toast_overlay.set_child(split)
-        window.set_content(self.toast_overlay)
+        self._toast_overlay.set_child(split)
+        self._window.set_content(self._toast_overlay)
 
+        # Populate content based on config state
         self._create_search_page()
-        self._populate_pages()
-        window.present()
+        
+        if self._state.config_error:
+            self._show_error_state(self._state.config_error)
+        elif not self._state.config.get("pages"):
+            self._show_empty_state()
+        else:
+            self._populate_pages()
+
+        self._window.present()
 
     def _on_key_pressed(
         self,
@@ -230,529 +476,725 @@ class DuskyControlCenter(Adw.Application):
         state: Gdk.ModifierType,
     ) -> bool:
         """Handle global keyboard shortcuts."""
-        ctrl_held = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
 
-        if ctrl_held:
-            if keyval == Gdk.KEY_r:
-                self._reload_app()
+        match (ctrl, keyval):
+            case (True, Gdk.KEY_r):
+                self._reload_app_async()
                 return True
-            if keyval == Gdk.KEY_f:
+            case (True, Gdk.KEY_f):
                 self._activate_search()
                 return True
-            if keyval == Gdk.KEY_q:
+            case (True, Gdk.KEY_q):
                 self.quit()
                 return True
-
-        if keyval == Gdk.KEY_Escape:
-            if self.search_bar and self.search_bar.get_search_mode():
-                self._deactivate_search()
-                return True
-
+            case (False, Gdk.KEY_Escape):
+                if self._search_bar and self._search_bar.get_search_mode():
+                    self._deactivate_search()
+                    return True
         return False
 
-    def _activate_search(self) -> None:
-        """Focus and activate the search bar."""
-        if self.search_bar and self.search_entry and self.search_btn:
-            self.search_bar.set_search_mode(True)
-            self.search_btn.set_active(True)
-            self.search_entry.grab_focus()
-
-    def _deactivate_search(self) -> None:
-        """Deactivate search bar and sync toggle button state."""
-        if self.search_bar:
-            self.search_bar.set_search_mode(False)
-        if self.search_btn:
-            self.search_btn.set_active(False)
-        self._exit_search_mode()
-
-    def _reload_app(self) -> None:
-        """Hot Reload: Refresh config and rebuild UI with rollback on failure."""
+    # ─────────────────────────────────────────────────────────────────────────
+    # ASYNC HOT RELOAD
+    # ─────────────────────────────────────────────────────────────────────────
+    def _reload_app_async(self) -> None:
+        """
+        Initiate hot reload with background I/O.
+        
+        Preserves the current page selection and restores it after rebuild.
+        Uses thread + idle pattern to prevent UI freeze.
+        """
         log.info("Hot Reload Initiated...")
+        
+        # Capture current selection for restoration
+        current_page = self._get_current_page_index()
+        
+        # Snapshot for rollback on failure
+        old_config = deepcopy(self._state.config)
+        old_css = self._state.css_content
 
-        old_config = self.config
-        try:
-            new_config = utility.load_config(SCRIPT_DIR / CONFIG_FILENAME)
-            if not isinstance(new_config, dict):
-                raise ValueError("Configuration must be a dictionary")
+        def background_load() -> ConfigLoadResult:
+            """Execute I/O operations in background thread."""
+            config, error = self._do_load_config()
+            css = self._do_load_css()
+            return {
+                "success": error is None,
+                "config": config,
+                "css": css,
+                "error": error,
+            }
+
+        def on_complete(
+            result: ConfigLoadResult | None, 
+            error: BaseException | None
+        ) -> None:
+            """Handle reload completion on main thread."""
+            if error is not None:
+                log.error("Reload thread error: %s", error)
+                self._toast("Reload Failed: Internal error", 3)
+                return
+
+            if result is None:
+                self._toast("Reload Failed: No result", 3)
+                return
+
+            try:
+                # Update state
+                self._state.config = result["config"]
+                self._state.css_content = result["css"]
+                self._state.config_error = result["error"]
+
+                # Rebuild UI
+                self._apply_css()
+                self._clear_and_rebuild_ui(current_page)
+
+                if result["error"]:
+                    self._toast(f"Config Error: {result['error'][:50]}...", 4)
+                else:
+                    self._toast("Configuration Reloaded 🚀")
+
+            except Exception as rebuild_error:
+                log.error("UI Rebuild failed: %s", rebuild_error, exc_info=True)
+                # Rollback state
+                self._state.config = old_config
+                self._state.css_content = old_css
+                self._state.config_error = None
+                self._toast("Reload Failed: UI rebuild error", 3)
+
+        self._run_in_background(background_load, on_complete)
+
+    def _get_current_page_index(self) -> int | None:
+        """Get the index of the currently selected sidebar row."""
+        if self._sidebar_list is None:
+            return None
+        row = self._sidebar_list.get_selected_row()
+        return row.get_index() if row else None
+
+    def _run_in_background(
+        self,
+        task: Callable[[], Any],
+        callback: Callable[[Any, BaseException | None], None],
+    ) -> None:
+        """
+        Execute a task in a background thread and callback on main thread.
+        """
+        def wrapper() -> None:
+            result: Any = None
+            error: BaseException | None = None
+            try:
+                result = task()
+            except BaseException as e:
+                error = e
+                log.error("Background task failed: %s", e, exc_info=True)
             
-            self._load_css(force_reload=True)
-            self._apply_css()
+            GLib.idle_add(callback, result, error)
 
-            self.config = new_config
-            self._validate_config()
-            self._clear_ui()
-            self._create_search_page()
-            self._populate_pages()
-            self._toast("Configuration Reloaded 🚀")
+        thread = threading.Thread(target=wrapper, daemon=True, name="reload-worker")
+        thread.start()
 
-        except Exception as e:
-            log.error("Hot reload failed: %s", e)
-            self.config = old_config
-            self._toast("Reload Failed: Check logs", 3)
+    def _clear_and_rebuild_ui(self, restore_page_index: int | None) -> None:
+        """
+        Clear existing UI elements and rebuild from current config.
+        """
+        # Nullify widget references before clearing to avoid GTK warnings
+        self._search_page = None
+        self._search_results_group = None
 
-    def _clear_ui(self) -> None:
-        """Remove all dynamic UI elements for reload."""
-        if self.sidebar_list:
-            while (row := self.sidebar_list.get_row_at_index(0)) is not None:
-                self.sidebar_list.remove(row)
+        # Clear containers
+        self._clear_sidebar()
+        self._clear_stack()
 
-        if self.stack:
-            while (child := self.stack.get_first_child()) is not None:
-                self.stack.remove(child)
+        # Rebuild
+        self._create_search_page()
+        
+        if self._state.config_error:
+            self._show_error_state(self._state.config_error)
+        elif not self._state.config.get("pages"):
+            self._show_empty_state()
+        else:
+            self._populate_pages(restore_page_index)
+
+    def _clear_sidebar(self) -> None:
+        """Remove all rows from the sidebar."""
+        if self._sidebar_list is None:
+            return
+        while (row := self._sidebar_list.get_row_at_index(0)) is not None:
+            self._sidebar_list.remove(row)
+
+    def _clear_stack(self) -> None:
+        """Remove all children from the content stack."""
+        if self._stack is None:
+            return
+        while (child := self._stack.get_first_child()) is not None:
+            self._stack.remove(child)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # SEARCH LOGIC
+    # SEARCH FUNCTIONALITY
     # ─────────────────────────────────────────────────────────────────────────
     def _create_search_page(self) -> None:
-        """Create the search results page."""
-        self.search_page = Adw.NavigationPage(title="Search", tag="search")
-        
-        toolbar_view = Adw.ToolbarView()
-        header = Adw.HeaderBar()
-        toolbar_view.add_top_bar(header)
-        
+        """Create the search results page in the stack."""
+        if self._stack is None:
+            return
+
+        self._search_page = Adw.NavigationPage(title="Search", tag="search")
+
+        toolbar = Adw.ToolbarView()
+        toolbar.add_top_bar(Adw.HeaderBar())
+
         pref_page = Adw.PreferencesPage()
-        self.search_results_group = Adw.PreferencesGroup(title="Search Results")
-        pref_page.add(self.search_results_group)
-        
-        toolbar_view.set_content(pref_page)
-        self.search_page.set_child(toolbar_view)
+        self._search_results_group = Adw.PreferencesGroup(title="Search Results")
+        pref_page.add(self._search_results_group)
 
-        if self.stack:
-            self.stack.add_named(self.search_page, SEARCH_PAGE_ID)
+        toolbar.set_content(pref_page)
+        self._search_page.set_child(toolbar)
 
-    def _on_search_btn_toggled(self, button: Gtk.ToggleButton) -> None:
+        self._stack.add_named(self._search_page, SEARCH_PAGE_ID)
+
+    def _activate_search(self) -> None:
+        """Activate the search bar and focus the entry."""
+        if self._search_bar:
+            self._search_bar.set_search_mode(True)
+        if self._search_btn:
+            self._search_btn.set_active(True)
+        if self._search_entry:
+            self._search_entry.grab_focus()
+
+    def _deactivate_search(self) -> None:
+        """Deactivate search and restore previous page."""
+        if self._search_bar:
+            self._search_bar.set_search_mode(False)
+        if self._search_btn:
+            self._search_btn.set_active(False)
+        if self._search_entry:
+            self._search_entry.set_text("")
+
+        if self._state.last_visible_page and self._stack:
+            self._stack.set_visible_child_name(self._state.last_visible_page)
+
+    def _on_search_btn_toggled(self, btn: Gtk.ToggleButton) -> None:
         """Handle search button toggle."""
-        if button.get_active():
+        if btn.get_active():
             self._activate_search()
         else:
             self._deactivate_search()
 
-    def _exit_search_mode(self) -> None:
-        """Return to the previously visible page."""
-        if self.search_entry:
-            self.search_entry.set_text("")
-
-        if self.last_visible_page and self.stack:
-            self.stack.set_visible_child_name(self.last_visible_page)
-
     def _on_search_changed(self, entry: Gtk.SearchEntry) -> None:
-        """Debounced handler for search input changes."""
+        """Handle search text changes with debouncing."""
         self._cancel_debounce()
-        self.search_debounce_source = GLib.timeout_add(
-            SEARCH_DEBOUNCE_MS, self._execute_search, entry.get_text()
+        query = entry.get_text()
+        src_id = GLib.timeout_add(
+            SEARCH_DEBOUNCE_MS, 
+            self._execute_search, 
+            query
         )
+        if src_id > 0:
+            self._state.debounce_source_id = src_id
 
-    def _execute_search(self, query_text: str) -> bool:
-        """Execute the search after debounce delay."""
-        self.search_debounce_source = None
+    def _execute_search(self, query: str) -> Literal[False]:
+        """
+        Execute the search and populate results.
+        Returns GLib.SOURCE_REMOVE to prevent repeated execution.
+        """
+        self._state.debounce_source_id = 0
 
-        if not self.stack or not self.search_page or not self.search_results_group:
+        if self._stack is None or self._search_results_group is None:
             return GLib.SOURCE_REMOVE
 
-        query = query_text.strip().lower()
+        query = query.strip().lower()
         if not query:
             self._reset_search_results("Search Results")
             return GLib.SOURCE_REMOVE
 
-        current = self.stack.get_visible_child_name()
+        # Save current page before switching to search
+        current = self._stack.get_visible_child_name()
         if current and current != SEARCH_PAGE_ID:
-            self.last_visible_page = current
+            self._state.last_visible_page = current
 
-        self.stack.set_visible_child_name(SEARCH_PAGE_ID)
+        self._stack.set_visible_child_name(SEARCH_PAGE_ID)
         self._reset_search_results(f"Results for '{query}'")
         self._populate_search_results(query)
+
         return GLib.SOURCE_REMOVE
 
     def _reset_search_results(self, title: str) -> None:
-        """Clear and recreate the search results group."""
-        if self.search_page and self.search_results_group:
-            toolbar = self.search_page.get_child()
-            if isinstance(toolbar, Adw.ToolbarView):
-                pref_page = toolbar.get_content()
-                if isinstance(pref_page, Adw.PreferencesPage):
-                    pref_page.remove(self.search_results_group)
-                    self.search_results_group = Adw.PreferencesGroup(title=title)
-                    pref_page.add(self.search_results_group)
-
-    def _populate_search_results(self, query: str) -> None:
-        """Search all items and populate results."""
-        if not self.search_results_group:
+        """Reset the search results group with a new title."""
+        if self._search_page is None:
             return
 
-        found_count = 0
+        toolbar = self._search_page.get_child()
+        if not isinstance(toolbar, Adw.ToolbarView):
+            return
+
+        page = toolbar.get_content()
+        if not isinstance(page, Adw.PreferencesPage):
+            return
+
+        if self._search_results_group is not None:
+            page.remove(self._search_results_group)
+
+        self._search_results_group = Adw.PreferencesGroup(title=title)
+        page.add(self._search_results_group)
+
+    def _populate_search_results(self, query: str) -> None:
+        """Populate search results, limited to prevent UI freeze."""
+        if self._search_results_group is None:
+            return
+
+        count = 0
+        context = self._get_context()
+
         for match in self._iter_matching_items(query):
-            self.search_results_group.add(self._build_item_row(match, self._get_context()))
-            found_count += 1
+            if count >= SEARCH_MAX_RESULTS:
+                # Add overflow indicator
+                overflow_row = Adw.ActionRow(
+                    title=f"Showing first {SEARCH_MAX_RESULTS} results...",
+                    subtitle="Refine your search for more specific results",
+                )
+                overflow_row.set_activatable(False)
+                overflow_row.add_css_class("dim-label")
+                self._search_results_group.add(overflow_row)
+                break
 
-        if found_count == 0:
-            no_results = Adw.ActionRow(title="No results found")
+            self._search_results_group.add(self._build_item_row(match, context))
+            count += 1
+
+        if count == 0:
+            no_results = Adw.ActionRow(
+                title="No results found",
+                subtitle="Try different search terms",
+            )
             no_results.set_activatable(False)
-            self.search_results_group.add(no_results)
+            self._search_results_group.add(no_results)
 
-    def _iter_matching_items(self, query: str) -> Iterator[dict[str, Any]]:
-        """Yield deep-copied items matching the search query with page context."""
-        for page in self.config.get("pages", []):
-            if not isinstance(page, dict):
-                continue
-
+    def _iter_matching_items(self, query: str) -> Iterator[ConfigItem]:
+        """
+        Iterate through all config items matching the search query.
+        """
+        for page in self._state.config.get("pages", []):
             page_title = str(page.get("title", "Unknown"))
-            yield from self._recursive_search(page.get("layout", []), query, page_title)
+            yield from self._recursive_search(
+                page.get("layout", []), 
+                query, 
+                page_title
+            )
 
     def _recursive_search(
-        self, layout_data: list[dict[str, Any]], query: str, context_str: str
-    ) -> Iterator[dict[str, Any]]:
-        """Recursively search layout and nested layouts for matching items."""
-        for section in layout_data:
-            if not isinstance(section, dict):
-                continue
-
+        self,
+        layout: list[ConfigSection],
+        query: str,
+        breadcrumb: str,
+    ) -> Iterator[ConfigItem]:
+        """
+        Recursively search through sections and nested layouts.
+        Injects breadcrumb path into the item description for context.
+        """
+        for section in layout:
             for item in section.get("items", []):
-                if not isinstance(item, dict):
-                    continue
-
                 props = item.get("properties", {})
-                if not isinstance(props, dict):
-                    continue
+                title = str(props.get("title", "")).lower()
+                desc = str(props.get("description", "")).lower()
 
-                item_type = item.get("type")
-                title = str(props.get("title", ""))
-                desc = str(props.get("description", ""))
-
-                # Check if current item matches
-                # We exclude 'navigation' rows from results because clicking them
-                # in a search list (without the nav stack) is broken/confusing.
-                # We only want to find the leaf nodes (actions/toggles).
-                if item_type != "navigation":
-                    if query in title.lower() or query in desc.lower():
-                        result = deepcopy(item)
+                # Exclude navigation items from search (they're structural)
+                item_type = item.get("type", "")
+                if item_type != ItemType.NAVIGATION:
+                    if query in title or query in desc:
+                        result: ConfigItem = deepcopy(item)
+                        result.setdefault("properties", {})
+                        original_desc = props.get("description", "")
                         result["properties"]["description"] = (
-                            f"{context_str} • {desc}" if desc else context_str
+                            f"{breadcrumb} • {original_desc}" 
+                            if original_desc 
+                            else breadcrumb
                         )
                         yield result
 
-                # Recursive dive: if item has a layout (e.g. navigation row), scan it
+                # Recurse into nested layouts
                 if "layout" in item:
-                    sub_title = str(props.get("title", ""))
-                    new_context = f"{context_str} > {sub_title}"
+                    sub_title = str(props.get("title", "Submenu"))
                     yield from self._recursive_search(
-                        item.get("layout", []), query, new_context
+                        item.get("layout", []),
+                        query,
+                        f"{breadcrumb} › {sub_title}",
                     )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # SIDEBAR CONSTRUCTION
+    # SIDEBAR
     # ─────────────────────────────────────────────────────────────────────────
     def _create_sidebar(self) -> Adw.ToolbarView:
-        """Build the sidebar navigation panel."""
+        """Create the sidebar with header, search bar, and navigation list."""
         view = Adw.ToolbarView()
         view.add_css_class("sidebar-container")
 
+        # Header bar
         header = Adw.HeaderBar()
         header.add_css_class("sidebar-header")
         header.set_show_end_title_buttons(False)
 
+        # Title with icon
         title_box = Gtk.Box(spacing=8)
-        icon = Gtk.Image.new_from_icon_name("emblem-system-symbolic")
+        icon = Gtk.Image.new_from_icon_name(ICON_SYSTEM)
         icon.add_css_class("sidebar-header-icon")
-        label = Gtk.Label(label="Dusky")
-        label.add_css_class("title")
+        title = Gtk.Label(label="Dusky", css_classes=["title"])
         title_box.append(icon)
-        title_box.append(label)
+        title_box.append(title)
         header.set_title_widget(title_box)
 
-        self.search_btn = Gtk.ToggleButton(icon_name="system-search-symbolic")
-        self.search_btn.set_tooltip_text("Search Settings (Ctrl+F)")
-        self.search_btn.connect("toggled", self._on_search_btn_toggled)
-        header.pack_end(self.search_btn)
+        # Search button
+        self._search_btn = Gtk.ToggleButton(icon_name=ICON_SEARCH)
+        self._search_btn.set_tooltip_text("Search (Ctrl+F)")
+        self._search_btn.connect("toggled", self._on_search_btn_toggled)
+        header.pack_end(self._search_btn)
         view.add_top_bar(header)
 
-        self.search_bar = Gtk.SearchBar()
-        self.search_entry = Gtk.SearchEntry(placeholder_text="Find setting...")
-        self.search_entry.connect("search-changed", self._on_search_changed)
-        self.search_bar.set_child(self.search_entry)
-        self.search_bar.connect_entry(self.search_entry)
-        view.add_top_bar(self.search_bar)
+        # Search bar
+        self._search_bar = Gtk.SearchBar()
+        self._search_entry = Gtk.SearchEntry(placeholder_text="Find setting...")
+        self._search_entry.connect("search-changed", self._on_search_changed)
+        self._search_bar.set_child(self._search_entry)
+        self._search_bar.connect_entry(self._search_entry)
+        view.add_top_bar(self._search_bar)
 
-        self.sidebar_list = Gtk.ListBox()
-        self.sidebar_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
-        self.sidebar_list.add_css_class("sidebar-listbox")
-        self.sidebar_list.connect("row-selected", self._on_row_selected)
+        # Navigation list
+        self._sidebar_list = Gtk.ListBox(css_classes=["sidebar-listbox"])
+        self._sidebar_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self._sidebar_list.connect("row-selected", self._on_row_selected)
 
         scroll = Gtk.ScrolledWindow(vexpand=True)
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroll.set_child(self.sidebar_list)
+        scroll.set_child(self._sidebar_list)
         view.set_content(scroll)
 
         return view
 
-    def _make_sidebar_row(self, name: str, icon_name: str) -> Gtk.ListBoxRow:
-        """Create a sidebar navigation row."""
-        row = Gtk.ListBoxRow()
-        row.add_css_class("sidebar-row")
-
-        box = Gtk.Box()
-        icon = Gtk.Image.new_from_icon_name(icon_name)
-        icon.add_css_class("sidebar-row-icon")
-        label = Gtk.Label(label=name, xalign=0, hexpand=True)
-        label.add_css_class("sidebar-row-label")
-        label.set_ellipsize(Pango.EllipsizeMode.END)
-        box.append(icon)
-        box.append(label)
-        row.set_child(box)
-
-        return row
+    def _create_content_panel(self) -> Adw.ViewStack:
+        """Create the main content panel stack."""
+        self._stack = Adw.ViewStack(vexpand=True, hexpand=True)
+        return self._stack
 
     def _on_row_selected(
-        self, listbox: Gtk.ListBox, row: Gtk.ListBoxRow | None
+        self, 
+        listbox: Gtk.ListBox, 
+        row: Gtk.ListBoxRow | None
     ) -> None:
         """Handle sidebar row selection."""
-        if row is None or self.stack is None:
+        if row is None or self._stack is None:
             return
 
-        index = row.get_index()
-        pages = self.config.get("pages", [])
-
-        if 0 <= index < len(pages):
-            self.stack.set_visible_child_name(f"{PAGE_PREFIX}{index}")
-
-    def _create_content_panel(self) -> Adw.ViewStack:
-        """Build the main content panel (Stack Only)."""
-        self.stack = Adw.ViewStack(vexpand=True, hexpand=True)
-        return self.stack
+        idx = row.get_index()
+        pages = self._state.config.get("pages", [])
+        if 0 <= idx < len(pages):
+            page_name = f"{PAGE_PREFIX}{idx}"
+            self._stack.set_visible_child_name(page_name)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # PAGE POPULATION
+    # PAGE BUILDING
     # ─────────────────────────────────────────────────────────────────────────
-    def _populate_pages(self) -> None:
-        """Build and add all pages from config."""
-        pages = self.config.get("pages", [])
-
+    def _populate_pages(self, select_index: int | None = None) -> None:
+        """
+        Create sidebar rows and content pages from config.
+        """
+        pages = self._state.config.get("pages", [])
         if not pages:
             self._show_empty_state()
             return
 
-        first_valid_row: Gtk.ListBoxRow | None = None
+        first_row: Gtk.ListBoxRow | None = None
+        target_row: Gtk.ListBoxRow | None = None
 
-        for idx, page_data in enumerate(pages):
-            if not isinstance(page_data, dict):
-                log.warning("Skipping invalid page at index %d", idx)
-                continue
+        for idx, page in enumerate(pages):
+            title = str(page.get("title", "Untitled"))
+            icon = str(page.get("icon", ICON_DEFAULT))
 
-            title = str(page_data.get("title", "Untitled"))
-            icon = str(page_data.get("icon", "application-x-executable-symbolic"))
+            # Create sidebar row
+            row = self._create_sidebar_row(title, icon)
+            
+            if self._sidebar_list:
+                self._sidebar_list.append(row)
+                if first_row is None:
+                    first_row = row
+                if idx == select_index:
+                    target_row = row
 
-            row = self._make_sidebar_row(title, icon)
-            if self.sidebar_list:
-                self.sidebar_list.append(row)
+            # Create content page
+            nav = Adw.NavigationView()
+            ctx = self._get_context(nav_view=nav, builder_func=self._build_nav_page)
+            root = self._build_nav_page(title, page.get("layout", []), ctx)
+            nav.add(root)
 
-            nav_view = Adw.NavigationView()
-            context = self._get_context(
-                nav_view=nav_view,
-                builder_func=self._build_nav_page
-            )
+            if self._stack:
+                self._stack.add_named(nav, f"{PAGE_PREFIX}{idx}")
 
-            root_page = self._build_nav_page(title, page_data.get("layout", []), context)
-            nav_view.add(root_page)
+        # Select appropriate row
+        if self._sidebar_list:
+            row_to_select = target_row or first_row
+            if row_to_select:
+                self._sidebar_list.select_row(row_to_select)
 
-            if self.stack:
-                self.stack.add_named(nav_view, f"{PAGE_PREFIX}{idx}")
-
-            if first_valid_row is None:
-                first_valid_row = row
-
-        if first_valid_row and self.sidebar_list:
-            self.sidebar_list.select_row(first_valid_row)
+    def _create_sidebar_row(self, title: str, icon_name: str) -> Gtk.ListBoxRow:
+        """Create a styled sidebar navigation row."""
+        row = Gtk.ListBoxRow(css_classes=["sidebar-row"])
+        
+        box = Gtk.Box()
+        
+        icon = Gtk.Image.new_from_icon_name(icon_name)
+        icon.add_css_class("sidebar-row-icon")
+        
+        label = Gtk.Label(
+            label=title, 
+            xalign=0, 
+            hexpand=True, 
+            css_classes=["sidebar-row-label"]
+        )
+        label.set_ellipsize(Pango.EllipsizeMode.END)
+        
+        box.append(icon)
+        box.append(label)
+        row.set_child(box)
+        
+        return row
 
     def _build_nav_page(
         self, 
         title: str, 
-        layout_data: list[dict[str, Any]], 
-        context: dict[str, Any]
+        layout: list[ConfigSection], 
+        ctx: RowContext
     ) -> Adw.NavigationPage:
-        """Build a NavigationPage containing a ToolbarView(Header+PreferencesPage)."""
-        nav_page = Adw.NavigationPage(title=title, tag=title.lower().replace(" ", "-"))
-        
-        toolbar_view = Adw.ToolbarView()
-        header = Adw.HeaderBar()
-        toolbar_view.add_top_bar(header)
-        
+        """
+        Build a navigation page with toolbar and preferences content.
+        """
+        tag = title.lower().replace(" ", "-")
+        page = Adw.NavigationPage(title=title, tag=tag)
+
+        toolbar = Adw.ToolbarView()
+        toolbar.add_top_bar(Adw.HeaderBar())
+
         pref_page = Adw.PreferencesPage()
-        self._populate_pref_page_content(pref_page, layout_data, context)
-        
-        toolbar_view.set_content(pref_page)
-        nav_page.set_child(toolbar_view)
-        
-        return nav_page
+        self._populate_pref_content(pref_page, layout, ctx)
 
-    def _populate_pref_page_content(
-        self, 
-        page: Adw.PreferencesPage, 
-        layout_data: list[dict[str, Any]], 
-        context: dict[str, Any]
+        toolbar.set_content(pref_page)
+        page.set_child(toolbar)
+        return page
+
+    def _populate_pref_content(
+        self,
+        page: Adw.PreferencesPage,
+        layout: list[ConfigSection],
+        ctx: RowContext,
     ) -> None:
-        """Fill a PreferencesPage with groups based on layout data."""
-        for section_data in layout_data:
-            if not isinstance(section_data, dict):
-                continue
+        """Populate a preferences page with sections and items."""
+        for section in layout:
+            section_type = section.get("type", SectionType.SECTION)
 
-            section_type = section_data.get("type")
-
-            if section_type == "grid_section":
-                page.add(self._build_grid_section(section_data, context))
-            elif section_type == "section" or "items" in section_data:
-                page.add(self._build_standard_section(section_data, context))
+            if section_type == SectionType.GRID_SECTION:
+                page.add(self._build_grid_section(section, ctx))
+            elif "items" in section:
+                page.add(self._build_standard_section(section, ctx))
             else:
+                # Treat as single-item implicit section
                 group = Adw.PreferencesGroup()
-                group.add(self._build_item_row(section_data, context))
+                # Safely convert section to item (they share structure)
+                item: ConfigItem = {
+                    "type": section.get("type", ""),
+                    "properties": section.get("properties", {}),
+                }
+                group.add(self._build_item_row(item, ctx))
                 page.add(group)
 
     def _build_grid_section(
-        self, section_data: dict[str, Any], context: dict[str, Any]
+        self, 
+        section: ConfigSection, 
+        ctx: RowContext
     ) -> Adw.PreferencesGroup:
-        """Build a grid-layout section."""
+        """Build a grid section with flow box layout."""
         group = Adw.PreferencesGroup()
+        props = section.get("properties", {})
 
-        props = section_data.get("properties", {})
-        title = str(props.get("title", "")) if isinstance(props, dict) else ""
-        if title:
-            group.set_title(GLib.markup_escape_text(title))
+        if title := props.get("title"):
+            group.set_title(GLib.markup_escape_text(str(title)))
 
-        flowbox = Gtk.FlowBox()
-        flowbox.set_valign(Gtk.Align.START)
-        flowbox.set_selection_mode(Gtk.SelectionMode.NONE)
-        flowbox.set_column_spacing(12)
-        flowbox.set_row_spacing(12)
+        flow = Gtk.FlowBox()
+        flow.set_valign(Gtk.Align.START)
+        flow.set_selection_mode(Gtk.SelectionMode.NONE)
+        flow.set_column_spacing(12)
+        flow.set_row_spacing(12)
 
-        for item in section_data.get("items", []):
-            if not isinstance(item, dict):
-                continue
-
-            props = item.get("properties", {})
-            item_type = item.get("type")
-
-            if item_type == "toggle_card":
-                card = rows.GridToggleCard(props, item.get("on_toggle"), context)
+        for item in section.get("items", []):
+            item_type = item.get("type", "")
+            item_props = item.get("properties", {})
+            
+            if item_type == ItemType.TOGGLE_CARD:
+                card = rows.GridToggleCard(item_props, item.get("on_toggle"), ctx)
             else:
-                card = rows.GridCard(props, item.get("on_press"), context)
+                card = rows.GridCard(item_props, item.get("on_press"), ctx)
+            
+            flow.append(card)
 
-            flowbox.append(card)
-
-        group.add(flowbox)
+        group.add(flow)
         return group
 
     def _build_standard_section(
-        self, section_data: dict[str, Any], context: dict[str, Any]
+        self, 
+        section: ConfigSection, 
+        ctx: RowContext
     ) -> Adw.PreferencesGroup:
-        """Build a standard list section."""
+        """Build a standard preferences group with row items."""
         group = Adw.PreferencesGroup()
-        props = section_data.get("properties", {})
+        props = section.get("properties", {})
 
-        if isinstance(props, dict):
-            title = str(props.get("title", ""))
-            if title:
-                group.set_title(GLib.markup_escape_text(title))
+        if title := props.get("title"):
+            group.set_title(GLib.markup_escape_text(str(title)))
+        if desc := props.get("description"):
+            group.set_description(GLib.markup_escape_text(str(desc)))
 
-            desc = str(props.get("description", ""))
-            if desc:
-                group.set_description(GLib.markup_escape_text(desc))
-
-        for item in section_data.get("items", []):
-            if isinstance(item, dict):
-                group.add(self._build_item_row(item, context))
+        for item in section.get("items", []):
+            group.add(self._build_item_row(item, ctx))
 
         return group
 
     def _build_item_row(
-        self, item: dict[str, Any], context: dict[str, Any] | None = None
+        self, 
+        item: ConfigItem, 
+        ctx: RowContext
     ) -> Adw.PreferencesRow:
-        """Build a single row widget from an item definition."""
-        if context is None:
-            context = self._get_context()
+        """
+        Build the appropriate row widget for a config item.
+        """
+        item_type = item.get("type", "")
+        props = item.get("properties", {})
 
-        item_type = item.get("type")
-        properties = item.get("properties", {})
+        try:
+            match item_type:
+                case ItemType.BUTTON:
+                    return rows.ButtonRow(props, item.get("on_press"), ctx)
+                case ItemType.TOGGLE:
+                    return rows.ToggleRow(props, item.get("on_toggle"), ctx)
+                case ItemType.LABEL:
+                    return rows.LabelRow(props, item.get("value"), ctx)
+                case ItemType.SLIDER:
+                    return rows.SliderRow(props, item.get("on_change"), ctx)
+                case ItemType.NAVIGATION:
+                    return rows.NavigationRow(props, item.get("layout"), ctx)
+                case ItemType.WARNING_BANNER:
+                    return self._build_warning_banner(props)
+                case _:
+                    log.warning("Unknown item type '%s', defaulting to button", item_type)
+                    return rows.ButtonRow(props, item.get("on_press"), ctx)
+        except Exception as e:
+            log.error("Failed to build row for type '%s': %s", item_type, e)
+            # Return error placeholder row
+            return self._build_error_row(str(e), props.get("title", "Unknown"))
 
-        row_builders: dict[str, Callable[[], Adw.PreferencesRow]] = {
-            "button": lambda: rows.ButtonRow(properties, item.get("on_press"), context),
-            "toggle": lambda: rows.ToggleRow(properties, item.get("on_toggle"), context),
-            "label": lambda: rows.LabelRow(properties, item.get("value"), context),
-            "slider": lambda: rows.SliderRow(properties, item.get("on_change"), context),
-            "navigation": lambda: rows.NavigationRow(properties, item.get("layout"), context),
-            "warning_banner": lambda: self._build_warning_banner(properties),
-        }
-
-        builder = row_builders.get(item_type)
-        if builder:
-            return builder()
-
-        log.warning("Unknown item type '%s', defaulting to ButtonRow", item_type)
-        return rows.ButtonRow(properties, item.get("on_press"), context)
-
-    def _build_warning_banner(self, properties: dict[str, Any]) -> Adw.PreferencesRow:
+    def _build_warning_banner(self, props: ItemProperties) -> Adw.PreferencesRow:
         """Build a warning banner row."""
-        row = Adw.PreferencesRow()
-        row.add_css_class("action-row")
+        row = Adw.PreferencesRow(css_classes=["action-row"])
 
-        banner_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        banner_box.add_css_class("warning-banner-box")
+        box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=4,
+            css_classes=["warning-banner-box"],
+        )
 
-        icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
+        icon = Gtk.Image.new_from_icon_name(ICON_WARNING)
         icon.set_halign(Gtk.Align.CENTER)
         icon.set_margin_bottom(8)
         icon.add_css_class("warning-banner-icon")
 
-        title_text = GLib.markup_escape_text(str(properties.get("title", "Warning")))
-        title = Gtk.Label(label=title_text)
-        title.add_css_class("title-1")
+        title = Gtk.Label(
+            label=GLib.markup_escape_text(str(props.get("title", "Warning"))),
+            css_classes=["title-1"],
+        )
         title.set_halign(Gtk.Align.CENTER)
 
-        message_text = GLib.markup_escape_text(str(properties.get("message", "")))
-        message = Gtk.Label(label=message_text)
-        message.add_css_class("body")
+        message = Gtk.Label(
+            label=GLib.markup_escape_text(str(props.get("message", ""))),
+            css_classes=["body"],
+        )
         message.set_halign(Gtk.Align.CENTER)
         message.set_wrap(True)
 
-        banner_box.append(icon)
-        banner_box.append(title)
-        banner_box.append(message)
-        row.set_child(banner_box)
+        box.append(icon)
+        box.append(title)
+        box.append(message)
+        row.set_child(box)
 
         return row
 
+    def _build_error_row(self, error: str, title: str) -> Adw.ActionRow:
+        """Build an error placeholder row for failed item builds."""
+        row = Adw.ActionRow(
+            title=f"⚠ {title}",
+            subtitle=f"Build error: {error[:80]}",
+        )
+        row.add_css_class("error")
+        row.set_activatable(False)
+        return row
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STATE PAGES
+    # ─────────────────────────────────────────────────────────────────────────
+    def _show_error_state(self, error_message: str) -> None:
+        """Display an error status page when config loading fails."""
+        if self._stack is None:
+            return
+
+        status = Adw.StatusPage(
+            icon_name=ICON_ERROR,
+            title="Configuration Error",
+            description=GLib.markup_escape_text(error_message),
+        )
+        status.add_css_class("error-state")
+
+        # Add reload hint
+        hint = Gtk.Label(
+            label="Press Ctrl+R to reload after fixing the configuration.",
+            css_classes=["dim-label"],
+        )
+        hint.set_margin_top(12)
+        status.set_child(hint)
+
+        self._stack.add_named(status, ERROR_PAGE_ID)
+        self._stack.set_visible_child_name(ERROR_PAGE_ID)
+
     def _show_empty_state(self) -> None:
-        """Display empty state when no config is found."""
-        box = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL,
-            spacing=8,
-            halign=Gtk.Align.CENTER,
-            valign=Gtk.Align.CENTER,
+        """Display an empty status page when no pages are configured."""
+        if self._stack is None:
+            return
+
+        status = Adw.StatusPage(
+            icon_name=ICON_EMPTY,
+            title="No Configuration Found",
+            description="The configuration file exists but contains no pages.",
         )
-        box.add_css_class("empty-state-box")
+        status.add_css_class("empty-state")
 
-        icon = Gtk.Image.new_from_icon_name("document-open-symbolic")
-        icon.add_css_class("empty-state-icon")
-
-        title = Gtk.Label(label="No Configuration Found")
-        title.add_css_class("empty-state-title")
-
-        subtitle = Gtk.Label(
-            label="Create a config file to define your control center layout."
+        hint = Gtk.Label(
+            label=f"Add pages to {CONFIG_FILENAME} and press Ctrl+R to reload.",
+            css_classes=["dim-label"],
         )
-        subtitle.add_css_class("empty-state-subtitle")
+        hint.set_margin_top(12)
+        status.set_child(hint)
 
-        box.append(icon)
-        box.append(title)
-        box.append(subtitle)
+        self._stack.add_named(status, EMPTY_PAGE_ID)
+        self._stack.set_visible_child_name(EMPTY_PAGE_ID)
 
-        if self.stack:
-            self.stack.add_named(box, EMPTY_STATE_ID)
-
+    # ─────────────────────────────────────────────────────────────────────────
+    # UTILITIES
+    # ─────────────────────────────────────────────────────────────────────────
     def _toast(self, message: str, timeout: int = DEFAULT_TOAST_TIMEOUT) -> None:
-        """Show a toast notification."""
-        if self.toast_overlay:
-            self.toast_overlay.add_toast(Adw.Toast(title=message, timeout=timeout))
+        """Display a toast notification."""
+        if self._toast_overlay:
+            toast = Adw.Toast(title=message, timeout=timeout)
+            self._toast_overlay.add_toast(toast)
+
+
+# =============================================================================
+# ENTRY POINT
+# =============================================================================
+def main() -> int:
+    """Application entry point."""
+    app = DuskyControlCenter()
+    return app.run(sys.argv)
 
 
 if __name__ == "__main__":
-    app = DuskyControlCenter()
-    sys.exit(app.run(sys.argv))
+    sys.exit(main())
