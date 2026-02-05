@@ -57,6 +57,7 @@ pages:
       properties:
         title: Reload CC
         icon: system-reboot-symbolic
+        style: destructive
       on_press:
         type: exec
         command: systemctl --user try-restart dusky
@@ -1209,7 +1210,7 @@ pages:
         command: echo 'Stay tuned for more updates!'
         terminal: false
 - id: about_dusky
-  title: About your System
+  title: About System
   layout:
   - type: section
     properties:
