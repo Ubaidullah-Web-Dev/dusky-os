@@ -197,8 +197,8 @@ try_install_yay() {
 # --- Main ---
 main() {
     if [[ $EUID -ne 0 ]]; then
-        log_error "Must run as root (sudo)."
-        exit 1
+        log_info "Privilege escalation required. Elevating..."
+        exec sudo "$0" "$@"
     fi
     
     acquire_lock
