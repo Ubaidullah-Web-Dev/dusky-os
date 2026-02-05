@@ -17,6 +17,7 @@ Daemon & Optimization Features (Implemented):
 - RAM EFFICIENCY: Hides window on close; garbage collects to free memory.
 - DAEMON MODE: Process stays alive in background (sleeping) when window is closed.
 - KEEPALIVE: self.hold() prevents GApplication 10s service timeout.
+- INSTANT LAUNCH: UI is pre-built during startup to ensure 0ms latency on activation.
 """
 from __future__ import annotations
 
@@ -292,25 +293,20 @@ class DuskyControlCenter(Adw.Application):
     # LIFECYCLE HOOKS
     # ─────────────────────────────────────────────────────────────────────────
     def do_startup(self) -> None:
-        """GTK Startup hook. Initialize StyleManager to prevent legacy warnings."""
+        """
+        GTK Startup hook. 
+        PRE-LOAD LOGIC: Initialize resources and build UI hidden to ensure instant startup.
+        """
         Adw.Application.do_startup(self)
         Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.DEFAULT)
 
         # DAEMON FIX: Explicitly hold the application to prevent 10s timeout
         # when running with --gapplication-service without an active window.
         self.hold()
-
-    def do_activate(self) -> None:
-        """
-        Application entry point.
-        DAEMON LOGIC: If window exists, present it. Otherwise, build it.
-        """
-        # 1. Daemon Check: If window is already alive, just show it.
-        if self._window:
-            self._window.present()
-            return
-
-        # 2. Cold Start: Load config and build UI.
+        
+        # INSTANT STARTUP FIX: 
+        # Move config loading and UI building here (Background) instead of do_activate (Foreground).
+        # This consumes RAM immediately but makes activation instant.
         result = self._load_config_and_css_sync()
         self._state.config = result["config"]
         self._state.css_content = result["css"]
@@ -318,7 +314,19 @@ class DuskyControlCenter(Adw.Application):
 
         self._apply_css()
         self._build_ui()
-        self._window.present()
+        
+        # Ensure window is initially hidden. It will exist in RAM, fully constructed.
+        # We only present it when the user actually requests it via do_activate.
+        if self._window:
+            self._window.set_visible(False)
+
+    def do_activate(self) -> None:
+        """
+        Application entry point.
+        DAEMON LOGIC: Window is pre-built in do_startup. Just present it.
+        """
+        if self._window:
+            self._window.present()
 
     def do_shutdown(self) -> None:
         """Cleanup resources on application exit."""
