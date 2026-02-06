@@ -586,16 +586,20 @@ pages:
       icon: ''
       description: ''
     items:
-    - type: button
+    - type: slider
       properties:
-        title: Brightness Slider
-        description: Adjust screen brightness
+        title: Brightness
         icon: display-brightness-high-symbolic
-        button_text: "Open"
-      on_press:
+        min: 1
+        max: 100
+        step: 1
+        default: 50
+        debounce: false
+        value_command: "brightnessctl -m | awk -F, '{print $4}' | tr -d %"
+        interval: 2
+      on_change:
         type: exec
-        command: $HOME/user_scripts/sliders/brightness_slider.sh
-        terminal: false
+        command: brightnessctl set {value}%
     - type: button
       properties:
         title: Night Light
@@ -654,16 +658,20 @@ pages:
       icon: ''
       description: ''
     items:
-    - type: button
+    - type: slider
       properties:
-        title: Volume Control
-        description: Open volume slider
+        title: Volume
         icon: audio-volume-high-symbolic
-        button_text: "Open"
-      on_press:
+        min: 0
+        max: 100
+        step: 1
+        default: 50
+        debounce: false
+        value_command: "wpctl get-volume @DEFAULT_AUDIO_SINK@ | awk '{print $2 * 100}'"
+        interval: 2
+      on_change:
         type: exec
-        command: $HOME/user_scripts/sliders/volume_slider.sh
-        terminal: false
+        command: wpctl set-volume @DEFAULT_AUDIO_SINK@ {value}%
     - type: button
       properties:
         title: Audio Mixer
@@ -706,16 +714,21 @@ pages:
       icon: ''
       description: ''
     items:
-    - type: button
+    - type: toggle
       properties:
         title: Mono Audio
         description: Toggle Mono/Stereo output
         icon: audio-card-symbolic
-        button_text: "Toggle"
-      on_press:
-        type: exec
-        command: $HOME/user_scripts/audio/mono_audio_pipewire.sh
-        terminal: false
+        key: mono_audio
+      on_toggle:
+        enabled:
+          type: exec
+          command: $HOME/user_scripts/audio/mono_audio_pipewire.sh
+          terminal: false
+        disabled:
+          type: exec
+          command: $HOME/user_scripts/audio/mono_audio_pipewire.sh
+          terminal: false
     - type: button
       properties:
         title: Music Recognition
@@ -726,16 +739,21 @@ pages:
         type: exec
         command: $HOME/user_scripts/music/recognition.sh
         terminal: false
-    - type: button
+    - type: toggle
       properties:
         title: Wayclick
         description: Enable mechanical keyboard sound effects
         icon: input-keyboard-symbolic
-        button_text: "Enable"
-      on_press:
-        type: exec
-        command: $HOME/user_scripts/wayclick/wayclick.sh
-        terminal: false
+        key: wayclick
+      on_toggle:
+        enabled:
+          type: exec
+          command: $HOME/user_scripts/wayclick/wayclick.sh
+          terminal: false
+        disabled:
+          type: exec
+          command: $HOME/user_scripts/wayclick/wayclick.sh
+          terminal: false
 
 - id: visuals
   title: Visuals
