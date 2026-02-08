@@ -24,7 +24,9 @@ fi
 _tmp=""
 cleanup() {
     local exit_code=$?
+    # Clean up temp file if it exists
     [[ -n "$_tmp" ]] && rm -f -- "$_tmp"
+    
     if [[ $exit_code -ne 0 ]]; then
         printf '%s[!] Script failed with exit code %d%s\n' "$RED" "$exit_code" "$NC" >&2
     fi
@@ -157,6 +159,8 @@ else
 
     # Create temp file on the SAME filesystem for atomic mv (rename, not copy).
     _tmp=$(mktemp -p "${SETTINGS_FILE%/*}" .settings.XXXXXXXXXX)
+    
+    # Safely use JQ with a temp file and trap cleanup
     jq --arg theme "$THEME_NAME" '
         if .enabledThemes == null then
             .enabledThemes = [$theme]
@@ -166,6 +170,7 @@ else
             .
         end
     ' "$SETTINGS_FILE" > "$_tmp"
+    
     mv -- "$_tmp" "$SETTINGS_FILE"
     _tmp="" # Clear so trap doesn't attempt to delete the now-renamed file
     log_success "Patched settings.json: '${THEME_NAME}' is enabled."
