@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# Dusky TUI Engine - Hypridle Edition (v3.3.1-Unified)
+# Dusky TUI Engine - Hypridle Edition (v3.4-Unified)
 # -----------------------------------------------------------------------------
 # Target: Arch Linux / Hyprland / UWSM / Hypridle
 # Description: Specialized TUI for managing Hypridle listeners.
-#              v3.3.1 Changes:
-#              - FIX: Replaced invalid `readonly -i` with `declare -ri`.
-#              - ENGINE: Master Template v2.9.0 (Composite Keys, Safe Math).
-#              - FEATURE: Added "Never" (Unlimited) toggle for timeouts.
-#              - LOGIC: Preserved bulletproof Systemd reload.
+#              v3.4 Changes:
+#              - FEATURE: Added [n] keybind to toggle "Never" <-> Default.
+#              - UI: Updated menu bar to show new keybind.
+#              - PREVIOUS: Fixed 'readonly -i' crash (v3.3.1).
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
@@ -23,7 +22,7 @@ export LC_NUMERIC=C
 
 readonly CONFIG_FILE="${HOME}/.config/hypr/hypridle.conf"
 readonly APP_TITLE="Dusky Hypridle"
-readonly APP_VERSION="v3.3.1"
+readonly APP_VERSION="v3.4"
 
 # Dimensions & Layout
 declare -ri MAX_DISPLAY_ROWS=14      # Rows of items to show before scrolling
@@ -35,7 +34,6 @@ declare -ri ITEM_PADDING=32          # Text padding for labels
 readonly -a TABS=("Power States" "Warnings")
 
 # "Never" Constant (2 Billion Seconds ≈ 63 Years)
-# Fixed: Used 'declare -ri' instead of 'readonly -i' for compatibility
 declare -ri NEVER_VAL=2000000000
 
 # Item Registration
@@ -130,7 +128,7 @@ cleanup() {
     fi
     printf '\n'
 
-    # [CRITICAL LOGIC] Bulletproof Reload Strategy (Ported from v3.2)
+    # [CRITICAL LOGIC] Bulletproof Reload Strategy
     if (( DIRTY_STATE == 1 )); then
         printf "%s[INFO]%s Changes detected. Restarting hypridle...\n" "$C_CYAN" "$C_RESET"
         
@@ -358,8 +356,6 @@ modify_value() {
     case $type in
         int)
             # v3.3 FEATURE: "Never" Logic for Timeouts
-            # Logic: If max is exceeded, set to NEVER_VAL. If at NEVER_VAL and decreased, set to max.
-            
             if [[ ! $current =~ ^-?[0-9]+$ ]]; then current=${min:-0}; fi
             local -i int_step=${step:-1} int_val=$current
             local -i soft_max=${max:-$NEVER_VAL}
@@ -367,13 +363,11 @@ modify_value() {
             if (( direction > 0 )); then
                 # Increase
                 if (( current >= NEVER_VAL )); then
-                    # Already at Never, stay there (or loop? staying is safer)
                     new_val=$NEVER_VAL
                 else
                     int_val=$(( current + int_step ))
-                    # Check if we crossed the soft max (user configured max)
+                    # Check soft max
                     if [[ -n $max ]] && (( int_val > soft_max )); then
-                        # Jump to Never
                         new_val=$NEVER_VAL
                     else
                         new_val=$int_val
@@ -386,7 +380,6 @@ modify_value() {
                     if [[ -n $max ]]; then new_val=$soft_max; else new_val=$(( NEVER_VAL - int_step )); fi
                 else
                     int_val=$(( current - int_step ))
-                    # Standard min check
                     if [[ -n $min ]] && (( int_val < min )); then int_val=$min; fi
                     new_val=$int_val
                 fi
@@ -409,6 +402,37 @@ modify_value() {
             ;;
         *) return 0 ;;
     esac
+
+    if write_value_to_file "$key" "$new_val" "$block"; then
+        VALUE_CACHE["${CURRENT_TAB}::${label}"]=$new_val
+        post_write_action
+    fi
+}
+
+# v3.4 FEATURE: Toggle Never
+toggle_never() {
+    local -n _tn_items_ref="TAB_ITEMS_${CURRENT_TAB}"
+    local label="${_tn_items_ref[SELECTED_ROW]}"
+    local key type block min max step current new_val
+
+    IFS='|' read -r key type block min max step <<< "${ITEM_MAP["${CURRENT_TAB}::${label}"]}"
+    
+    # Only applies to 'int' types
+    if [[ "$type" != "int" ]]; then return 0; fi
+
+    current=${VALUE_CACHE["${CURRENT_TAB}::${label}"]:-}
+    if [[ $current == "$UNSET_MARKER" || -z $current ]]; then
+        current=${DEFAULTS["${CURRENT_TAB}::${label}"]:-}
+        [[ -z $current ]] && current=${min:-0}
+    fi
+
+    # Logic: If current is Never, revert to default. Otherwise, set to Never.
+    if [[ "$current" =~ ^[0-9]+$ ]] && (( current >= NEVER_VAL )); then
+        new_val=${DEFAULTS["${CURRENT_TAB}::${label}"]:-}
+        [[ -z $new_val ]] && new_val=${min:-0}
+    else
+        new_val=$NEVER_VAL
+    fi
 
     if write_value_to_file "$key" "$new_val" "$block"; then
         VALUE_CACHE["${CURRENT_TAB}::${label}"]=$new_val
@@ -519,7 +543,6 @@ draw_ui() {
         case $val in
             "$UNSET_MARKER") display="${C_YELLOW}⚠ UNSET${C_RESET}" ;;
             *)
-                # v3.3: Display "Never" for huge values
                 if [[ "$val" =~ ^[0-9]+$ ]] && (( val >= NEVER_VAL )); then
                     display="${C_YELLOW}Never${C_RESET}"
                 else
@@ -553,7 +576,8 @@ draw_ui() {
         buf+="${CLR_EOL}"$'\n'
     fi
 
-    buf+=$'\n'"${C_CYAN} [Tab] Category  [r] Reset  [←/→] Adjust  [↑/↓] Nav  [q] Quit${C_RESET}"$'\n'
+    # v3.4: Added [n] Never to menu
+    buf+=$'\n'"${C_CYAN} [Tab] Tab  [r] Reset  [n] Never  [←/→] Adj  [↑/↓] Nav  [q] Quit${C_RESET}"$'\n'
     
     # Visual Dirty Indicator
     if (( DIRTY_STATE == 1 )); then
@@ -747,6 +771,7 @@ main() {
                 h|H)           adjust -1 ;;
                 g)             navigate_end 0 ;;
                 G)             navigate_end 1 ;;
+                n|N)           toggle_never ;; # v3.4 Feature
                 $'\t')         switch_tab 1 ;;
                 r|R)           reset_defaults ;;
                 q|Q|$'\x03')   break ;;
