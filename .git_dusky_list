@@ -53,6 +53,7 @@
 .config/autostart/
 .zshrc
 .git_dusky_list
+.gitignore
 .config/starship.toml
 .config/mimeapps.list
 .local/share/applications/
