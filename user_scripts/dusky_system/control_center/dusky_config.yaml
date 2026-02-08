@@ -818,108 +818,130 @@ pages:
           terminal: false
     - type: grid_card
       properties:
-        title: Cycle Theme
-        icon: palette-symbolic
+        title: Presets
+        icon: style-symbolic
       on_press:
         type: exec
-        command: $HOME/user_scripts/theme_matugen/theme_ctl.sh random
+        command: kitty --class dusky_matugen_presets.sh -e ~/user_scripts/theme_matugen/dusky_matugen_presets.sh
         terminal: false
 
   - type: section
     properties:
-      title: Theming
+      title: Visual Configuration
       icon: ''
       description: ''
     items:
-    - type: button
+    - type: navigation
       properties:
-        title: Regenerate Color Files
-        description: Refresh Matugen for current wallpaper
-        icon: view-refresh-symbolic
-        button_text: "Refresh"
-      on_press:
-        type: exec
-        command: $HOME/user_scripts/theme_matugen/theme_ctl.sh refresh
-        terminal: false
-    - type: button
+        title: Theme & Colors
+        description: Color schemes and generation
+        icon: palette-symbolic
+      layout:
+        - type: section
+          properties:
+            title: Theme Management
+          items:
+            - type: button
+              properties:
+                title: Cycle Theme
+                description: Randomize colors from wallpaper
+                icon: palette-symbolic
+              on_press:
+                type: exec
+                command: $HOME/user_scripts/theme_matugen/theme_ctl.sh random
+                terminal: false
+            - type: button
+              properties:
+                title: Regenerate Color Files
+                description: Refresh Matugen for current wallpaper
+                icon: view-refresh-symbolic
+                button_text: "Refresh"
+              on_press:
+                type: exec
+                command: $HOME/user_scripts/theme_matugen/theme_ctl.sh refresh
+                terminal: false
+            - type: button
+              properties:
+                title: Fine Tune
+                description: Open Rofi theme configuration
+                icon: emblem-photos-symbolic
+                button_text: "Open"
+              on_press:
+                type: exec
+                command: $HOME/user_scripts/rofi/rofi_theme.sh
+                terminal: false
+
+    - type: navigation
       properties:
-        title: Fine Tune
-        description: Open Rofi theme configuration
-        icon: emblem-photos-symbolic
-        button_text: "Open"
-      on_press:
-        type: exec
-        command: $HOME/user_scripts/rofi/rofi_theme.sh
-        terminal: false
-  - type: section
-    properties:
-      title: Wallpaper
-      icon: ''
-      description: ''
-    items:
-    - type: button
-      properties:
-        title: Waypaper
-        description: GUI Wallpaper Picker
+        title: Wallpaper
+        description: Background image settings
         icon: image-x-generic-symbolic
-        button_text: "Open"
-      on_press:
-        type: exec
-        command: waypaper
-        terminal: false
-    - type: button
+      layout:
+        - type: section
+          properties:
+            title: Wallpaper Management
+          items:
+            - type: button
+              properties:
+                title: Waypaper
+                description: GUI Wallpaper Picker
+                icon: image-x-generic-symbolic
+                button_text: "Open"
+              on_press:
+                type: exec
+                command: waypaper
+                terminal: false
+            - type: button
+              properties:
+                title: Rofi Wallpaper
+                description: Quick Select Menu
+                icon: image-x-generic-symbolic
+                button_text: "Select"
+              on_press:
+                type: exec
+                command: $HOME/user_scripts/rofi/rofi_wallpaper_selctor.sh
+                terminal: false
+
+    - type: navigation
       properties:
-        title: Rofi Wallpaper
-        description: Quick Select Menu
-        icon: image-x-generic-symbolic
-        button_text: "Select"
-      on_press:
-        type: exec
-        command: $HOME/user_scripts/rofi/rofi_wallpaper_selctor.sh
-        terminal: false
-  - type: section
-    properties:
-      title: Hyprland Eye Candy
-      icon: ''
-      description: ''
-    items:
-    - type: button
-      properties:
-        title: Dusky Appearance TUI
-        description: Configure borders, gaps, colors
+        title: Effects & Decorations
+        description: Animations, blur, borders, and shaders
         icon: preferences-desktop-display-symbolic
-        button_text: "Open"
-      on_press:
-        type: exec
-        command: kitty --class dusky_appearances.sh
-          --hold sh -c "$HOME/user_scripts/hypr/dusky_appearances.sh"
-        terminal: false
-    - type: button
-      properties:
-        title: Animation Presets
-        description: Select Hyprland window animation style
-        icon: media-playlist-shuffle-symbolic
-        button_text: "Select"
-      on_press:
-        type: exec
-        command: rofi -show animations -modi "animations:$HOME/user_scripts/rofi/hypr_anim.sh"
-        terminal: false
-  - type: section
-    properties:
-      title: Shaders
-      icon: ''
-      description: ''
-    items:
-    - type: button
-      properties:
-        title: Shaders
-        description: Screen effects menu
-        icon: applications-graphics-symbolic
-        button_text: "Open"
-      on_press:
-        type: exec
-        command: $HOME/user_scripts/rofi/shader_menu.sh
-        terminal: false
+      layout:
+        - type: section
+          properties:
+            title: Hyprland Appearance
+          items:
+            - type: button
+              properties:
+                title: Dusky Appearance TUI
+                description: Configure borders, gaps, colors
+                icon: preferences-desktop-display-symbolic
+                button_text: "Open"
+              on_press:
+                type: exec
+                command: kitty --class dusky_appearances.sh --hold sh -c "$HOME/user_scripts/hypr/dusky_appearances.sh"
+                terminal: false
+            - type: button
+              properties:
+                title: Animation Presets
+                description: Select Hyprland window animation style
+                icon: media-playlist-shuffle-symbolic
+                button_text: "Select"
+              on_press:
+                type: exec
+                command: rofi -show animations -modi "animations:$HOME/user_scripts/rofi/hypr_anim.sh"
+                terminal: false
+            - type: button
+              properties:
+                title: Shaders
+                description: Screen effects menu
+                icon: applications-graphics-symbolic
+                button_text: "Open"
+              on_press:
+                type: exec
+                command: $HOME/user_scripts/rofi/shader_menu.sh
+                terminal: false
 
 - id: components
   title: Components
