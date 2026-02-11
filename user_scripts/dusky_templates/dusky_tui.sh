@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# Dusky TUI Engine - Master v3.7.1
+# Dusky TUI Engine - Master v3.8.0
 # -----------------------------------------------------------------------------
 # Target: Arch Linux / Hyprland / UWSM / Wayland
 #
-# v3.7.0 CHANGELOG:
-#   - PERF: Replaced O(n) ANSI stripping with O(1) Bash extglob.
-#   - REFACTOR: Unified Main and Detail view rendering engines.
-#   - FIX: Robust Sed escaping for regex characters.
-#   - SAFETY: Added `shopt -s extglob` for pattern matching safety.
-#   - RETAINED: Original robust mouse handling and input router.
+# v3.8.0 CHANGELOG:
+#   - FIX: Replaced loop-based strip_ansi with true O(1) Bash extglob expansion.
+#   - FIX: Added Writability check for config file.
+#   - FIX: Added CLR_EOL to main box borders to prevent resize artifacts.
+#   - FEAT: Added 'Back' action (Shift+Tab) to Detail View.
+#   - FEAT: Added 'Reverse Action' (Decrease Value).
+#           Mapped to: Backspace, Alt+Enter (Since Shift+Enter == Enter in TTY).
+#   - OPTIM: Simplified integer base-10 coercion logic.
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
@@ -22,7 +24,7 @@ shopt -s extglob
 # POINT THIS TO YOUR REAL CONFIG FILE
 declare -r CONFIG_FILE="${HOME}/.config/hypr/change_me.conf"
 declare -r APP_TITLE="Input Config Editor"
-declare -r APP_VERSION="v3.7.1 (Refined)"
+declare -r APP_VERSION="v3.8.0 (Hardened)"
 
 # Dimensions & Layout
 declare -ri MAX_DISPLAY_ROWS=14
@@ -96,9 +98,6 @@ declare -r CURSOR_SHOW=$'\033[?25h'
 declare -r MOUSE_ON=$'\033[?1000h\033[?1002h\033[?1006h'
 declare -r MOUSE_OFF=$'\033[?1000l\033[?1002l\033[?1006l'
 
-# ANSI stripping regex pattern
-declare -r _ESC=$'\033'
-
 declare -r ESC_READ_TIMEOUT=0.05
 declare -r UNSET_MARKER='«unset»'
 
@@ -115,6 +114,10 @@ declare -i CURRENT_VIEW=0      # 0=Main List, 1=Detail/Sub-Page
 declare CURRENT_MENU_ID=""     # ID of the currently open menu
 declare -i PARENT_ROW=0        # Saved row to return to
 declare -i PARENT_SCROLL=0     # Saved scroll to return to
+
+# Scroll State Globals (Explicitly declared)
+declare -i _vis_start=0
+declare -i _vis_end=0
 
 # --- Data Structures ---
 declare -A ITEM_MAP=()
@@ -148,46 +151,20 @@ trap 'exit 143' TERM
 
 # --- String Helpers ---
 
-# Strips ANSI escape sequences from a string using Bash extglob (High Performance).
-# Sets REPLY to the stripped string.
+# Optimized O(1) ANSI stripping using Bash extglob
 strip_ansi() {
-    local s="$1"
-    # Remove CSI sequences: ESC [ ... <final byte>
-    # Remove OSC sequences: ESC ] ... (ST or BEL)
-    while [[ "$s" == *$'\033'* ]]; do
-        local prefix="${s%%$'\033'*}"
-        local rest="${s#"$prefix"}"
-        rest="${rest:1}" # skip ESC
-        if [[ "$rest" == '['* ]]; then
-            # CSI: skip until final byte [A-Za-z~]
-            rest="${rest:1}"
-            while [[ -n "$rest" && ! "$rest" == [A-Za-z~]* ]]; do
-                rest="${rest:1}"
-            done
-            [[ -n "$rest" ]] && rest="${rest:1}"
-        elif [[ "$rest" == ']'* ]]; then
-            # OSC: skip until ST (\033\\) or BEL (\007)
-            rest="${rest:1}"
-            while [[ -n "$rest" && "$rest" != $'\033\\'* && "$rest" != $'\007'* ]]; do
-                rest="${rest:1}"
-            done
-            if [[ "$rest" == $'\033\\'* ]]; then
-                rest="${rest:2}"
-            elif [[ "$rest" == $'\007'* ]]; then
-                rest="${rest:1}"
-            fi
-        else
-            # Two-byte escape fallback
-            [[ -n "$rest" ]] && rest="${rest:1}"
-        fi
-        s="${prefix}${rest}"
-    done
-    REPLY="$s"
+    local v="$1"
+    # Strip CSI sequences (ESC [ ... m/K/H etc)
+    v="${v//$'\033'\[*([0-9;?])@([a-zA-Z])/}"
+    # Strip OSC sequences (ESC ] ... BEL/ST)
+    v="${v//$'\033'\]*($'\007'|$'\033\\'')}"
+    REPLY="$v"
 }
 
 escape_sed_replacement() {
     local _esc_input=$1
     local -n _esc_out_ref=$2
+    # CRITICAL: Must escape '|' because it is our delimiter
     _esc_input=${_esc_input//\\/\\\\}
     _esc_input=${_esc_input//|/\\|}
     _esc_input=${_esc_input//&/\\&}
@@ -198,6 +175,7 @@ escape_sed_replacement() {
 escape_sed_pattern() {
     local _esc_input=$1
     local -n _esc_out_ref=$2
+    # CRITICAL: Do NOT escape parens '(' ')'. In BRE they are literals.
     _esc_input=${_esc_input//\\/\\\\}
     _esc_input=${_esc_input//|/\\|}
     _esc_input=${_esc_input//./\\.}
@@ -260,7 +238,7 @@ populate_config_cache() {
         if [[ -z ${CONFIG_CACHE["${key_name}|"]:-} ]]; then
             CONFIG_CACHE["${key_name}|"]=$value_part
         fi
-    done < <(LC_NUMERIC=C awk '
+    done < <(LC_ALL=C awk '
         BEGIN { depth = 0 }
         /^[[:space:]]*#/ { next }
         {
@@ -296,7 +274,7 @@ populate_config_cache() {
 
 find_key_line_in_block() {
     local block_name=$1 key_name=$2 file=$3
-    LC_NUMERIC=C awk -v target_block="$block_name" -v target_key="$key_name" '
+    LC_ALL=C awk -v target_block="$block_name" -v target_key="$key_name" '
     BEGIN { depth = 0; in_target = 0; target_depth = 0; found = 0 }
     {
         clean = $0
@@ -346,13 +324,13 @@ write_value_to_file() {
         while IFS= read -r target_line; do
             [[ ! "$target_line" =~ ^[0-9]+$ ]] && continue
             (( target_line == 0 )) && continue
-            sed --follow-symlinks -i "${target_line}s|^\([[:space:]]*${safe_sed_key}[[:space:]]*=[[:space:]]*\).*|\1${safe_val}|" "$CONFIG_FILE"
+            LC_ALL=C sed --follow-symlinks -i "${target_line}s|^\([[:space:]]*${safe_sed_key}[[:space:]]*=[[:space:]]*\).*|\1${safe_val}|" "$CONFIG_FILE"
         done <<< "$target_output"
     else
         if [[ -z "${CONFIG_CACHE["$key|"]:-}" ]]; then
             return 1
         fi
-        sed --follow-symlinks -i "s|^\([[:space:]]*${safe_sed_key}[[:space:]]*=[[:space:]]*\).*|\1${safe_val}|" "$CONFIG_FILE"
+        LC_ALL=C sed --follow-symlinks -i "s|^\([[:space:]]*${safe_sed_key}[[:space:]]*=[[:space:]]*\).*|\1${safe_val}|" "$CONFIG_FILE"
     fi
 
     CONFIG_CACHE["$key|$block"]=$new_val
@@ -413,25 +391,25 @@ modify_value() {
         int)
             if [[ ! "$current" =~ ^-?[0-9]+$ ]]; then current=${min:-0}; fi
 
-            # Force Base-10 on the number (fixes 008/009 crash)
-            local clean_val=${current#-}    # Remove negative sign if present
-            clean_val=$(( 10#$clean_val ))  
-            
-            # Re-apply negative if original had it
+            # Hardened Base-10 coercion (Fixes 008/009 octal crash)
+            local -i int_val
             if [[ "$current" == -* ]]; then
-                clean_val=$(( clean_val * -1 )) 
+                int_val=$(( -1 * 10#${current#-} ))
+            else
+                int_val=$(( 10#$current ))
             fi
 
-            local -i int_step=${step:-1} int_val=$clean_val
+            local -i int_step=${step:-1}
             int_val=$(( int_val + direction * int_step ))
             
+            # Simple, safe clamping without ternary operators
             if [[ -n "$min" ]] && (( int_val < min )); then int_val=$min; fi
             if [[ -n "$max" ]] && (( int_val > max )); then int_val=$max; fi
             new_val=$int_val
             ;;
         float)
             if [[ ! "$current" =~ ^-?[0-9]*\.?[0-9]+$ ]]; then current=${min:-0.0}; fi
-            new_val=$(LC_NUMERIC=C awk -v c="$current" -v dir="$direction" -v s="${step:-0.1}" \
+            new_val=$(LC_ALL=C awk -v c="$current" -v dir="$direction" -v s="${step:-0.1}" \
                           -v mn="$min" -v mx="$max" 'BEGIN {
                 val = c + (dir * s)
                 if (mn != "" && val < mn) val = mn
@@ -604,7 +582,7 @@ draw_main_view() {
     local -i _vis_start _vis_end
 
     buf+="${CURSOR_HOME}"
-    buf+="${C_MAGENTA}┌${H_LINE}┐${C_RESET}"$'\n'
+    buf+="${C_MAGENTA}┌${H_LINE}┐${C_RESET}${CLR_EOL}"$'\n'
 
     strip_ansi "$APP_TITLE"; local -i t_len=${#REPLY}
     strip_ansi "$APP_VERSION"; local -i v_len=${#REPLY}
@@ -615,7 +593,7 @@ draw_main_view() {
     printf -v pad_buf '%*s' "$left_pad" ''
     buf+="${C_MAGENTA}│${pad_buf}${C_WHITE}${APP_TITLE} ${C_CYAN}${APP_VERSION}${C_MAGENTA}"
     printf -v pad_buf '%*s' "$right_pad" ''
-    buf+="${pad_buf}│${C_RESET}"$'\n'
+    buf+="${pad_buf}│${C_RESET}${CLR_EOL}"$'\n'
 
     local tab_line="${C_MAGENTA}│ "
     TAB_ZONES=()
@@ -642,8 +620,8 @@ draw_main_view() {
     fi
     tab_line+="${C_MAGENTA}│${C_RESET}"
 
-    buf+="${tab_line}"$'\n'
-    buf+="${C_MAGENTA}└${H_LINE}┘${C_RESET}"$'\n'
+    buf+="${tab_line}${CLR_EOL}"$'\n'
+    buf+="${C_MAGENTA}└${H_LINE}┘${C_RESET}${CLR_EOL}"$'\n'
 
     # Items
     local items_var="TAB_ITEMS_${CURRENT_TAB}"
@@ -655,7 +633,7 @@ draw_main_view() {
     render_item_list buf _draw_items_ref "${CURRENT_TAB}" "$_vis_start" "$_vis_end"
     render_scroll_indicator buf "below" "$count" "$_vis_end"
 
-    buf+=$'\n'"${C_CYAN} [Tab] Category  [r] Reset  [←/→ h/l] Adjust  [Enter] Action  [q] Quit${C_RESET}"$'\n'
+    buf+=$'\n'"${C_CYAN} [Tab] Category  [r] Reset  [←/→ h/l] Adjust  [Enter] Action  [q] Quit${C_RESET}${CLR_EOL}"$'\n'
     buf+="${C_CYAN} File: ${C_WHITE}${CONFIG_FILE}${C_RESET}${CLR_EOL}${CLR_EOS}"
     printf '%s' "$buf"
 }
@@ -704,7 +682,7 @@ draw_detail_view() {
     render_item_list buf _detail_items_ref "${CURRENT_MENU_ID}" "$_vis_start" "$_vis_end"
     render_scroll_indicator buf "below" "$count" "$_vis_end"
 
-    buf+=$'\n'"${C_CYAN} [Esc] Back  [r] Reset  [←/→ h/l] Adjust  [Enter] Toggle  [q] Quit${C_RESET}${CLR_EOL}"$'\n'
+    buf+=$'\n'"${C_CYAN} [Esc/Sh+Tab] Back  [r] Reset  [←/→ h/l] Adjust  [Enter] Toggle  [q] Quit${C_RESET}${CLR_EOL}"$'\n'
     buf+="${C_CYAN} Submenu: ${C_WHITE}${CURRENT_MENU_ID}${C_RESET}${CLR_EOL}${CLR_EOS}"
     printf '%s' "$buf"
 }
@@ -920,6 +898,8 @@ handle_key_main() {
         $'\t')          switch_tab 1 ;;
         r|R)            reset_defaults ;;
         ''|$'\n')       check_drilldown || adjust 1 ;;
+        # Reverse Action (Backspace or Alt+Enter since Shift+Enter is same as Enter in TTY)
+        $'\x7f'|$'\x08'|$'\e\n') adjust -1 ;;
         q|Q|$'\x03')    exit 0 ;;
     esac
 }
@@ -935,13 +915,12 @@ handle_key_detail() {
         '[6~')               navigate_page 1; return ;;
         '[H'|'[1~')          navigate_end 0; return ;;
         '[F'|'[4~')          navigate_end 1; return ;;
+        '[Z')                go_back; return ;;
         '['*'<'*[Mm])        handle_mouse "$key"; return ;;
     esac
 
     case "$key" in
-        ESC)
-            go_back
-            ;;
+        ESC)            go_back ;;
         k|K)            navigate -1 ;;
         j|J)            navigate 1 ;;
         l|L)            adjust 1 ;;
@@ -950,6 +929,8 @@ handle_key_detail() {
         G)              navigate_end 1 ;;
         r|R)            reset_defaults ;;
         ''|$'\n')       adjust 1 ;;
+        # Reverse Action (Backspace or Alt+Enter since Shift+Enter is same as Enter in TTY)
+        $'\x7f'|$'\x08'|$'\e\n') adjust -1 ;;
         q|Q|$'\x03')    exit 0 ;;
     esac
 }
@@ -961,6 +942,10 @@ handle_input_router() {
     if [[ "$key" == $'\x1b' ]]; then
         if read_escape_seq escape_seq; then
             key="$escape_seq"
+            # Logic for Alt+Enter detection (ESC followed by empty/newline)
+            if [[ "$key" == "" || "$key" == $'\n' ]]; then
+                key=$'\e\n'
+            fi
         else
             key="ESC"
         fi
@@ -975,7 +960,8 @@ handle_input_router() {
 main() {
     if (( BASH_VERSINFO[0] < 5 )); then log_err "Bash 5.0+ required"; exit 1; fi
     if [[ ! -t 0 ]]; then log_err "TTY required"; exit 1; fi
-    if [[ ! -f "$CONFIG_FILE" ]]; then log_err "Config not found"; exit 1; fi
+    if [[ ! -f "$CONFIG_FILE" ]]; then log_err "Config not found: $CONFIG_FILE"; exit 1; fi
+    if [[ ! -w "$CONFIG_FILE" ]]; then log_err "Config not writable: $CONFIG_FILE"; exit 1; fi
 
     local _dep
     for _dep in awk sed; do
