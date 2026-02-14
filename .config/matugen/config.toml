@@ -151,6 +151,15 @@ mkdir -p $HOME/~/.config/vesktop/themes/;
 ln -nfs $HOME/.config/matugen/generated/midnight-discord.css $HOME/.config/vesktop/themes/midnight-discord.css
 '''
 
+[templates.beeper]
+input_path  = '~/.config/matugen/templates/beeper.css'
+output_path = '~/.config/matugen/generated/beeper.css'
+post_hook   = '''
+if command -v beeper &> /dev/null; then
+    ln -nfs $HOME/.config/matugen/generated/beeper.css $HOME/.config/BeeperTexts/custom.css;
+fi
+'''
+
 # -----------------------------------------------------------------------------
 # Media & System Monitor
 # -----------------------------------------------------------------------------
