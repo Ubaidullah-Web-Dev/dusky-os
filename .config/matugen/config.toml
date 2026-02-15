@@ -157,6 +157,7 @@ output_path = '~/.config/matugen/generated/beeper.css'
 post_hook   = '''
 if command -v beeper &> /dev/null; then
     ln -nfs $HOME/.config/matugen/generated/beeper.css $HOME/.config/BeeperTexts/custom.css;
+    hyprctl dispatch sendshortcut "CTRL SHIFT ALT, R, class:^(BeeperTexts)$" || true;
 fi
 '''
 
