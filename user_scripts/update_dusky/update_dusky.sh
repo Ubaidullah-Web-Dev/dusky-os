@@ -1,29 +1,52 @@
 #!/usr/bin/env bash
 # ==============================================================================
-#  ARCH LINUX UPDATE ORCHESTRATOR (v5.9 - Hardened & Optimized + Custom Paths)
+#  DUSKY UPDATER (v7.0 — File-Based Backup/Restore)
 #  Description: Manages dotfile/system updates while preserving user tweaks.
+#               Uses file-based backup instead of git stash to prevent config
+#               corruption from conflict markers.
 #  Target:      Arch Linux / Hyprland / UWSM / Bash 5.0+
 #  Repo Type:   Git Bare Repository (--git-dir=~/dusky --work-tree=~)
 # ==============================================================================
 
 set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
+shopt -s extglob 2>/dev/null || true
 
 if ((BASH_VERSINFO[0] < 5)); then
     printf 'Error: Bash 5.0+ required (found %s)\n' "$BASH_VERSION" >&2
     exit 1
 fi
 
-# ------------------------------------------------------------------------------
-# CONFIGURATION
-# ------------------------------------------------------------------------------
+# ==============================================================================
+# CONSTANTS — Timeouts, limits, and tuning parameters
+# ==============================================================================
+declare -ri SUDO_KEEPALIVE_INTERVAL=55    # seconds between sudo refreshes (sudo timeout is typically 300s)
+declare -ri FETCH_TIMEOUT=60              # seconds before a single git fetch attempt is killed
+declare -ri FETCH_MAX_ATTEMPTS=5          # maximum number of fetch retries
+declare -ri FETCH_INITIAL_BACKOFF=2       # seconds to wait after first fetch failure (doubles each retry)
+declare -ri PROMPT_TIMEOUT_LONG=60        # seconds for major decision prompts
+declare -ri PROMPT_TIMEOUT_SHORT=30       # seconds for minor continue/abort prompts
+declare -ri STRIP_ANSI_MAX_ITER=100       # safety limit for strip_ansi regex loop (unused with extglob method)
+declare -ri LOG_RETENTION_DAYS=14         # auto-delete logs older than this
+declare -ri BACKUP_RETENTION_DAYS=14      # auto-delete backups older than this
+declare -ri DISK_MIN_FREE_MB=100          # minimum free disk space (MB) before aborting backup operations
+declare -r  VERSION="7.0"
+
+# ==============================================================================
+# CONFIGURATION — Core paths and repository settings
+# ==============================================================================
 declare -r DOTFILES_GIT_DIR="${HOME}/dusky"
 declare -r WORK_TREE="${HOME}"
 declare -r SCRIPT_DIR="${HOME}/user_scripts/arch_setup_scripts/scripts"
 declare -r LOG_BASE_DIR="${HOME}/Documents/logs"
-declare -r LOCK_FILE="/tmp/arch-orchestrator.lock"
+declare -r BACKUP_BASE_DIR="${HOME}/Documents/dusky_backups"
+declare -r LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/dusky-updater-$(id -u).lock"
 declare -r REPO_URL="https://github.com/dusklinux/dusky"
 declare -r BRANCH="main"
+
+# ==============================================================================
+# USER CONFIGURATION — Custom script paths and update sequence
+# ==============================================================================
 
 # ------------------------------------------------------------------------------
 # CUSTOM SCRIPT PATHS
@@ -55,124 +78,8 @@ declare -A CUSTOM_SCRIPT_PATHS=(
     ["update_checker.sh"]="user_scripts/update_dusky/update_checker/update_checker.sh"
 )
 
-# Centralized timestamp (Separate declaration for SC2155 compliance)
-declare RUN_TIMESTAMP
-RUN_TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-readonly RUN_TIMESTAMP
-
-# Resolve self path with fallbacks
-declare SELF_PATH
-SELF_PATH="$(realpath -- "$0" 2>/dev/null || readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")"
-readonly SELF_PATH
-
-# Binary validation (Separate declaration for SC2155 compliance)
-declare GIT_BIN BASH_BIN
-GIT_BIN="$(command -v git 2>/dev/null)" || GIT_BIN=""
-BASH_BIN="$(command -v bash 2>/dev/null)" || BASH_BIN=""
-
-if [[ -z "$GIT_BIN" || ! -x "$GIT_BIN" ]]; then
-    printf 'Error: git not found\n' >&2
-    exit 1
-fi
-if [[ -z "$BASH_BIN" || ! -x "$BASH_BIN" ]]; then
-    printf 'Error: bash not found\n' >&2
-    exit 1
-fi
-readonly GIT_BIN BASH_BIN
-
-# Runtime state
-declare SUDO_PID="" STASH_REF="" LOG_FILE="" ORIGINAL_EXIT_CODE=0
-declare -a GIT_CMD=() FAILED_SCRIPTS=()
-
 # ------------------------------------------------------------------------------
-# DEPENDENCY CHECK
-# ------------------------------------------------------------------------------
-check_dependencies() {
-    local -a missing=()
-    local cmd
-
-    for cmd in flock sha256sum comm timeout; do
-        command -v "$cmd" &>/dev/null || missing+=("$cmd")
-    done
-
-    if ((${#missing[@]} > 0)); then
-        printf 'Error: Missing required commands: %s\n' "${missing[*]}" >&2
-        printf 'Install with: sudo pacman -S coreutils util-linux\n' >&2
-        exit 1
-    fi
-}
-
-# ------------------------------------------------------------------------------
-# TERMINAL COLORS
-# ------------------------------------------------------------------------------
-if [[ -t 1 ]]; then
-    declare -r CLR_RED=$'\e[1;31m' CLR_GRN=$'\e[1;32m' CLR_YLW=$'\e[1;33m'
-    declare -r CLR_BLU=$'\e[1;34m' CLR_CYN=$'\e[1;36m' CLR_RST=$'\e[0m'
-else
-    declare -r CLR_RED="" CLR_GRN="" CLR_YLW="" CLR_BLU="" CLR_CYN="" CLR_RST=""
-fi
-
-# ------------------------------------------------------------------------------
-# LOGGING
-# ------------------------------------------------------------------------------
-setup_logging() {
-    if mkdir -p "$LOG_BASE_DIR" 2>/dev/null; then
-        LOG_FILE="${LOG_BASE_DIR}/dusky_update_${RUN_TIMESTAMP}.log"
-    else
-        LOG_FILE="/tmp/dusky_update_${RUN_TIMESTAMP}.log"
-    fi
-
-    if ! touch "$LOG_FILE" 2>/dev/null; then
-        LOG_FILE="/tmp/dusky_update_${RUN_TIMESTAMP}.log"
-        touch "$LOG_FILE" || { printf 'Error: Cannot create log\n' >&2; exit 1; }
-    fi
-
-    {
-        printf '================================================================================\n'
-        printf ' DUSKY UPDATE LOG - %s\n' "$RUN_TIMESTAMP"
-        printf ' Kernel: %s | User: %s\n' "$(uname -r)" "${USER:-$(id -un)}"
-        printf '================================================================================\n'
-    } >> "$LOG_FILE"
-}
-
-# Strip ANSI escape sequences for log file (Optimized pattern)
-strip_ansi() {
-    local text="$1" i=0
-    local -r ansi_pattern=$'\e\[[0-9;]*[a-zA-Z]'
-    while [[ "$text" =~ $ansi_pattern ]] && ((++i < 100)); do
-        text="${text//"${BASH_REMATCH[0]}"/}"
-    done
-    printf '%s' "$text"
-}
-
-log() {
-    (($# >= 2)) || return 1
-    local -r level="$1" msg="$2"
-    local timestamp prefix=""
-    timestamp=$(date +%H:%M:%S)
-
-    case "$level" in
-        INFO)    prefix="${CLR_BLU}[INFO ]${CLR_RST}" ;;
-        OK)      prefix="${CLR_GRN}[OK   ]${CLR_RST}" ;;
-        WARN)    prefix="${CLR_YLW}[WARN ]${CLR_RST}" ;;
-        ERROR)   prefix="${CLR_RED}[ERROR]${CLR_RST}" ;;
-        SECTION) prefix=$'\n'"${CLR_CYN}═══════${CLR_RST}" ;;
-        RAW)     prefix="" ;;
-        *)       prefix="[$level]" ;;
-    esac
-
-    if [[ "$level" == "RAW" ]]; then
-        printf '%s\n' "$msg"
-    else
-        printf '%s %s\n' "$prefix" "$msg"
-    fi
-
-    [[ -n "${LOG_FILE:-}" && -w "$LOG_FILE" ]] && \
-        printf '[%s] [%-5s] %s\n' "$timestamp" "$level" "$(strip_ansi "$msg")" >> "$LOG_FILE"
-}
-
-# ------------------------------------------------------------------------------
-# PLAYLIST (sub Scripts)
+# UPDATE SEQUENCE — Scripts to execute after sync
 # ------------------------------------------------------------------------------
 declare -ra UPDATE_SEQUENCE=(
 #    "U | 000_configure_uwsm_gpu.sh"
@@ -268,8 +175,6 @@ declare -ra UPDATE_SEQUENCE=(
 #    "S | 091_sddm_setup.sh --auto"
     "U | 092_vesktop_matugen.sh"
 
-
-
     "U | warp_toggle.sh --disconnect"
     "U | waypaper_config_reset.sh"
     "U | fix_theme_dir.sh"
@@ -278,9 +183,259 @@ declare -ra UPDATE_SEQUENCE=(
     "S | package_installation.sh"
 )
 
-# ------------------------------------------------------------------------------
-# CORE ENGINE
-# ------------------------------------------------------------------------------
+# ==============================================================================
+# END OF USER CONFIGURATION — Do not edit below unless you know what you're doing
+# ==============================================================================
+
+# ==============================================================================
+# RUNTIME STATE — Initialized before trap registration
+# ==============================================================================
+
+# Centralized timestamp
+declare RUN_TIMESTAMP
+RUN_TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+readonly RUN_TIMESTAMP
+
+# Resolve self path with fallbacks
+declare SELF_PATH
+SELF_PATH="$(realpath -- "$0" 2>/dev/null || readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")"
+readonly SELF_PATH
+
+# Binary validation
+declare GIT_BIN BASH_BIN
+GIT_BIN="$(command -v git 2>/dev/null)" || GIT_BIN=""
+BASH_BIN="$(command -v bash 2>/dev/null)" || BASH_BIN=""
+
+if [[ -z "$GIT_BIN" || ! -x "$GIT_BIN" ]]; then
+    printf 'Error: git not found\n' >&2
+    exit 1
+fi
+if [[ -z "$BASH_BIN" || ! -x "$BASH_BIN" ]]; then
+    printf 'Error: bash not found\n' >&2
+    exit 1
+fi
+readonly GIT_BIN BASH_BIN
+
+# Cache username (avoid forking id -un when $USER is unset)
+declare CACHED_USER
+CACHED_USER="${USER:-$(id -un)}"
+readonly CACHED_USER
+
+# Git command array — initialized here so it's available globally
+declare -a GIT_CMD=("$GIT_BIN" --git-dir="$DOTFILES_GIT_DIR" --work-tree="$WORK_TREE")
+
+# Mutable runtime state — all declared before trap so cleanup() is safe under set -u
+declare SUDO_PID="" LOG_FILE="" ORIGINAL_EXIT_CODE=0
+declare USER_MODS_BACKUP="" PRE_UPDATE_HEAD=""
+declare -a FAILED_SCRIPTS=() MODIFIED_FILES=()
+
+# CLI flags (defaults — overridden by parse_args)
+declare OPT_DRY_RUN=false
+declare OPT_SKIP_SYNC=false
+declare OPT_SYNC_ONLY=false
+declare OPT_FORCE=false
+declare OPT_STOP_ON_FAIL=false
+declare OPT_POST_SELF_UPDATE=false
+declare OPT_NEEDS_SUDO=false
+
+# ==============================================================================
+# ARGUMENT PARSING — Before anything else so --help exits immediately
+# ==============================================================================
+show_help() {
+    cat <<'HELPEOF'
+Dusky Updater — Dotfile sync and setup tool for Arch Linux / Hyprland
+
+Usage: dusky_updater.sh [OPTIONS]
+
+Options:
+  --help, -h          Show this help message and exit
+  --version           Show version and exit
+  --dry-run           Preview what would happen without making changes
+  --skip-sync         Skip git sync, only run the script sequence
+  --sync-only         Pull updates but don't run scripts
+  --force             Skip the confirmation prompt
+  --stop-on-fail      Abort the script sequence on first failure
+  --list              List all active scripts in the update sequence
+
+The update sequence and custom script paths are configured inside this
+script in the USER CONFIGURATION section.
+
+Logs are saved to: ~/Documents/logs/
+Backups are saved to: ~/Documents/dusky_backups/
+HELPEOF
+}
+
+show_version() {
+    printf 'Dusky Updater v%s\n' "$VERSION"
+}
+
+list_active_scripts() {
+    printf 'Active scripts in update sequence:\n\n'
+    local entry mode script_part idx=0
+    local -a parts
+    for entry in "${UPDATE_SEQUENCE[@]}"; do
+        [[ "$entry" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${entry//[[:space:]]/}" ]] && continue
+        mode="${entry%%|*}"
+        mode="${mode#"${mode%%[![:space:]]*}"}"
+        mode="${mode%"${mode##*[![:space:]]}"}"
+        script_part="${entry#*|}"
+        script_part="${script_part#"${script_part%%[![:space:]]*}"}"
+        read -ra parts <<< "$script_part"
+        ((idx++)) || true
+        printf '  %3d) [%s] %s\n' "$idx" "$mode" "${parts[*]}"
+    done
+    printf '\nTotal: %d active script(s)\n' "$idx"
+}
+
+parse_args() {
+    while (($# > 0)); do
+        case "$1" in
+            --help|-h)
+                show_help
+                exit 0
+                ;;
+            --version)
+                show_version
+                exit 0
+                ;;
+            --dry-run)
+                OPT_DRY_RUN=true
+                ;;
+            --skip-sync)
+                OPT_SKIP_SYNC=true
+                ;;
+            --sync-only)
+                OPT_SYNC_ONLY=true
+                ;;
+            --force)
+                OPT_FORCE=true
+                ;;
+            --stop-on-fail)
+                OPT_STOP_ON_FAIL=true
+                ;;
+            --list)
+                list_active_scripts
+                exit 0
+                ;;
+            --post-self-update)
+                # Internal flag: skip sync after self-update re-exec
+                OPT_POST_SELF_UPDATE=true
+                ;;
+            -*)
+                printf 'Unknown option: %s\n' "$1" >&2
+                printf 'Try --help for usage information.\n' >&2
+                exit 1
+                ;;
+            *)
+                printf 'Unexpected argument: %s\n' "$1" >&2
+                printf 'Try --help for usage information.\n' >&2
+                exit 1
+                ;;
+        esac
+        shift
+    done
+
+    # Mutually exclusive flags
+    if [[ "$OPT_SKIP_SYNC" == true && "$OPT_SYNC_ONLY" == true ]]; then
+        printf 'Error: --skip-sync and --sync-only are mutually exclusive\n' >&2
+        exit 1
+    fi
+}
+
+# Parse arguments immediately
+parse_args "$@"
+
+# ==============================================================================
+# DEPENDENCY CHECK
+# ==============================================================================
+check_dependencies() {
+    local -a missing=()
+    local cmd
+
+    for cmd in flock sha256sum comm timeout; do
+        command -v "$cmd" &>/dev/null || missing+=("$cmd")
+    done
+
+    if ((${#missing[@]} > 0)); then
+        printf 'Error: Missing required commands: %s\n' "${missing[*]}" >&2
+        printf 'Install with: sudo pacman -S coreutils util-linux\n' >&2
+        exit 1
+    fi
+}
+
+# ==============================================================================
+# TERMINAL COLORS
+# ==============================================================================
+if [[ -t 1 ]]; then
+    declare -r CLR_RED=$'\e[1;31m' CLR_GRN=$'\e[1;32m' CLR_YLW=$'\e[1;33m'
+    declare -r CLR_BLU=$'\e[1;34m' CLR_CYN=$'\e[1;36m' CLR_RST=$'\e[0m'
+else
+    declare -r CLR_RED="" CLR_GRN="" CLR_YLW="" CLR_BLU="" CLR_CYN="" CLR_RST=""
+fi
+
+# ==============================================================================
+# LOGGING
+# ==============================================================================
+setup_logging() {
+    if mkdir -p "$LOG_BASE_DIR" 2>/dev/null; then
+        LOG_FILE="${LOG_BASE_DIR}/dusky_update_${RUN_TIMESTAMP}.log"
+    else
+        LOG_FILE="/tmp/dusky_update_${RUN_TIMESTAMP}.log"
+    fi
+
+    if ! touch "$LOG_FILE" 2>/dev/null; then
+        LOG_FILE="/tmp/dusky_update_${RUN_TIMESTAMP}.log"
+        touch "$LOG_FILE" || { printf 'Error: Cannot create log\n' >&2; exit 1; }
+    fi
+
+    {
+        printf '================================================================================\n'
+        printf ' DUSKY UPDATE LOG — %s\n' "$RUN_TIMESTAMP"
+        printf ' Kernel: %s | User: %s\n' "$(uname -r)" "$CACHED_USER"
+        printf '================================================================================\n'
+    } >> "$LOG_FILE"
+}
+
+# Strip ANSI/CSI escape sequences for log file
+# Uses extglob for efficient single-pass removal
+strip_ansi() {
+    REPLY="${1//$'\033'\[*([0-9;:?<=>])@([@A-Z\[\\\]^_\`a-z\{|\}~])/}"
+}
+
+log() {
+    (($# >= 2)) || return 1
+    local -r level="$1" msg="$2"
+    local timestamp prefix=""
+
+    # Builtin timestamp — no subprocess fork
+    printf -v timestamp '%(%H:%M:%S)T' -1
+
+    case "$level" in
+        INFO)    prefix="${CLR_BLU}[INFO ]${CLR_RST}" ;;
+        OK)      prefix="${CLR_GRN}[OK   ]${CLR_RST}" ;;
+        WARN)    prefix="${CLR_YLW}[WARN ]${CLR_RST}" ;;
+        ERROR)   prefix="${CLR_RED}[ERROR]${CLR_RST}" ;;
+        SECTION) prefix=$'\n'"${CLR_CYN}═══════${CLR_RST}" ;;
+        RAW)     prefix="" ;;
+        *)       prefix="[$level]" ;;
+    esac
+
+    if [[ "$level" == "RAW" ]]; then
+        printf '%s\n' "$msg"
+    else
+        printf '%s %s\n' "$prefix" "$msg"
+    fi
+
+    if [[ -n "${LOG_FILE:-}" && -w "$LOG_FILE" ]]; then
+        strip_ansi "$msg"
+        printf '[%s] [%-5s] %s\n' "$timestamp" "$level" "$REPLY" >> "$LOG_FILE"
+    fi
+}
+
+# ==============================================================================
+# UTILITY FUNCTIONS
+# ==============================================================================
 trim() {
     local s="$1"
     s="${s#"${s%%[![:space:]]*}"}"
@@ -288,8 +443,84 @@ trim() {
     printf '%s' "$s"
 }
 
+# Check available disk space (in MB) for a given path
+check_disk_space() {
+    local path="$1"
+    local available_mb
+    available_mb=$(df -BM --output=avail "$path" 2>/dev/null | tail -1 | tr -d ' M') || available_mb=0
+    if ((available_mb < DISK_MIN_FREE_MB)); then
+        log ERROR "Low disk space: ${available_mb}MB available at $path (need ${DISK_MIN_FREE_MB}MB)"
+        return 1
+    fi
+    return 0
+}
+
+# Prune old logs and backups
+auto_prune() {
+    # Prune old logs
+    if [[ -d "$LOG_BASE_DIR" ]]; then
+        find "$LOG_BASE_DIR" -name 'dusky_update_*.log' -mtime "+${LOG_RETENTION_DAYS}" -delete 2>/dev/null || true
+    fi
+
+    # Prune old backups (only dusky-created directories by prefix)
+    if [[ -d "$BACKUP_BASE_DIR" ]]; then
+        find "$BACKUP_BASE_DIR" -mindepth 1 -maxdepth 1 -type d \
+            \( -name 'pre_reset_*' \
+            -o -name 'user_mods_*' \
+            -o -name 'untracked_collisions_*' \
+            -o -name 'needs_merge_*' \
+            -o -name 'initial_conflicts_*' \) \
+            -mtime "+${BACKUP_RETENTION_DAYS}" \
+            -exec rm -rf {} + 2>/dev/null || true
+    fi
+}
+
+# Quick network reachability check (DNS resolution only — no ICMP which may be blocked)
+check_network() {
+    # Extract hostname from REPO_URL
+    local host
+    host="${REPO_URL#*://}"
+    host="${host%%/*}"
+    host="${host%%:*}"
+
+    if ! getent hosts "$host" &>/dev/null; then
+        log ERROR "Cannot resolve $host — check your network connection."
+        return 1
+    fi
+    return 0
+}
+
+# Scan UPDATE_SEQUENCE for active S-mode scripts
+scan_needs_sudo() {
+    local entry mode
+    for entry in "${UPDATE_SEQUENCE[@]}"; do
+        [[ "$entry" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${entry//[[:space:]]/}" ]] && continue
+        mode="${entry%%|*}"
+        mode="${mode#"${mode%%[![:space:]]*}"}"
+        mode="${mode%"${mode##*[![:space:]]}"}"
+        if [[ "$mode" == "S" ]]; then
+            OPT_NEEDS_SUDO=true
+            return 0
+        fi
+    done
+    OPT_NEEDS_SUDO=false
+    return 0
+}
+
+# Send desktop notification (best-effort, never fails the script)
+desktop_notify() {
+    local urgency="${1:-normal}" summary="$2" body="${3:-}"
+    if command -v notify-send &>/dev/null; then
+        timeout 3 notify-send --urgency="$urgency" --app-name="Dusky Updater" "$summary" "$body" 2>/dev/null || true
+    fi
+}
+
+# ==============================================================================
+# CLEANUP & SIGNAL HANDLING
+# ==============================================================================
 cleanup() {
-    # Capture exit code IMMEDIATELY - this is critical
+    # Capture exit code IMMEDIATELY
     ORIGINAL_EXIT_CODE=$?
 
     # Stop sudo keepalive
@@ -298,16 +529,24 @@ cleanup() {
         wait "$SUDO_PID" 2>/dev/null || true
     fi
 
-    # Restore stash if interrupted
-    if [[ -n "${STASH_REF:-}" ]] && ((${#GIT_CMD[@]} > 0)); then
-        printf '\n'
-        log WARN "Interrupted with stashed changes!"
-        if "${GIT_CMD[@]}" stash pop --quiet 2>/dev/null; then
-            log OK "Your modifications restored."
-        else
-            log ERROR "Restore failed. Recover with:"
-            printf '    git --git-dir="%s" --work-tree="%s" stash pop\n' "$DOTFILES_GIT_DIR" "$WORK_TREE"
+    # Inform user about backed-up modifications (if any)
+    if [[ -n "${USER_MODS_BACKUP:-}" && -d "${USER_MODS_BACKUP:-}" ]]; then
+        local backup_file_count
+        backup_file_count=$(find "$USER_MODS_BACKUP" -type f 2>/dev/null | wc -l) || backup_file_count=0
+        if ((backup_file_count > 0)); then
+            printf '\n'
+            log WARN "Update was interrupted. Your modified files are safely backed up at:"
+            printf '    %s\n' "$USER_MODS_BACKUP"
+            log INFO "You can restore them manually by copying files from that directory."
         fi
+    fi
+
+    # Clean up any partial atomic writes from interrupted restore
+    if [[ -v MODIFIED_FILES ]] && ((${#MODIFIED_FILES[@]} > 0)); then
+        local tmp_file
+        for tmp_file in "${MODIFIED_FILES[@]}"; do
+            rm -f "${WORK_TREE}/${tmp_file}.dusky_tmp" 2>/dev/null || true
+        done
     fi
 
     # Release lock (close fd first, then remove file)
@@ -315,63 +554,105 @@ cleanup() {
     rm -f "$LOCK_FILE" 2>/dev/null || true
 
     printf '\n'
-    if ((${#FAILED_SCRIPTS[@]} > 0)); then
+    if [[ -v FAILED_SCRIPTS ]] && ((${#FAILED_SCRIPTS[@]} > 0)); then
         log WARN "Completed with ${#FAILED_SCRIPTS[@]} failure(s)"
         local script
         for script in "${FAILED_SCRIPTS[@]}"; do
             printf '    • %s\n' "$script"
         done
+        desktop_notify critical "Dusky Update" "${#FAILED_SCRIPTS[@]} script(s) failed"
     elif [[ -n "${LOG_FILE:-}" ]]; then
         log OK "Complete. Log: $LOG_FILE"
+        if ((ORIGINAL_EXIT_CODE == 0)); then
+            desktop_notify normal "Dusky Update" "Update completed successfully"
+        fi
     fi
 
-    # Preserve original exit code
     exit "$ORIGINAL_EXIT_CODE"
 }
 
 trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'log WARN "Interrupted by user (SIGINT)"; exit 130' INT
+trap 'log WARN "Terminated (SIGTERM)"; exit 143' TERM
+trap 'log WARN "Hangup signal received (SIGHUP)"; exit 129' HUP
 
+# ==============================================================================
+# SUDO MANAGEMENT
+# ==============================================================================
 init_sudo() {
     log INFO "Acquiring sudo privileges..."
     sudo -v || { log ERROR "Sudo auth failed."; exit 1; }
 
+    # Refresh sudo credentials periodically in background
+    # sudo timeout is typically 300s; refreshing every 55s is well within that window
     ( trap 'exit 0' TERM
-      while kill -0 $$ 2>/dev/null; do sleep 55; sudo -n true 2>/dev/null || exit 0; done
+      while kill -0 $$ 2>/dev/null; do
+          sleep "$SUDO_KEEPALIVE_INTERVAL"
+          sudo -n true 2>/dev/null || exit 0
+      done
     ) &
     SUDO_PID=$!
     disown "$SUDO_PID" 2>/dev/null || true
 }
 
-# Clean up any broken git state
+# ==============================================================================
+# GIT HELPERS
+# ==============================================================================
+
+# Clean up any broken git state from previous interrupted runs
 cleanup_git_state() {
     local rebase_dir="${DOTFILES_GIT_DIR}/rebase-merge"
     local rebase_apply="${DOTFILES_GIT_DIR}/rebase-apply"
 
-    # Abort any in-progress rebase
     if [[ -d "$rebase_dir" || -d "$rebase_apply" ]]; then
         log WARN "Detected stale rebase. Aborting..."
         "${GIT_CMD[@]}" rebase --abort >> "$LOG_FILE" 2>&1 || true
         rm -rf "$rebase_dir" "$rebase_apply" 2>/dev/null || true
     fi
 
-    # Clean any conflict markers from working tree
     if "${GIT_CMD[@]}" diff --check 2>&1 | grep -q "leftover conflict marker"; then
         log WARN "Conflict markers detected. Cleaning working tree..."
         "${GIT_CMD[@]}" checkout HEAD -- . >> "$LOG_FILE" 2>&1 || true
     fi
 }
 
-# ------------------------------------------------------------------------------
+# Show preview of upstream changes
+show_update_preview() {
+    local local_head="$1" remote_head="$2"
+    local commit_count changed_file_count
+
+    commit_count=$("${GIT_CMD[@]}" rev-list --count "${local_head}..${remote_head}" 2>/dev/null) || commit_count="?"
+    changed_file_count=$("${GIT_CMD[@]}" diff --name-only "${local_head}..${remote_head}" 2>/dev/null | wc -l) || changed_file_count="?"
+
+    printf '\n'
+    log INFO "Upstream changes:"
+    printf '    Commits behind:  %s\n' "$commit_count"
+    printf '    Files changed:   %s\n' "$changed_file_count"
+
+    # Show up to 10 recent commit subjects
+    if [[ "$commit_count" != "?" ]] && ((commit_count > 0)); then
+        printf '\n    Recent commits:\n'
+        "${GIT_CMD[@]}" log --oneline --no-decorate -10 "${local_head}..${remote_head}" 2>/dev/null | while IFS= read -r line; do
+            printf '      %s\n' "$line"
+        done || true
+        if ((commit_count > 10)); then
+            printf '      ... and %d more\n' "$((commit_count - 10))"
+        fi
+    fi
+    printf '\n'
+}
+
+# ==============================================================================
 # BACKUP TRACKED FILES (Pre-Reset Safety Net)
-# ------------------------------------------------------------------------------
+# ==============================================================================
 backup_tracked_files() {
-    local backup_dir="${HOME}/Documents/dusky_pre_reset_backup_${RUN_TIMESTAMP}"
+    local backup_dir="${BACKUP_BASE_DIR}/pre_reset_${RUN_TIMESTAMP}"
     local tracked_files file_count=0
-    local src dest file  # Declare outside loop
+    local src dest coll_file
 
     log INFO "Backing up tracked files before reset..."
+
+    check_disk_space "$HOME" || return 1
 
     tracked_files=$("${GIT_CMD[@]}" ls-files 2>/dev/null) || {
         log WARN "Could not get tracked file list. Skipping backup."
@@ -388,16 +669,16 @@ backup_tracked_files() {
         return 1
     fi
 
-    while IFS= read -r file; do
-        [[ -z "$file" ]] && continue
+    while IFS= read -r coll_file; do
+        [[ -z "$coll_file" ]] && continue
 
-        src="${WORK_TREE}/${file}"
-        dest="${backup_dir}/${file}"
+        src="${WORK_TREE}/${coll_file}"
+        dest="${backup_dir}/${coll_file}"
 
         if [[ -e "$src" ]]; then
             mkdir -p "$(dirname "$dest")" 2>/dev/null || true
             if cp -a -- "$src" "$dest" 2>/dev/null; then
-                ((file_count++))
+                ((file_count++)) || true
             fi
         fi
     done <<< "$tracked_files"
@@ -412,71 +693,330 @@ backup_tracked_files() {
     return 0
 }
 
-pull_updates() {
-    log SECTION "Synchronizing Dotfiles Repository"
+# ==============================================================================
+# BACKUP USER MODIFICATIONS (File-Based — Replaces Git Stash)
+# ==============================================================================
+# Copies user-modified tracked files to a backup directory BEFORE reset --hard.
+# Sets USER_MODS_BACKUP on success. Returns 1 on failure (caller MUST abort).
+# Idempotent: safe to call multiple times (returns 0 if already done).
+backup_user_modifications() {
+    # Idempotency guard
+    if [[ -n "$USER_MODS_BACKUP" && -d "$USER_MODS_BACKUP" ]]; then
+        return 0
+    fi
 
-    if [[ ! -d "$DOTFILES_GIT_DIR" ]]; then
-        log ERROR "Bare repo not found: $DOTFILES_GIT_DIR"
+    if ((${#MODIFIED_FILES[@]} == 0)); then
+        return 0
+    fi
+
+    check_disk_space "$HOME" || return 1
+
+    local backup_dir="${BACKUP_BASE_DIR}/user_mods_${RUN_TIMESTAMP}"
+    local src dest mod_file
+    local file_count=0
+
+    if ! mkdir -p "$backup_dir"; then
+        log ERROR "Failed to create backup directory: $backup_dir"
         return 1
     fi
 
-    GIT_CMD=("$GIT_BIN" --git-dir="$DOTFILES_GIT_DIR" --work-tree="$WORK_TREE")
+    # Set immediately so cleanup() can report this directory if we crash midway
+    USER_MODS_BACKUP="$backup_dir"
+
+    for mod_file in "${MODIFIED_FILES[@]}"; do
+        [[ -z "$mod_file" ]] && continue
+
+        src="${WORK_TREE}/${mod_file}"
+
+        # User deleted a tracked file — nothing on disk to copy
+        if [[ ! -e "$src" ]]; then
+            continue
+        fi
+
+        dest="${backup_dir}/${mod_file}"
+
+        if ! mkdir -p "$(dirname "$dest")"; then
+            log ERROR "Failed to create directory for: $mod_file"
+            return 1
+        fi
+
+        if ! cp -a -- "$src" "$dest"; then
+            log ERROR "Failed to back up modified file: $mod_file"
+            return 1
+        fi
+
+        ((file_count++)) || true
+    done
+
+    if ((file_count > 0)); then
+        log OK "Backed up $file_count modified file(s) to: $backup_dir"
+    else
+        log INFO "No modified files needed backing up (all were deletions)."
+    fi
+
+    return 0
+}
+
+# ==============================================================================
+# RESTORE USER MODIFICATIONS (File-Based — Replaces Stash Pop)
+# ==============================================================================
+# After reset --hard, selectively restores user modifications:
+#   - Files upstream DIDN'T change: auto-restored via atomic write (rename)
+#   - Files upstream DID change: saved to merge directory for manual review
+restore_user_modifications() {
+    if [[ -z "${USER_MODS_BACKUP:-}" || ! -d "${USER_MODS_BACKUP:-}" ]]; then
+        return 0
+    fi
+
+    if ((${#MODIFIED_FILES[@]} == 0)); then
+        return 0
+    fi
+
+    log INFO "Restoring your modifications..."
+
+    # Determine which files upstream changed
+    local -A upstream_changed=()
+    local uc_file
+    local diff_failed=false
+
+    if [[ -n "${PRE_UPDATE_HEAD:-}" ]]; then
+        local current_head
+        current_head=$("${GIT_CMD[@]}" rev-parse HEAD 2>/dev/null) || current_head=""
+
+        if [[ -n "$current_head" && "$PRE_UPDATE_HEAD" != "$current_head" ]]; then
+            local diff_tmpfile
+            diff_tmpfile=$(mktemp 2>/dev/null) || diff_tmpfile=""
+
+            if [[ -n "$diff_tmpfile" ]]; then
+                if "${GIT_CMD[@]}" diff -z --name-only "$PRE_UPDATE_HEAD" HEAD -- >"$diff_tmpfile" 2>/dev/null; then
+                    while IFS= read -r -d '' uc_file; do
+                        [[ -n "$uc_file" ]] && upstream_changed["$uc_file"]=1
+                    done < "$diff_tmpfile"
+                else
+                    diff_failed=true
+                fi
+                rm -f "$diff_tmpfile" 2>/dev/null || true
+            else
+                diff_failed=true
+            fi
+        fi
+    else
+        diff_failed=true
+    fi
+
+    if [[ "$diff_failed" == true ]]; then
+        log WARN "Cannot determine upstream changes. All modified files will go to merge directory."
+        for uc_file in "${MODIFIED_FILES[@]}"; do
+            [[ -n "$uc_file" ]] && upstream_changed["$uc_file"]=1
+        done
+    fi
+
+    # Restore or redirect each file
+    local merge_dir=""
+    local restored_count=0 merge_count=0
+    local all_ok=true
+    local rest_file backup_src target tmp merge_dest
+
+    for rest_file in "${MODIFIED_FILES[@]}"; do
+        [[ -z "$rest_file" ]] && continue
+
+        backup_src="${USER_MODS_BACKUP}/${rest_file}"
+
+        if [[ ! -e "$backup_src" ]]; then
+            continue
+        fi
+
+        if [[ -v "upstream_changed[$rest_file]" ]]; then
+            # Upstream changed this file — save for manual merge
+            if [[ -z "$merge_dir" ]]; then
+                merge_dir="${BACKUP_BASE_DIR}/needs_merge_${RUN_TIMESTAMP}"
+                if ! mkdir -p "$merge_dir"; then
+                    log ERROR "Failed to create merge directory: $merge_dir"
+                    all_ok=false
+                    continue
+                fi
+            fi
+
+            merge_dest="${merge_dir}/${rest_file}"
+            if ! mkdir -p "$(dirname "$merge_dest")"; then
+                log ERROR "Failed to create directory for merge file: $rest_file"
+                all_ok=false
+                continue
+            fi
+
+            if cp -a -- "$backup_src" "$merge_dest" 2>/dev/null; then
+                ((merge_count++)) || true
+                log RAW "  → Upstream changed: $rest_file (your version saved for merge)"
+            else
+                log ERROR "Failed to copy to merge dir: $rest_file"
+                all_ok=false
+            fi
+        else
+            # Upstream didn't change — auto-restore with atomic write
+            target="${WORK_TREE}/${rest_file}"
+            tmp="${target}.dusky_tmp"
+
+            if ! mkdir -p "$(dirname "$target")" 2>/dev/null; then
+                log ERROR "Failed to create directory for restore: $rest_file"
+                all_ok=false
+                continue
+            fi
+
+            if cp -a -- "$backup_src" "$tmp" 2>/dev/null && mv -f -- "$tmp" "$target" 2>/dev/null; then
+                ((restored_count++)) || true
+                log RAW "  → Restored: $rest_file"
+            else
+                log ERROR "Failed to restore: $rest_file"
+                rm -f "$tmp" 2>/dev/null || true
+                all_ok=false
+            fi
+        fi
+    done
+
+    # Summary
+    if ((restored_count > 0)); then
+        log OK "Auto-restored $restored_count file(s) (upstream hadn't changed them)"
+    fi
+
+    if ((merge_count > 0)); then
+        log WARN "$merge_count file(s) need manual merge — upstream changed them too"
+        log INFO "Your versions saved to:"
+        printf '    %s\n' "$merge_dir"
+        log INFO "Compare with current configs and merge your changes when ready."
+    fi
+
+    if ((restored_count == 0 && merge_count == 0)); then
+        log INFO "No modifications needed restoring."
+    fi
+
+    # Clean up backup only if ALL files processed successfully
+    if [[ "$all_ok" == true ]]; then
+        rm -rf "$USER_MODS_BACKUP" 2>/dev/null || true
+        USER_MODS_BACKUP=""
+    else
+        log WARN "Some files could not be processed. Backup preserved at:"
+        printf '    %s\n' "$USER_MODS_BACKUP"
+    fi
+
+    return 0
+}
+
+# ==============================================================================
+# INITIAL CLONE — First-run support for new users
+# ==============================================================================
+initial_clone() {
+    log SECTION "First-Time Setup"
+    log INFO "Bare repository not found at: $DOTFILES_GIT_DIR"
+
+    local do_clone="y"
+    if [[ -t 0 && "$OPT_FORCE" != true ]]; then
+        printf '\n'
+        read -r -t "$PROMPT_TIMEOUT_LONG" -p "Clone from ${REPO_URL}? [Y/n] " do_clone || do_clone="y"
+        do_clone="${do_clone:-y}"
+    fi
+
+    if [[ ! "$do_clone" =~ ^[Yy]$ ]]; then
+        log INFO "Clone cancelled."
+        return 1
+    fi
+
+    if [[ "$OPT_DRY_RUN" == true ]]; then
+        log INFO "[DRY-RUN] Would clone: $REPO_URL → $DOTFILES_GIT_DIR"
+        return 0
+    fi
+
+    check_network || return 1
+
+    log INFO "Cloning bare repository..."
+    if ! "$GIT_BIN" clone --bare "$REPO_URL" "$DOTFILES_GIT_DIR" >> "$LOG_FILE" 2>&1; then
+        log ERROR "Clone failed. Check network and repository URL."
+        return 1
+    fi
+
+    # Configure the bare repo
+    "${GIT_CMD[@]}" config status.showUntrackedFiles no 2>/dev/null || true
+
+    # Checkout files (backup any conflicts)
+    log INFO "Checking out files..."
+    if ! "${GIT_CMD[@]}" checkout 2>/dev/null; then
+        log WARN "Some files already exist. Backing up conflicts..."
+        local conflict_backup_dir="${BACKUP_BASE_DIR}/initial_conflicts_${RUN_TIMESTAMP}"
+        mkdir -p "$conflict_backup_dir"
+
+        local -a conflict_files=()
+        local checkout_err
+        checkout_err=$("${GIT_CMD[@]}" checkout 2>&1) || true
+
+        if [[ -n "$checkout_err" ]]; then
+            local conflict_file
+            while IFS= read -r conflict_file; do
+                [[ -z "$conflict_file" ]] && continue
+                conflict_files+=("$conflict_file")
+            done < <(printf '%s\n' "$checkout_err" | grep $'^\t' | sed 's/^\t//')
+
+            if ((${#conflict_files[@]} > 0)); then
+                for conflict_file in "${conflict_files[@]}"; do
+                    mkdir -p "$conflict_backup_dir/$(dirname "$conflict_file")"
+                    mv -- "${WORK_TREE}/${conflict_file}" "$conflict_backup_dir/${conflict_file}" 2>/dev/null || true
+                done
+            fi
+        fi
+
+        "${GIT_CMD[@]}" checkout >> "$LOG_FILE" 2>&1 || {
+            log ERROR "Checkout failed even after backing up conflicts."
+            return 1
+        }
+        log OK "Conflicts backed up to: $conflict_backup_dir"
+    fi
+
+    log OK "Repository cloned and checked out successfully."
+    return 0
+}
+
+# ==============================================================================
+# PULL UPDATES — Sync local repo to upstream
+# ==============================================================================
+pull_updates() {
+    log SECTION "Synchronizing Dotfiles Repository"
+
+    # Handle first-time setup
+    if [[ ! -d "$DOTFILES_GIT_DIR" ]]; then
+        initial_clone || return 1
+        # After initial clone, we're already at latest — no need to fetch again
+        log OK "Repository synchronized (initial clone)."
+        return 0
+    fi
+
     "${GIT_CMD[@]}" config status.showUntrackedFiles no 2>/dev/null || true
 
     # Clean any broken state from previous runs
     cleanup_git_state
 
     # --------------------------------------------------------------------------
-    # STASH UNCOMMITTED CHANGES
+    # DETECT LOCAL MODIFICATIONS
     # --------------------------------------------------------------------------
     log INFO "Checking for local modifications..."
 
     if ! "${GIT_CMD[@]}" diff-index --quiet HEAD -- 2>/dev/null; then
-        log WARN "Uncommitted changes detected."
-        log INFO "Stashing your changes..."
+        log WARN "Local modifications detected. These will be preserved."
 
-        local stash_msg="orchestrator-auto-${RUN_TIMESTAMP}"
+        PRE_UPDATE_HEAD=$("${GIT_CMD[@]}" rev-parse HEAD 2>/dev/null) || PRE_UPDATE_HEAD=""
 
-        if "${GIT_CMD[@]}" stash push -m "$stash_msg" >> "$LOG_FILE" 2>&1; then
-            STASH_REF="$stash_msg"
-            log OK "Stashed: $STASH_REF"
+        if [[ -z "$PRE_UPDATE_HEAD" ]]; then
+            log ERROR "Cannot determine current HEAD. Aborting."
+            return 1
+        fi
+
+        MODIFIED_FILES=()
+        local diff_file
+        while IFS= read -r -d '' diff_file; do
+            MODIFIED_FILES+=("$diff_file")
+        done < <("${GIT_CMD[@]}" diff-index -z --name-only HEAD -- 2>/dev/null | sort -zu)
+
+        if ((${#MODIFIED_FILES[@]} > 0)); then
+            log INFO "Found ${#MODIFIED_FILES[@]} modified file(s). Will back up before sync."
         else
-            log ERROR "Stash failed."
-            printf '\n%s[ACTION REQUIRED]%s\n' "$CLR_YLW" "$CLR_RST"
-            printf '  1) Abort\n'
-            printf '  2) Reset index (keeps files) [DEFAULT]\n'
-            printf '  3) Hard reset (DESTRUCTIVE)\n\n'
-
-            local choice
-            if [[ -t 0 ]]; then
-                read -r -t 60 -p "Choice [1-3]: " choice 2>/dev/null || choice="2"
-            else
-                choice="2"
-            fi
-            choice="${choice:-2}"
-
-            case "$choice" in
-                2)
-                    "${GIT_CMD[@]}" reset >> "$LOG_FILE" 2>&1 || { log ERROR "Reset failed"; return 1; }
-                    if "${GIT_CMD[@]}" stash push -m "$stash_msg" >> "$LOG_FILE" 2>&1; then
-                        STASH_REF="$stash_msg"
-                        log OK "Stashed after reset: $STASH_REF"
-                    else
-                        log ERROR "Stash still failing"; return 1
-                    fi
-                    ;;
-                3)
-                    local confirm=""
-                    if [[ -t 0 ]]; then
-                        read -r -t 30 -p "Type 'yes' to confirm destructive reset: " confirm || confirm=""
-                    fi
-                    [[ "$confirm" == "yes" ]] || { log INFO "Aborted"; return 1; }
-                    backup_tracked_files || log WARN "Backup failed, but continuing..."
-                    "${GIT_CMD[@]}" reset --hard HEAD >> "$LOG_FILE" 2>&1
-                    log WARN "Hard reset complete"
-                    ;;
-                *) log INFO "Aborted"; return 1 ;;
-            esac
+            log INFO "No modified files detected (index-only changes)."
         fi
     fi
 
@@ -489,7 +1029,6 @@ pull_updates() {
     if [[ -z "$current_url" ]]; then
         log WARN "No origin remote. Adding..."
         "${GIT_CMD[@]}" remote add origin "$REPO_URL"
-    # URL Normalization: Ignore .git suffix difference as they are functionally identical
     elif [[ "${current_url%.git}" != "${REPO_URL%.git}" ]]; then
         log WARN "Remote mismatch: $current_url"
         log INFO "Setting to: $REPO_URL"
@@ -497,41 +1036,48 @@ pull_updates() {
     fi
 
     # --------------------------------------------------------------------------
+    # NETWORK CHECK
+    # --------------------------------------------------------------------------
+    check_network || return 1
+
+    # --------------------------------------------------------------------------
     # FETCH LATEST (With Exponential Backoff)
     # --------------------------------------------------------------------------
     log INFO "Fetching from upstream..."
 
-    local fetch_success="false"
-    local attempt=1
-    local -r max_attempts=5
-    local wait_time=2
+    if [[ "$OPT_DRY_RUN" == true ]]; then
+        log INFO "[DRY-RUN] Would fetch from origin/${BRANCH}"
+    else
+        local fetch_success="false"
+        local attempt=1
+        local wait_time=$FETCH_INITIAL_BACKOFF
 
-    while ((attempt <= max_attempts)); do
-        if timeout 60s "${GIT_CMD[@]}" fetch origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" >> "$LOG_FILE" 2>&1; then
-            fetch_success="true"
-            break
+        while ((attempt <= FETCH_MAX_ATTEMPTS)); do
+            if timeout "${FETCH_TIMEOUT}s" "${GIT_CMD[@]}" fetch origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" >> "$LOG_FILE" 2>&1; then
+                fetch_success="true"
+                break
+            fi
+
+            if ((attempt < FETCH_MAX_ATTEMPTS)); then
+                log WARN "Fetch attempt $attempt/$FETCH_MAX_ATTEMPTS failed. Retrying in ${wait_time}s..."
+                sleep "$wait_time"
+                ((wait_time *= 2))
+            fi
+            ((attempt++))
+        done
+
+        if [[ "$fetch_success" == "false" ]]; then
+            log ERROR "Fetch failed after $FETCH_MAX_ATTEMPTS attempts. Check network."
+            return 1
         fi
 
-        if ((attempt < max_attempts)); then
-            log WARN "Fetch attempt $attempt/$max_attempts failed. Retrying in ${wait_time}s..."
-            sleep "$wait_time"
-            ((wait_time *= 2))
-        fi
-        ((attempt++))
-    done
-
-    if [[ "$fetch_success" == "false" ]]; then
-        log ERROR "Fetch failed after $max_attempts attempts. Check network."
-        [[ -n "${STASH_REF:-}" ]] && "${GIT_CMD[@]}" stash pop --quiet 2>/dev/null && STASH_REF=""
-        return 1
+        log OK "Fetch complete."
     fi
-
-    log OK "Fetch complete."
 
     # --------------------------------------------------------------------------
     # HANDLE UNTRACKED FILE COLLISIONS
     # --------------------------------------------------------------------------
-    local remote_files untracked_files collision_list file
+    local remote_files untracked_files collision_list
     remote_files=$("${GIT_CMD[@]}" ls-tree -r --name-only "origin/${BRANCH}" 2>/dev/null) || remote_files=""
     untracked_files=$("${GIT_CMD[@]}" ls-files --others --exclude-standard 2>/dev/null) || untracked_files=""
 
@@ -543,24 +1089,28 @@ pull_updates() {
     fi
 
     if [[ -n "$collision_list" ]]; then
-        local backup_dir="${HOME}/Documents/dusky_backup_${RUN_TIMESTAMP}"
-        local file  # Declare outside loop
+        local coll_backup_dir="${BACKUP_BASE_DIR}/untracked_collisions_${RUN_TIMESTAMP}"
         log WARN "Untracked collisions found. Backing up..."
-        mkdir -p "$backup_dir"
 
-        while IFS= read -r file; do
-            [[ -z "$file" ]] && continue
-            [[ -e "${WORK_TREE}/${file}" ]] || continue
-            mkdir -p "$backup_dir/$(dirname "$file")"
-            mv -- "${WORK_TREE}/${file}" "$backup_dir/${file}"
-            log RAW "  → Backed up: $file"
-        done <<< "$collision_list"
+        if [[ "$OPT_DRY_RUN" == true ]]; then
+            log INFO "[DRY-RUN] Would back up colliding untracked files"
+        else
+            mkdir -p "$coll_backup_dir"
+            local coll_file
+            while IFS= read -r coll_file; do
+                [[ -z "$coll_file" ]] && continue
+                [[ -e "${WORK_TREE}/${coll_file}" ]] || continue
+                mkdir -p "$coll_backup_dir/$(dirname "$coll_file")"
+                mv -- "${WORK_TREE}/${coll_file}" "$coll_backup_dir/${coll_file}"
+                log RAW "  → Backed up: $coll_file"
+            done <<< "$collision_list"
 
-        log OK "Collisions backed up to: $backup_dir"
+            log OK "Collisions backed up to: $coll_backup_dir"
+        fi
     fi
 
     # --------------------------------------------------------------------------
-    # SYNC STRATEGY: RESET TO UPSTREAM
+    # SYNC STRATEGY
     # --------------------------------------------------------------------------
     log INFO "Checking sync status..."
 
@@ -569,202 +1119,137 @@ pull_updates() {
     remote_head=$("${GIT_CMD[@]}" rev-parse "origin/${BRANCH}" 2>/dev/null) || remote_head=""
 
     if [[ -z "$local_head" || -z "$remote_head" ]]; then
+        if [[ "$OPT_DRY_RUN" == true ]]; then
+            log WARN "[DRY-RUN] No cached remote refs found. Cannot preview sync status."
+            log INFO "[DRY-RUN] Run without --dry-run to perform an actual fetch first."
+            log OK "Repository sync preview complete (limited — no remote data)."
+            return 0
+        fi
         log ERROR "Cannot determine HEAD commits"
         log ERROR "local_head='$local_head' remote_head='$remote_head'"
-        [[ -n "${STASH_REF:-}" ]] && "${GIT_CMD[@]}" stash pop --quiet 2>/dev/null && STASH_REF=""
         return 1
     fi
 
     if [[ "$local_head" == "$remote_head" ]]; then
         log OK "Already up to date."
     else
+        # Show preview of what's coming
+        show_update_preview "$local_head" "$remote_head" || true
+
         base_commit=$("${GIT_CMD[@]}" merge-base "$local_head" "$remote_head" 2>/dev/null) || base_commit=""
 
         if [[ "$base_commit" == "$local_head" ]]; then
             log INFO "Fast-forwarding to upstream..."
-            if "${GIT_CMD[@]}" reset --hard "origin/${BRANCH}" >> "$LOG_FILE" 2>&1; then
-                log OK "Updated to latest."
+
+            if [[ "$OPT_DRY_RUN" == true ]]; then
+                log INFO "[DRY-RUN] Would reset --hard to origin/${BRANCH}"
             else
-                log ERROR "Reset failed"
-                [[ -n "${STASH_REF:-}" ]] && "${GIT_CMD[@]}" stash pop --quiet 2>/dev/null && STASH_REF=""
-                return 1
+                if ((${#MODIFIED_FILES[@]} > 0)); then
+                    if ! backup_user_modifications; then
+                        log ERROR "Backup failed. Aborting update to protect your files."
+                        return 1
+                    fi
+                fi
+                if "${GIT_CMD[@]}" reset --hard "origin/${BRANCH}" >> "$LOG_FILE" 2>&1; then
+                    log OK "Updated to latest."
+                    restore_user_modifications
+                else
+                    log ERROR "Reset failed"
+                    return 1
+                fi
             fi
         else
             log WARN "Local history diverged from upstream."
-            printf '\n'
-            printf '%s[DIVERGED HISTORY]%s Choose sync method:\n' "$CLR_YLW" "$CLR_RST"
-            printf '  1) Abort (keep current state)\n'
-            printf '  %s2) Reset to upstream [RECOMMENDED]%s\n' "$CLR_GRN" "$CLR_RST"
-            printf '     Your uncommitted tweaks are safe in stash.\n'
-            printf '  3) Attempt rebase (may fail)\n'
-            printf '\n'
 
-            local sync_choice
-            if [[ -t 0 ]]; then
-                read -r -t 60 -p "Choice [1-3] (default: 2): " sync_choice 2>/dev/null || sync_choice="2"
+            if [[ "$OPT_DRY_RUN" == true ]]; then
+                log INFO "[DRY-RUN] History diverged. Default action would be: reset to upstream (option 2)"
             else
-                sync_choice="2"
-            fi
-            sync_choice="${sync_choice:-2}"
+                printf '\n'
+                printf '%s[DIVERGED HISTORY]%s Choose sync method:\n' "$CLR_YLW" "$CLR_RST"
+                printf '  1) Abort (keep current state)\n'
+                printf '  %s2) Reset to upstream [RECOMMENDED]%s\n' "$CLR_GRN" "$CLR_RST"
+                printf '     Your uncommitted tweaks will be backed up and auto-restored where safe.\n'
+                printf '  3) Attempt rebase (may fail)\n'
+                printf '\n'
 
-            case "$sync_choice" in
-                1)
-                    log INFO "Aborted."
-                    [[ -n "${STASH_REF:-}" ]] && "${GIT_CMD[@]}" stash pop --quiet 2>/dev/null && STASH_REF=""
-                    return 1
-                    ;;
-                2)
-                    backup_tracked_files || log WARN "Backup failed, but continuing..."
-                    log INFO "Resetting to upstream..."
-                    if "${GIT_CMD[@]}" reset --hard "origin/${BRANCH}" >> "$LOG_FILE" 2>&1; then
-                        log OK "Reset complete."
-                    else
-                        log ERROR "Reset failed"
-                        [[ -n "${STASH_REF:-}" ]] && "${GIT_CMD[@]}" stash pop --quiet 2>/dev/null && STASH_REF=""
+                local sync_choice
+                if [[ -t 0 ]]; then
+                    read -r -t "$PROMPT_TIMEOUT_LONG" -p "Choice [1-3] (default: 2): " sync_choice 2>/dev/null || sync_choice="2"
+                else
+                    sync_choice="2"
+                fi
+                sync_choice="${sync_choice:-2}"
+
+                case "$sync_choice" in
+                    1)
+                        log INFO "Aborted."
                         return 1
-                    fi
-                    ;;
-                3)
-                    backup_tracked_files || log WARN "Backup failed, but continuing..."
-                    log INFO "Attempting rebase..."
-                    local rebase_output rebase_rc=0
-                    rebase_output=$("${GIT_CMD[@]}" rebase "origin/${BRANCH}" 2>&1) || rebase_rc=$?
-                    printf '%s\n' "$rebase_output" >> "$LOG_FILE"
-
-                    if ((rebase_rc != 0)); then
-                        log ERROR "Rebase failed."
-                        log INFO "Aborting and resetting..."
-                        "${GIT_CMD[@]}" rebase --abort >> "$LOG_FILE" 2>&1 || true
-
+                        ;;
+                    2)
+                        backup_tracked_files || log WARN "Backup failed, but continuing..."
+                        if ((${#MODIFIED_FILES[@]} > 0)); then
+                            if ! backup_user_modifications; then
+                                log ERROR "Backup failed. Aborting update to protect your files."
+                                return 1
+                            fi
+                        fi
+                        log INFO "Resetting to upstream..."
                         if "${GIT_CMD[@]}" reset --hard "origin/${BRANCH}" >> "$LOG_FILE" 2>&1; then
-                            log OK "Fallback reset complete."
+                            log OK "Reset complete."
+                            restore_user_modifications
                         else
-                            log ERROR "Reset also failed."
+                            log ERROR "Reset failed"
                             return 1
                         fi
-                    else
-                        log OK "Rebase successful."
-                    fi
-                    ;;
-                *)
-                    log INFO "Invalid. Aborting."
-                    [[ -n "${STASH_REF:-}" ]] && "${GIT_CMD[@]}" stash pop --quiet 2>/dev/null && STASH_REF=""
-                    return 1
-                    ;;
-            esac
+                        ;;
+                    3)
+                        backup_tracked_files || log WARN "Backup failed, but continuing..."
+                        if ((${#MODIFIED_FILES[@]} > 0)); then
+                            if ! backup_user_modifications; then
+                                log ERROR "Backup failed. Aborting update to protect your files."
+                                return 1
+                            fi
+                        fi
+                        # Clean working tree so rebase can proceed
+                        "${GIT_CMD[@]}" reset --hard HEAD >> "$LOG_FILE" 2>&1 || true
+                        log INFO "Attempting rebase..."
+                        local rebase_output rebase_rc=0
+                        rebase_output=$("${GIT_CMD[@]}" rebase "origin/${BRANCH}" 2>&1) || rebase_rc=$?
+                        printf '%s\n' "$rebase_output" >> "$LOG_FILE"
+
+                        if ((rebase_rc != 0)); then
+                            log ERROR "Rebase failed."
+                            log INFO "Aborting and resetting..."
+                            "${GIT_CMD[@]}" rebase --abort >> "$LOG_FILE" 2>&1 || true
+
+                            if "${GIT_CMD[@]}" reset --hard "origin/${BRANCH}" >> "$LOG_FILE" 2>&1; then
+                                log OK "Fallback reset complete."
+                                restore_user_modifications
+                            else
+                                log ERROR "Reset also failed."
+                                return 1
+                            fi
+                        else
+                            log OK "Rebase successful."
+                            restore_user_modifications
+                        fi
+                        ;;
+                    *)
+                        log INFO "Invalid. Aborting."
+                        return 1
+                        ;;
+                esac
+            fi
         fi
     fi
 
     log OK "Repository synchronized."
-
-    # --------------------------------------------------------------------------
-    # RESTORE STASHED CHANGES (Hardened for Deleted Files)
-    # --------------------------------------------------------------------------
-    if [[ -n "${STASH_REF:-}" ]]; then
-        log INFO "Restoring your modifications..."
-
-        local stash_pop_rc=0
-        if ! "${GIT_CMD[@]}" stash pop >> "$LOG_FILE" 2>&1; then
-            stash_pop_rc=1
-        fi
-
-        if ((stash_pop_rc == 0)); then
-            STASH_REF=""
-            log OK "Your customizations re-applied."
-        else
-            log WARN "Stash pop encountered conflicts. Initiating fail-safe recovery..."
-
-            # Use git ls-files -u for more reliable conflict detection
-            local -a conflicted_files=()
-            local conflict_list file
-            conflict_list=$("${GIT_CMD[@]}" ls-files -u 2>/dev/null | cut -f2 | sort -u) || conflict_list=""
-
-            if [[ -z "$conflict_list" ]]; then
-                log ERROR "Stash pop failed but no conflicts detected. Manual intervention required."
-                log INFO "Your changes remain in stash. Recover with:"
-                printf '    git --git-dir="%s" --work-tree="%s" stash pop\n' "$DOTFILES_GIT_DIR" "$WORK_TREE"
-                "${GIT_CMD[@]}" checkout HEAD -- . >> "$LOG_FILE" 2>&1 || true
-                "${GIT_CMD[@]}" reset >> "$LOG_FILE" 2>&1 || true
-                STASH_REF=""
-                return 0
-            fi
-
-            mapfile -t conflicted_files <<< "$conflict_list"
-            log INFO "Found ${#conflicted_files[@]} conflicted file(s)."
-
-            local backup_dir="${HOME}/Documents/config_backups/stash_conflict_${RUN_TIMESTAMP}"
-            if ! mkdir -p "$backup_dir"; then
-                log ERROR "Failed to create backup directory: $backup_dir"
-                log ERROR "Cannot proceed safely. Your changes remain in stash."
-                "${GIT_CMD[@]}" checkout HEAD -- . >> "$LOG_FILE" 2>&1 || true
-                "${GIT_CMD[@]}" reset >> "$LOG_FILE" 2>&1 || true
-                STASH_REF=""
-                return 0
-            fi
-
-            local backup_success=true
-            local backup_path
-
-            for file in "${conflicted_files[@]}"; do
-                [[ -z "$file" ]] && continue
-                backup_path="${backup_dir}/${file}"
-
-                # 1. BACKUP STASHED VERSION (If it exists in stash)
-                if "${GIT_CMD[@]}" rev-parse --quiet --verify "stash@{0}:$file" >/dev/null; then
-                    if ! mkdir -p "$(dirname "$backup_path")"; then
-                        log ERROR "Failed to create directory for: $file"
-                        backup_success=false; break
-                    fi
-                    if ! "${GIT_CMD[@]}" show "stash@{0}:${file}" > "$backup_path" 2>> "$LOG_FILE"; then
-                        log ERROR "Failed to extract stashed version of: $file"
-                        backup_success=false; break
-                    fi
-                else
-                    log WARN "File deleted in stash (skipping backup): $file"
-                fi
-
-                # 2. RESET TO HEAD (Handle Deleted Upstream)
-                if "${GIT_CMD[@]}" rev-parse --quiet --verify "HEAD:$file" >/dev/null; then
-                    # File exists in upstream -> Checkout it
-                    if ! "${GIT_CMD[@]}" checkout HEAD -- "$file" >> "$LOG_FILE" 2>&1; then
-                        log ERROR "Failed to reset file to HEAD: $file"
-                        backup_success=false; break
-                    fi
-                else
-                    # File deleted in upstream -> Remove from working tree
-                    log INFO "File deleted in upstream: $file. Removing..."
-                    rm -f "${WORK_TREE}/${file}"
-                fi
-
-                log RAW "  → Resolved: $file"
-            done
-
-            if [[ "$backup_success" == true ]]; then
-                "${GIT_CMD[@]}" reset >> "$LOG_FILE" 2>&1 || true # Unstage everything
-                
-                if "${GIT_CMD[@]}" stash drop >> "$LOG_FILE" 2>&1; then
-                    log OK "Stash dropped after successful backup."
-                else
-                    log WARN "Could not drop stash (may already be gone)."
-                fi
-
-                log OK "Your local modifications saved to:"
-                printf '    %s\n' "$backup_dir"
-                log INFO "System configs restored to upstream (stable) versions."
-                log INFO "Merge your changes manually from the backup when ready."
-            else
-                log ERROR "Backup failed! Stash preserved for manual recovery."
-                log WARN "Resetting working tree to HEAD to restore system stability..."
-                "${GIT_CMD[@]}" checkout HEAD -- . >> "$LOG_FILE" 2>&1 || true
-                "${GIT_CMD[@]}" reset >> "$LOG_FILE" 2>&1 || true
-            fi
-            STASH_REF=""
-        fi
-    fi
-
     return 0
 }
 
+# ==============================================================================
+# SCRIPT EXECUTION
+# ==============================================================================
 run_script() {
     (($# >= 2)) || { log ERROR "run_script: need mode and script"; return 1; }
 
@@ -773,7 +1258,7 @@ run_script() {
     local -a args=("$@")
     local script_path
 
-    # Check for custom path override using -v (valid in Bash 4.3+)
+    # Check for custom path override
     if [[ -v "CUSTOM_SCRIPT_PATHS[$script]" && -n "${CUSTOM_SCRIPT_PATHS[$script]}" ]]; then
         script_path="${HOME}/${CUSTOM_SCRIPT_PATHS[$script]}"
     else
@@ -783,6 +1268,12 @@ run_script() {
     [[ -f "$script_path" ]] || { log WARN "Not found: $script"; return 0; }
     [[ -r "$script_path" ]] || { log WARN "Not readable: $script"; return 0; }
 
+    if [[ "$OPT_DRY_RUN" == true ]]; then
+        printf '%s→%s [DRY-RUN] %s %s (%s-mode)\n' "$CLR_BLU" "$CLR_RST" "$script" "${args[*]:-}" "$mode"
+        return 0
+    fi
+
+    # Print script name before execution
     printf '%s→%s %s %s\n' "$CLR_BLU" "$CLR_RST" "$script" "${args[*]:-}"
 
     local rc=0
@@ -792,33 +1283,47 @@ run_script() {
         *) log WARN "Unknown mode: $mode"; return 0 ;;
     esac
 
-    ((rc == 0)) || { log ERROR "$script failed (exit $rc)"; FAILED_SCRIPTS+=("$script"); }
+    if ((rc != 0)); then
+        log ERROR "$script failed (exit $rc)"
+        FAILED_SCRIPTS+=("$script")
+        if [[ "$OPT_STOP_ON_FAIL" == true ]]; then
+            log ERROR "Stopping due to --stop-on-fail"
+            return 1
+        fi
+    fi
+
     return 0
 }
 
+# ==============================================================================
+# MAIN
+# ==============================================================================
 main() {
-    # Check dependencies first (before any logging)
     check_dependencies
 
     # --------------------------------------------------------------------------
-    # USER INTERACTION SAFETY CHECK
+    # CONFIRMATION PROMPT
     # --------------------------------------------------------------------------
-    if [[ -t 0 ]]; then
-        printf '\n%s⚠️  WARNING: DO NOT INTERRUPT THE UPDATE WHILE ITS RUNNING! ⚠️%s\n' "${CLR_RED}" "${CLR_RST}"
-        printf 'Interrupting the process causes Git locks and inconsistent states.\n'
-        printf 'Please allow the update to complete fully before closing.\n\n'
-        
+    if [[ -t 0 && "$OPT_FORCE" != true && "$OPT_POST_SELF_UPDATE" != true ]]; then
+        printf '\n%sNote:%s Avoid interrupting the update while it'\''s running.\n' "${CLR_YLW}" "${CLR_RST}"
+        printf 'Interruptions during git operations can leave the repository in a broken state.\n\n'
+
         local start_confirm
-        read -r -p "Do you understand and wish to start the update? [y/N] " start_confirm
+        read -r -p "Start the update? [y/N] " start_confirm
         if [[ ! "$start_confirm" =~ ^[Yy]$ ]]; then
-            printf 'Update cancelled. You can run it later.\n'
+            printf 'Update cancelled.\n'
             exit 0
         fi
     fi
 
     setup_logging
+    auto_prune
 
-    # Exclusive lock with proper error handling
+    if [[ "$OPT_DRY_RUN" == true ]]; then
+        log INFO "Running in DRY-RUN mode — no changes will be made"
+    fi
+
+    # Exclusive lock
     if ! : >"$LOCK_FILE" 2>/dev/null; then
         printf 'Error: Cannot create lock file: %s\n' "$LOCK_FILE" >&2
         exit 1
@@ -826,57 +1331,146 @@ main() {
     exec 9>"$LOCK_FILE"
     flock -n 9 || { log ERROR "Another instance running"; exit 1; }
 
-    # Self-update check hash
+    # Determine if sudo is needed (only if we'll run scripts)
+    if [[ "$OPT_SYNC_ONLY" != true ]]; then
+        scan_needs_sudo
+    fi
+
+    # Self-update check hash (skip if post-self-update)
     local self_hash_before=""
-    [[ -r "$SELF_PATH" ]] && self_hash_before=$(sha256sum "$SELF_PATH" 2>/dev/null | cut -d' ' -f1)
+    if [[ "$OPT_POST_SELF_UPDATE" != true ]]; then
+        [[ -r "$SELF_PATH" ]] && self_hash_before=$(sha256sum "$SELF_PATH" 2>/dev/null | cut -d' ' -f1)
+    fi
 
-    init_sudo
+    # Acquire sudo only if needed
+    if [[ "$OPT_NEEDS_SUDO" == true && "$OPT_DRY_RUN" != true ]]; then
+        init_sudo
+    fi
 
-    if ! pull_updates; then
-        log WARN "Sync failed."
-        local cont=""
-        if [[ -t 0 ]]; then
-            read -r -t 30 -p "Continue with local scripts? [y/N] " cont || cont="n"
+    # --------------------------------------------------------------------------
+    # SYNC PHASE
+    # --------------------------------------------------------------------------
+    if [[ "$OPT_SKIP_SYNC" != true && "$OPT_POST_SELF_UPDATE" != true ]]; then
+        if ! pull_updates; then
+            log WARN "Sync failed."
+            if [[ "$OPT_SYNC_ONLY" == true ]]; then
+                exit 1
+            fi
+            local cont=""
+            if [[ -t 0 ]]; then
+                read -r -t "$PROMPT_TIMEOUT_SHORT" -p "Continue with local scripts? [y/N] " cont || cont="n"
+            else
+                cont="n"
+            fi
+            [[ "$cont" =~ ^[Yy]$ ]] || exit 1
         else
-            cont="n"
-        fi
-        [[ "$cont" =~ ^[Yy]$ ]] || exit 1
-    else
-        # Self-update re-exec
-        if [[ -n "$self_hash_before" && -r "$SELF_PATH" ]]; then
-            local self_hash_after
-            self_hash_after=$(sha256sum "$SELF_PATH" 2>/dev/null | cut -d' ' -f1) || self_hash_after=""
-            if [[ -n "$self_hash_after" && "$self_hash_before" != "$self_hash_after" ]]; then
-                log SECTION "Self-Update Detected"
-                log OK "Reloading..."
-                exec 9>&-
-                rm -f "$LOCK_FILE"
-                STASH_REF=""
-                exec "$SELF_PATH" "$@"
+            # Self-update re-exec (only if we actually synced)
+            if [[ -n "$self_hash_before" && -r "$SELF_PATH" ]]; then
+                local self_hash_after
+                self_hash_after=$(sha256sum "$SELF_PATH" 2>/dev/null | cut -d' ' -f1) || self_hash_after=""
+                if [[ -n "$self_hash_after" && "$self_hash_before" != "$self_hash_after" ]]; then
+                    log SECTION "Self-Update Detected"
+                    log OK "Reloading with updated script..."
+                    exec 9>&-
+                    rm -f "$LOCK_FILE"
+                    USER_MODS_BACKUP=""
+                    # Pass --post-self-update to skip re-syncing, plus original flags
+                    local -a reexec_args=("--post-self-update")
+                    [[ "$OPT_DRY_RUN" == true ]] && reexec_args+=("--dry-run")
+                    [[ "$OPT_FORCE" == true ]] && reexec_args+=("--force")
+                    [[ "$OPT_SKIP_SYNC" == true ]] && reexec_args+=("--skip-sync")
+                    [[ "$OPT_SYNC_ONLY" == true ]] && reexec_args+=("--sync-only")
+                    [[ "$OPT_STOP_ON_FAIL" == true ]] && reexec_args+=("--stop-on-fail")
+                    exec "$SELF_PATH" "${reexec_args[@]}"
+                fi
             fi
         fi
     fi
 
-    [[ -d "$SCRIPT_DIR" ]] || { log ERROR "Script dir missing: $SCRIPT_DIR"; exit 1; }
+    # --------------------------------------------------------------------------
+    # SCRIPT EXECUTION PHASE
+    # --------------------------------------------------------------------------
+    if [[ "$OPT_SYNC_ONLY" == true ]]; then
+        log OK "Sync-only mode — skipping script execution."
+    else
+        if [[ ! -d "$SCRIPT_DIR" ]]; then
+            if [[ "$OPT_DRY_RUN" == true ]]; then
+                log WARN "[DRY-RUN] Script directory does not exist yet: $SCRIPT_DIR"
+            else
+                log ERROR "Script dir missing: $SCRIPT_DIR"
+                exit 1
+            fi
+        fi
 
-    log SECTION "Executing Update Sequence"
+        # Acquire sudo now if needed and not already acquired
+        if [[ "$OPT_NEEDS_SUDO" == true && -z "$SUDO_PID" && "$OPT_DRY_RUN" != true ]]; then
+            init_sudo
+        fi
 
-    local entry mode script_part script
-    local -a parts args
+        log SECTION "Executing Update Sequence"
 
-    for entry in "${UPDATE_SEQUENCE[@]}"; do
-        [[ "$entry" =~ ^[[:space:]]*# ]] && continue
-        [[ -z "${entry//[[:space:]]/}" ]] && continue
+        # Count total active scripts for progress display
+        local total_scripts=0
+        local entry
+        for entry in "${UPDATE_SEQUENCE[@]}"; do
+            [[ "$entry" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${entry//[[:space:]]/}" ]] && continue
+            ((total_scripts++)) || true
+        done
 
-        mode=$(trim "${entry%%|*}")
-        script_part=$(trim "${entry#*|}")
-        read -ra parts <<< "$script_part"
-        script="${parts[0]:-}"
-        args=("${parts[@]:1}")
+        local current_script=0
+        local mode script_part script
+        local -a parts args
 
-        [[ -n "$script" ]] || { log WARN "Malformed: $entry"; continue; }
-        run_script "$mode" "$script" "${args[@]}"
-    done
+        for entry in "${UPDATE_SEQUENCE[@]}"; do
+            [[ "$entry" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${entry//[[:space:]]/}" ]] && continue
+
+            ((current_script++)) || true
+
+            mode=$(trim "${entry%%|*}")
+            script_part=$(trim "${entry#*|}")
+            read -ra parts <<< "$script_part"
+            script="${parts[0]:-}"
+            args=("${parts[@]:1}")
+
+            [[ -n "$script" ]] || { log WARN "Malformed: $entry"; continue; }
+
+            printf '%s[%d/%d]%s ' "$CLR_CYN" "$current_script" "$total_scripts" "$CLR_RST"
+            if ! run_script "$mode" "$script" "${args[@]}"; then
+                if [[ "$OPT_STOP_ON_FAIL" == true ]]; then
+                    break
+                fi
+            fi
+        done
+    fi
+
+    # --------------------------------------------------------------------------
+    # FINAL SUMMARY
+    # --------------------------------------------------------------------------
+    printf '\n'
+    log SECTION "Summary"
+
+    if [[ "$OPT_DRY_RUN" == true ]]; then
+        log INFO "Dry run complete — no changes were made."
+    fi
+
+    if ((${#FAILED_SCRIPTS[@]} > 0)); then
+        log WARN "${#FAILED_SCRIPTS[@]} script(s) failed:"
+        local fs
+        for fs in "${FAILED_SCRIPTS[@]}"; do
+            printf '    • %s\n' "$fs"
+        done
+    else
+        log OK "All scripts completed successfully."
+    fi
+
+    log INFO "Log saved to: $LOG_FILE"
+
+    # Exit with failure if any scripts failed
+    if ((${#FAILED_SCRIPTS[@]} > 0)); then
+        exit 1
+    fi
 }
 
-main "$@"
+main
