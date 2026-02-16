@@ -41,7 +41,7 @@ INSTALL_SEQUENCE=(
     "U | 065_enabling_user_services.sh"
     "S | 070_openssh_setup.sh --auto"
     "U | 075_changing_shell_zsh.sh"
-    "S | 080_aur_paru_fallback_yay.sh"
+    "S | 080_aur_paru_fallback_yay.sh --paru"
 #    "S | 085_warp.sh"
 #    "U | 090_paru_packages_optional.sh"
 #    "S | 095_battery_limiter_again_dusk.sh"
