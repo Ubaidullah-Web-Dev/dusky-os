@@ -165,7 +165,7 @@ setup_avatar() {
     [[ "${AUTO_MODE}" == "true" ]] && return
 
     printf '\n--- Avatar Setup ---\n'
-    prompt_yes_no "Do you want to set a user avatar now?" || return
+    prompt_yes_no "Do you want to set a user avatar now?" || return 0
 
     local real_user="${SUDO_USER:-${USER}}"
     local target_user
