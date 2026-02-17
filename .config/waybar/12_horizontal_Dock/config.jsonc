@@ -1,12 +1,12 @@
 {
     "position": "top",
-    "margin-top": 15,
+    "margin-top": 8,
     "modules-center": [
         "clock",
         "mpris",
         "hyprland/workspaces",
+        "group/hide-tray",
         "pulseaudio",
-        "network",
         "battery",
         "custom/notification"
     ],
@@ -76,23 +76,23 @@
             "Easy Effects Sink"
         ]
     },
-    "network": {
-        /*please fix this dusky(interface) */
-        "interface": "eno2",
-        "format": "{ifname}",
-        "format-wifi": "{icon}",
-        "format-ethernet": "󰈀",
-        "format-disconnected": "",
-        "on-click": "kitty --hold nmtui",
-        "format-icons": [
-            "󰤯",
-            "󰤟",
-            "󰤢",
-            "󰤥",
-            "󰤨"
-        ],
-        "tooltip-format": " {bandwidthDownBytes}  {bandwidthUpBytes}",
-        "tooltip-format-wifi": "{essid} ({signalStrength}%) \n⇣{bandwidthDownBytes}  ⇡{bandwidthUpBytes}"
+    "tray": {
+        "spacing": 10
+    },
+    "group/hide-tray": {
+        "orientation": "inherit",
+        "drawer": {
+            "transition-duration": "0.5",
+            "children-class": "hide-tray-drawer",
+            "transition-left-to-right": true,
+            "click-to-reveal": false
+        },
+        "modules": ["custom/dropdown#arrow", "tray"]
+    },
+    "custom/dropdown#arrow": {
+        "format": "",
+        "tooltip": true,
+        "tooltip-format": "Reveal tray"
     },
     "battery": {
         // Stacked: Icon on top, Capacity % below

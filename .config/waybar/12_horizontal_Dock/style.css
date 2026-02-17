@@ -8,7 +8,7 @@
     font-weight: 700;
     font-size: 16px;
 
-    min-height: 25px;
+    min-height: 20px;
     margin: 0;
 }
 
@@ -19,7 +19,7 @@ window#waybar {
 .modules-center {
     background: @surface;
     border-radius: 25px;
-    padding: 0 12px;
+    padding: 0 8px;
 }
 
 tooltip,
@@ -113,4 +113,37 @@ tooltip label {
 #custom-notification {
     color: @on_surface;
     font-size: 14px;
+}
+
+#custom-dropdown {
+    padding: 0 8px;
+}
+
+#tray {
+    background-color: @surface;
+    padding: 0 8px;
+    margin: 4px 0;
+    border-radius: 45px;
+}
+
+#tray .passive {
+    -gtk-icon-effect: dim;
+}
+
+#tray .needs-attention {
+    -gtk-icon-effect: highlight;
+    background-color: @accent;
+}
+
+.hide-tray-drawer {
+    background-color: @surface;
+    border-radius: 25px;
+    margin-right: 10px;
+}
+
+#hide-tray {
+    background: transparent;
+    border-radius: 25px;
+    margin-right: 10px;
+    padding: 6px 0;
 }
