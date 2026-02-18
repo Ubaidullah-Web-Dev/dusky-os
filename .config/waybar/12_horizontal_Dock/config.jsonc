@@ -15,7 +15,7 @@
 
     "custom/cava": {
       "format": "{}",
-      "exec": "$HOME/user_scripts/waybar/cava.sh --10"
+      "exec": "$HOME/user_scripts/waybar/cava.sh --10 --clean"
     },
 
     "mpris": {
