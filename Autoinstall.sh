@@ -2,7 +2,7 @@
 set -euo pipefail
 
 echo "🧰 1. Update system and install git"
-sudo pacman -Syu --needed git
+sudo pacman -Syu --needed git base-devel vim sddm
 
 echo "📁 2. Clone the dusky repo (if not already done)"
 if [[ ! -d "$HOME/dusky" ]]; then
