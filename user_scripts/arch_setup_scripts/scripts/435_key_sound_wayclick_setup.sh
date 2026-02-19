@@ -194,17 +194,27 @@ fi
 
 # --- 4. DEPENDENCY CHECK ---
 declare -a NEEDED_DEPS=()
+AUDIO_PKGS_INSTALLED=false
+
 command -v uv >/dev/null 2>&1          || NEEDED_DEPS+=("uv")
 command -v notify-send >/dev/null 2>&1 || NEEDED_DEPS+=("libnotify")
 
-if [[ ! -f "$BASE_DIR/.build_marker_v9" ]]; then
+# Runtime audio stack (always required regardless of build marker)
+audio_deps=("pipewire" "pipewire-audio" "pipewire-pulse" "wireplumber")
+for dep in "${audio_deps[@]}"; do
+    if ! pacman -Qq "$dep" >/dev/null 2>&1; then
+        NEEDED_DEPS+=("$dep")
+        AUDIO_PKGS_INSTALLED=true
+    fi
+done
+
+# Build-time deps (only needed if native compilation hasn't been done yet)
+if [[ ! -f "$BASE_DIR/.build_marker_v10" ]]; then
     command -v gcc >/dev/null 2>&1 || NEEDED_DEPS+=("gcc")
 
-    # Build-time dependencies for compiling evdev + pygame-ce from source.
-    # pkgconf: provides pkg-config so Meson can find libraries via .pc files.
-    # portmidi: MIDI library required by pygame-ce's Meson build.
-    # freetype2: font rendering library required by pygame-ce.
-    build_deps=("sdl2" "sdl2_mixer" "sdl2_image" "sdl2_ttf" "portmidi" "freetype2" "pkgconf")
+    # SDL headers/libs for pygame-ce, portmidi for MIDI, freetype2 for fonts,
+    # pkgconf so Meson finds libraries via .pc files, libuv for uvloop.
+    build_deps=("sdl2" "sdl2_mixer" "sdl2_image" "sdl2_ttf" "portmidi" "freetype2" "pkgconf" "libuv")
     for dep in "${build_deps[@]}"; do
         pacman -Qq "$dep" >/dev/null 2>&1 || NEEDED_DEPS+=("$dep")
     done
@@ -214,10 +224,10 @@ if (( ${#NEEDED_DEPS[@]} > 0 )); then
     if $INTERACTIVE; then
         clear
         printf "%b
-╔══════════════════════════════════════════════════════════════════════════════╗
-║  %bWAYCLICK ELITE%b                                                          ║
-║  %bHotplug • User Mode • Native CPU • Contained%b                            ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════════╗
+║  %bWAYCLICK ELITE%b                                                ║
+║  %bHotplug • User Mode • Native CPU • Contained%b                  ║
+╚════════════════════════════════════════════════════════════════╝
 %b" "${C_CYAN}" "${C_GREEN}" "${C_CYAN}" "${C_DIM}" "${C_CYAN}" "${C_RESET}"
 
         printf "%b[SETUP]%b Missing system dependencies:%b %s%b\n" \
@@ -236,25 +246,15 @@ if (( ${#NEEDED_DEPS[@]} > 0 )); then
     fi
 fi
 
-# --- 5. GROUP PERMISSION CHECK ---
-if ! id -nG "$USER" | grep -qw input; then
-    if $INTERACTIVE; then
-        printf "%b[PERM]%b User '%s' is not in the 'input' group.\n" \
-            "${C_RED}" "${C_RESET}" "$USER"
-        read -rp "Run 'sudo usermod -aG input $USER'? [Y/n] " -n 1
-        echo
-        if [[ ${REPLY:-Y} =~ ^[Yy]$ ]]; then
-            sudo usermod -aG input "$USER"
-            printf "%b[INFO]%b Group added. %bLOGOUT REQUIRED%b for changes to apply.\n" \
-                "${C_GREEN}" "${C_RESET}" "${C_RED}" "${C_RESET}"
-            exit 0
-        else
-            exit 1
-        fi
-    else
-        notify_user "Permission error: User not in 'input' group. Run in terminal."
-        exit 1
-    fi
+# --- 5. PIPEWIRE SERVICE ACTIVATION ---
+# On fresh installs, PipeWire services may be installed but not started.
+# If we just installed audio packages, PipeWire needs a restart to discover
+# the new ALSA SPA plugins and create audio device nodes.
+if $AUDIO_PKGS_INSTALLED || ! systemctl --user is-active pipewire.service >/dev/null 2>&1; then
+    printf "%b[AUDIO]%b Activating PipeWire audio services...\n" "${C_BLUE}" "${C_RESET}"
+    systemctl --user enable pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null || true
+    systemctl --user restart pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null || true
+    sleep 1
 fi
 
 # --- 6a. CONFIG FILE CHECK ---
@@ -315,7 +315,7 @@ if [[ ! -d "$VENV_DIR" ]]; then
     uv venv "$VENV_DIR" --python 3.14 --quiet
 fi
 
-MARKER_FILE="$BASE_DIR/.build_marker_v9"
+MARKER_FILE="$BASE_DIR/.build_marker_v10"
 
 if [[ ! -f "$MARKER_FILE" ]]; then
     if ! $INTERACTIVE; then
@@ -616,7 +616,36 @@ PYTHON_EOF
 if [[ "$RUN_MODE" == "setup" ]]; then
     printf "\n%b[SETUP]%b Setup complete! Run '%b%s%b' to start WayClick.\n" \
         "${C_GREEN}" "${C_RESET}" "${C_CYAN}" "$(basename "$0")" "${C_RESET}"
+
+    # Non-blocking group reminder (setup doesn't need it, but runtime does)
+    if ! id -nG "$USER" | grep -qw input; then
+        printf "%b[NOTE]%b  User '%s' is not in the 'input' group (required to run).\n" \
+            "${C_YELLOW}" "${C_RESET}" "$USER"
+        printf "        Run: %bsudo usermod -aG input %s%b (then logout/login)\n" \
+            "${C_CYAN}" "$USER" "${C_RESET}"
+    fi
     exit 0
+fi
+
+# --- 7. GROUP PERMISSION CHECK (run mode only — after build so first run completes setup) ---
+if ! id -nG "$USER" | grep -qw input; then
+    if $INTERACTIVE; then
+        printf "%b[PERM]%b User '%s' is not in the 'input' group.\n" \
+            "${C_RED}" "${C_RESET}" "$USER"
+        read -rp "Run 'sudo usermod -aG input $USER'? [Y/n] " -n 1
+        echo
+        if [[ ${REPLY:-Y} =~ ^[Yy]$ ]]; then
+            sudo usermod -aG input "$USER"
+            printf "%b[INFO]%b Group added. %bLOGOUT REQUIRED%b for changes to apply.\n" \
+                "${C_GREEN}" "${C_RESET}" "${C_RED}" "${C_RESET}"
+            exit 0
+        else
+            exit 1
+        fi
+    else
+        notify_user "Permission error: User not in 'input' group. Run in terminal."
+        exit 1
+    fi
 fi
 
 # --- EXECUTION ---
