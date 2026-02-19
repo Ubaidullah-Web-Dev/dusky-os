@@ -200,8 +200,12 @@ command -v notify-send >/dev/null 2>&1 || NEEDED_DEPS+=("libnotify")
 if [[ ! -f "$BASE_DIR/.build_marker_v9" ]]; then
     command -v gcc >/dev/null 2>&1 || NEEDED_DEPS+=("gcc")
 
-    sdl_deps=("sdl2" "sdl2_mixer" "sdl2_image" "sdl2_ttf")
-    for dep in "${sdl_deps[@]}"; do
+    # Build-time dependencies for compiling evdev + pygame-ce from source.
+    # pkgconf: provides pkg-config so Meson can find libraries via .pc files.
+    # portmidi: MIDI library required by pygame-ce's Meson build.
+    # freetype2: font rendering library required by pygame-ce.
+    build_deps=("sdl2" "sdl2_mixer" "sdl2_image" "sdl2_ttf" "portmidi" "freetype2" "pkgconf")
+    for dep in "${build_deps[@]}"; do
         pacman -Qq "$dep" >/dev/null 2>&1 || NEEDED_DEPS+=("$dep")
     done
 fi
