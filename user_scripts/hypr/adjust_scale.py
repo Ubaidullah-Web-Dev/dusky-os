@@ -5,8 +5,8 @@ import subprocess
 import json
 import tempfile
 import re
+import time
 from pathlib import Path
-from typing import Optional, Tuple, List
 
 # --- Immutable Configuration ---
 CONFIG_DIR = Path.home() / ".config/hypr/edit_here/source"
@@ -22,164 +22,200 @@ SCALE_STEPS = [
     2.67, 2.8, 3.0
 ]
 
-def notify(title: str, body: str, urgency: str = "low"):
-    """Dispatches a notification using the canonical synchronous tag."""
-    subprocess.run([
-        "notify-send", 
-        "-h", f"string:x-canonical-private-synchronous:{NOTIFY_TAG}",
-        "-u", urgency, 
-        "-t", "2000", 
-        title, 
-        body
-    ], stderr=subprocess.DEVNULL)
+# --- Runtime State & Logging ---
+DEBUG = os.environ.get("DEBUG") == "1"
 
-def get_active_monitor() -> Tuple[str, int, int, float]:
-    """Retrieves the focused monitor's name, physical dimensions, and current scale."""
+def log_err(msg: str) -> None: sys.stderr.write(f"\033[0;31m[ERROR]\033[0m {msg}\n")
+def log_warn(msg: str) -> None: sys.stderr.write(f"\033[0;33m[WARN]\033[0m {msg}\n")
+def log_info(msg: str) -> None: sys.stderr.write(f"\033[0;32m[INFO]\033[0m {msg}\n")
+def log_debug(msg: str) -> None:
+    if DEBUG: sys.stderr.write(f"\033[0;34m[DEBUG]\033[0m {msg}\n")
+
+def notify(title: str, body: str, urgency: str = "low") -> None:
+    """Dispatches a notification safely, ignoring if the daemon is missing."""
+    try:
+        subprocess.run([
+            "notify-send", 
+            "-h", f"string:x-canonical-private-synchronous:{NOTIFY_TAG}",
+            "-u", urgency, 
+            "-t", "2000", 
+            title, 
+            body
+        ], stderr=subprocess.DEVNULL)
+    except FileNotFoundError:
+        pass
+
+def get_active_monitor(target_override: str | None = None) -> tuple[str, int, int, float]:
+    """Retrieves monitor state, respecting environment overrides or window focus."""
     try:
         res = subprocess.run(["hyprctl", "-j", "monitors"], capture_output=True, text=True, check=True)
         monitors = json.loads(res.stdout)
-    except (subprocess.CalledProcessError, json.JSONDecodeError):
-        sys.exit("ERROR: Cannot communicate with Hyprland IPC.")
+    except subprocess.CalledProcessError:
+        log_err("Cannot communicate with Hyprland IPC.")
+        sys.exit(1)
+    except FileNotFoundError:
+        log_err("'hyprctl' binary not found in PATH.")
+        sys.exit(1)
+    except json.JSONDecodeError:
+        log_err("Invalid JSON returned by Hyprland.")
+        sys.exit(1)
 
     if not monitors:
-        sys.exit("ERROR: No active monitors found.")
+        log_err("No active monitors found.")
+        sys.exit(1)
 
-    # Prioritize focused monitor, fallback to the first available
-    target = next((m for m in monitors if m.get("focused")), monitors[0])
-    
+    if target_override:
+        target = next((m for m in monitors if m["name"] == target_override), None)
+        if not target:
+            log_err(f"Target monitor '{target_override}' not found.")
+            sys.exit(1)
+    else:
+        target = next((m for m in monitors if m.get("focused")), monitors[0])
+        
     return target["name"], target["width"], target["height"], target["scale"]
 
-def compute_next_scale(current: float, direction: str, phys_w: int, phys_h: int) -> Optional[float]:
-    """Calculates the nearest mathematically valid scale without fractional pixel remainders."""
-    valid_scales: List[float] = []
+def compute_next_scale(current: float, direction: str, phys_w: int, phys_h: int) -> float | None:
+    """Calculates the nearest mathematically valid scale strictly enforcing direction."""
+    valid_scales: list[float] = []
 
     for s in SCALE_STEPS:
         lw, lh = phys_w / s, phys_h / s
-        
-        # Reject if logical resolution is too small
         if lw < MIN_LOGICAL_WIDTH or lh < MIN_LOGICAL_HEIGHT:
             continue
-            
-        # STRICT MATH GUARD: A valid scale must divide both width and height cleanly without decimals
         if abs(lw - round(lw)) > 0.01 or abs(lh - round(lh)) > 0.01:
             continue
-            
         valid_scales.append(s)
 
     if not valid_scales:
         valid_scales = [1.0]
 
-    # Find the closest matching scale in our valid array
-    closest_idx = min(range(len(valid_scales)), key=lambda i: abs(valid_scales[i] - current))
+    if direction == "+":
+        candidates = [s for s in valid_scales if s > current + 0.000001]
+        if not candidates: return None
+        return min(candidates)
+    else:
+        candidates = [s for s in valid_scales if s < current - 0.000001]
+        if not candidates: return None
+        return max(candidates)
 
-    # Determine target index
-    target_idx = closest_idx + 1 if direction == "+" else closest_idx - 1
-    target_idx = max(0, min(target_idx, len(valid_scales) - 1))
-
-    new_scale = valid_scales[target_idx]
-    
-    # Return None if the limit is reached
-    if abs(new_scale - current) < 0.000001:
-        return None
-        
-    return new_scale
-
-def update_config_atomically(monitor_name: str, new_scale: float):
-    """Parses and updates the Hyprland config using strict POSIX atomic file replacement."""
+def update_config_atomically(monitor_name: str, new_scale: float) -> None:
+    """Updates the config via state machine and strict POSIX atomic replacement."""
     if not CONFIG_FILE.exists():
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         CONFIG_FILE.touch()
 
-    # Resolve symlinks to target the actual physical file
     real_path = CONFIG_FILE.resolve()
-    
     with open(real_path, "r") as f:
-        lines = f.readlines()
+        config_text = f.read()
 
-    new_lines = []
     found = False
-    in_v2_block = False
-    current_v2_output = ""
-    
-    v1_regex = re.compile(r"^(\s*monitor\s*=\s*)([^,]+)(,.*)$")
+    log_debug(f"Updating config: {monitor_name} -> {new_scale:g}")
 
-    for line in lines:
-        # --- Handle V2 Syntax ---
-        if "monitorv2 {" in line:
-            in_v2_block = True
-            new_lines.append(line)
-            continue
-            
-        if in_v2_block:
-            if "output =" in line:
-                current_v2_output = line.split("=")[1].strip()
-            if "}" in line:
-                in_v2_block = False
-                current_v2_output = ""
-                
-            if current_v2_output == monitor_name and "scale =" in line:
-                new_lines.append(f"    scale = {new_scale:g}\n")
-                found = True
-                continue
-                
-        # --- Handle V1 Syntax ---
-        else:
-            match = v1_regex.match(line)
-            if match:
-                prefix, mon, remainder = match.groups()
-                if mon.strip() == monitor_name:
-                    parts = remainder.split(",")
-                    # Parts: [0]="", [1]=res, [2]=pos, [3]=scale, [4+]=extra
-                    if len(parts) >= 4:
-                        parts[3] = f" {new_scale:g}"
-                        new_lines.append(f"{prefix}{mon}{','.join(parts)}\n")
-                        found = True
-                        continue
+    # 1. Process V2 Blocks
+    def v2_replacer(match: re.Match) -> str:
+        nonlocal found
+        block = match.group(0)
+        if re.search(rf"^\s*output\s*=\s*{re.escape(monitor_name)}\b", block, re.MULTILINE):
+            if re.search(r"^\s*scale\s*=.*", block, re.MULTILINE):
+                block = re.sub(r"(^\s*scale\s*=).*$", rf"\1 {new_scale:g}", block, flags=re.MULTILINE)
+            else:
+                block = re.sub(r"(\s*)\}$", rf"\1    scale = {new_scale:g}\n}}", block)
+            found = True
+        return block
+        
+    config_text = re.sub(r"monitorv2\s*\{[^}]*\}", v2_replacer, config_text)
 
-        new_lines.append(line)
-
+    # 2. Process V1 Rules
     if not found:
-        new_lines.append(f"monitor = {monitor_name}, preferred, auto, {new_scale:g}\n")
+        def v1_replacer(match: re.Match) -> str:
+            nonlocal found
+            mon_name = match.group(2).strip()
+            
+            if mon_name == monitor_name:
+                found = True
+                remainder = match.group(3)
+                comment = ""
+                
+                # FIX: Dynamically capture the comment and all preceding whitespace to preserve formatting
+                c_match = re.search(r'(\s*#.*)', remainder)
+                if c_match:
+                    comment = c_match.group(1)
+                    remainder = remainder[:c_match.start()]
+                
+                parts = remainder.split(",")
+                if len(parts) == 2:
+                    if "disable" in parts[1].strip():
+                        parts = ["", " preferred", " auto", f" {new_scale:g}"]
+                    else:
+                        parts.extend([" auto", f" {new_scale:g}"])
+                elif len(parts) == 3:
+                    parts.append(f" {new_scale:g}")
+                elif len(parts) >= 4:
+                    parts[3] = f" {new_scale:g}"
+                
+                return f"{match.group(1)}{match.group(2)}{','.join(parts)}{comment}"
+            return match.group(0)
 
-    # Atomic Write: Create temp file in the SAME directory as the resolved target
+        config_text = re.sub(r"^(\s*monitor\s*=\s*)([^,\n]+)(,.*)$", v1_replacer, config_text, flags=re.MULTILINE)
+
+    # 3. Append entirely new rule
+    if not found:
+        log_info(f"Appending new entry for: {monitor_name}")
+        config_text += f"\nmonitor = {monitor_name}, preferred, auto, {new_scale:g}\n"
+
+    # 4. Strict POSIX Atomic Write
     fd, temp_path = tempfile.mkstemp(dir=real_path.parent, prefix=".monitors.conf.tmp.")
     try:
         with os.fdopen(fd, 'w') as temp_file:
-            temp_file.writelines(new_lines)
+            temp_file.write(config_text)
             
-        # Duplicate file stats (permissions)
         os.chmod(temp_path, real_path.stat().st_mode)
-        
-        # Atomic POSIX replacement
         os.replace(temp_path, real_path)
     except Exception as e:
         os.remove(temp_path)
-        sys.exit(f"ERROR: Atomic write failed: {e}")
+        log_err(f"Atomic write failed: {e}")
+        sys.exit(1)
 
 def main():
     if len(sys.argv) != 2 or sys.argv[1] not in ("+", "-"):
-        sys.exit(f"Usage: {sys.argv[0]} [+|-]")
+        sys.stderr.write(f"Usage: {sys.argv[0]} [+|-]\n")
+        sys.exit(1)
 
     direction = sys.argv[1]
+    target_override = os.environ.get("HYPR_SCALE_MONITOR")
     
-    mon_name, phys_w, phys_h, current_scale = get_active_monitor()
-    
+    mon_name, phys_w, phys_h, current_scale = get_active_monitor(target_override)
     new_scale = compute_next_scale(current_scale, direction, phys_w, phys_h)
     
     if new_scale is None:
+        log_warn(f"Limit reached: {current_scale:g}")
         notify("Monitor Scale", f"Limit Reached: {current_scale:g}", "normal")
         return
 
-    # 1. Atomically update the configuration file
+    # Write the target scale to disk
     update_config_atomically(mon_name, new_scale)
     
-    # 2. Reload Hyprland to apply state (preserves advanced args natively)
+    log_info(f"Applying scale {new_scale:g} via hyprctl reload")
     subprocess.run(["hyprctl", "reload"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     
-    logic_w = int(phys_w / new_scale)
-    logic_h = int(phys_h / new_scale)
+    # State Verification: Deterministic polling to prevent async race conditions
+    actual_scale = current_scale
+    for _ in range(25):  # Poll every 100ms for up to 2.5 seconds
+        time.sleep(0.1)
+        _, _, _, polled_scale = get_active_monitor(mon_name)
+        if abs(polled_scale - current_scale) > 0.000001:
+            actual_scale = polled_scale
+            break
+        actual_scale = polled_scale
     
-    notify(f"Display Scale: {new_scale:g}", f"Monitor: {mon_name}\nLogical: {logic_w}x{logic_h}")
+    # Verify if Wayland accepted the request or clamped it due to hardware limits
+    if abs(actual_scale - new_scale) > 0.000001:
+        log_warn(f"Hyprland override detected: requested {new_scale:g}, active is {actual_scale:g}")
+        update_config_atomically(mon_name, actual_scale)
+        notify("Scale Adjusted", f"Requested {new_scale:g}, got {actual_scale:g}")
+    else:
+        logic_w, logic_h = round(phys_w / new_scale), round(phys_h / new_scale)
+        notify(f"Display Scale: {new_scale:g}", f"Monitor: {mon_name}\nLogical: {logic_w}x{logic_h}")
 
 if __name__ == "__main__":
     main()
