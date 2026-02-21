@@ -76,6 +76,7 @@ declare -A CUSTOM_SCRIPT_PATHS=(
     ["copy_service_files.sh"]="user_scripts/misc_extra/copy_service_files.sh"
     ["update_checker.sh"]="user_scripts/update_dusky/update_checker/update_checker.sh"
     ["cc_restart.sh"]="user_scripts/dusky_system/reload_cc/cc_restart.sh"
+    ["dusky_service_manager.sh"]="user_scripts/services/dusky_service_manager.sh"
 )
 
 # ------------------------------------------------------------------------------
@@ -127,7 +128,7 @@ declare -ra UPDATE_SEQUENCE=(
 #    "S | 220_logrotate_optimization.sh"
 #    "S | 225_faillock_timeout.sh"
     "U | 230_non_asus_laptop.sh --auto"
-#    "U | 235_file_manager_switch.sh"
+    "U | 235_file_manager_switch.sh --apply-state"
 #    "U | 240_swaync_dgpu_fix.sh --disable"
 #    "S | 245_asusd_service_fix.sh"
 #    "S | 250_ftp_arch.sh"
@@ -183,6 +184,7 @@ declare -ra UPDATE_SEQUENCE=(
     "U | update_checker.sh --num"
 #    "S | package_installation.sh"
     "U | cc_restart.sh --quiet"
+    "S | dusky_service_manager.sh"
 )
 
 # ==============================================================================
