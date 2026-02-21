@@ -101,8 +101,16 @@ capture_gitdelta() {
         return 0
     fi
 
-    # Non-mutating diff extraction (avoids touching the git index)
-    diff_output=$("${git_cmd[@]}" diff --color=never 2>/dev/null || true)
+    # Zshrc Alignment: Update the index FIRST so newly listed files are tracked
+    local pathspec_file="${WORK_TREE}/.git_dusky_list"
+    if [[ -f "$pathspec_file" ]]; then
+        (cd "$WORK_TREE" && "${git_cmd[@]}" add --pathspec-from-file=.git_dusky_list 2>/dev/null) || true
+    else
+        log "WARNING" "Pathspec file not found: $pathspec_file — skipping git add"
+    fi
+
+    # Diff HEAD (matches your 'gitdelta' alias: diffs index + working tree against last commit)
+    diff_output=$("${git_cmd[@]}" diff --color=never HEAD 2>/dev/null || true)
     
     if [[ -n "$diff_output" ]]; then
         printf '%s\n' "$diff_output" > "$delta_file"
