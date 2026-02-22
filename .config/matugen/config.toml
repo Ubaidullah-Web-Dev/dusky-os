@@ -113,7 +113,7 @@ post_hook   = '''
 bash -c '
 {
   if command -v vscodium >/dev/null 2>&1; then
-    ln -nfs "$HOME/.config/matugen/generated/vscode.json" "$HOME/.config/VSCodium/User/settings.json"
+    unlink "$HOME/.config/VSCodium/User/settings.json" && ln -nfs "$HOME/.config/matugen/generated/vscode.json" "$HOME/.config/VSCodium/User/settings.json"
   fi
 } >/dev/null 2>&1 </dev/null & disown
 '
