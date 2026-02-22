@@ -2012,7 +2012,7 @@ pages:
                 button_text: "Open"
               on_press:
                 type: exec
-                command: kitty --class dusky_neovim_manager.sh --hold sh -c "$HOME/user_scripts/nvim/reset/dusky_neovim_manager.sh"
+                command: kitty --class dusky_neovim_manager.sh --hold sh -c "$HOME/user_scripts/nvim/dusky_neovim_manager.sh"
                 terminal: false
 
         - type: section
