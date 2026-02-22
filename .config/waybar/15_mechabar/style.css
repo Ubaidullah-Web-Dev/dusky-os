@@ -197,6 +197,11 @@ tooltip label {
     media info
 ----------------*/
 
+#custom-cava {
+	letter-spacing: 2px;
+	padding-right: 8px;
+}
+
 #mpris {
 	padding: 0 12px;
 }
