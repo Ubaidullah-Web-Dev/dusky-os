@@ -42,7 +42,7 @@ readonly SERVICES_CONFIG=(
     # dusky update checker
     "$HOME/user_scripts/update_dusky/update_checker/service/update_checker.service | disable"
     "$HOME/user_scripts/update_dusky/update_checker/service/update_checker.timer | enable"
-    "$HOME/user_scripts/sliders/service/dusky_sliders.service | disable"
+    "$HOME/user_scripts/dusky_system/quickpanal/service/dusky_quickpanal.service | disable"
 
 
     # dusky osd

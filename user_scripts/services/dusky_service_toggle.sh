@@ -38,7 +38,7 @@ declare -ra USER_SERVICE_DEFS=(
     "battery_notify.service|Battery Level Notifications"
     "network_meter.service|Waybar Network Traffic Monitor"
     "dusky.service|Dusky Background Service"
-    "dusky_sliders.service|Dusky Sliders Service"
+    "dusky_quickpanal.service|Dusky quickpanal Service"
     "update_checker.timer|Automatic Update Checker"
     "hypridle.service|Hyprland Idle Daemon"
     "osd_lock.service|OSD for CapsLock,NumLock,ScrollLock"

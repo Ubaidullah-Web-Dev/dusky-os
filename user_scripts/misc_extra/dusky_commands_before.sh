@@ -28,6 +28,7 @@ declare -ra FLEET_COMMANDS=(
     "U | sed -i 's/^zen$/zen-browser/' ~/.config/dusky/settings/browser_switch.smart || true"
     "U | mkdir -p ~/.config/opencode/themes || true"
     "U | mkdir -p ~/.config/Kvantum/matugen || true"
+    "U | systemctl --user disable --now dusky_sliders.service || true"
     # --- System Services ---
 #    "U | systemctl --user disable dusky.service || true"
 #    "S | systemctl enable --now tlp.service || true"

@@ -1048,7 +1048,7 @@ pages:
         button_text: "Open"
       on_press:
         type: exec
-        command: $HOME/user_scripts/sliders/dusky_sliders.py
+        command: $HOME/user_scripts/dusky_system/quickpanal/dusky_quickpanal.py
         terminal: false
   - type: section
     properties:

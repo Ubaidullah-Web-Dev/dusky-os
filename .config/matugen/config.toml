@@ -280,12 +280,12 @@ post_hook   = '''
   systemctl --user restart dusky.service || :
 '''
 
-[templates.dusky_sliders]
+[templates.dusky_quickpanal]
 input_path  = '/dev/null'
 output_path = '/dev/null'
 post_hook   = '''
-  systemctl --user reset-failed dusky_sliders.service || :
-  systemctl --user restart dusky_sliders.service || :
+  systemctl --user reset-failed dusky_quickpanal.service || :
+  systemctl --user restart dusky_quickpanal.service || :
 '''
 
 

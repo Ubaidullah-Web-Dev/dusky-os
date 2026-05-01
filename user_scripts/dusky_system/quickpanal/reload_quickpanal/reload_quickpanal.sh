@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# Script: reload_sliders.sh
-# Purpose: Forcefully manages the Dusky Sliders lifecycle.
+# Script: reload_quickpanal.sh
+# Purpose: Forcefully manages the Dusky quickpanal lifecycle.
 #          1. Snapshots and terminates running instances (SIGTERM -> SIGKILL).
 #          2. Resets systemd failure state.
 #          3. Starts a clean systemd user service instance.
@@ -19,10 +19,10 @@ trap '' HUP
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-readonly APP_NAME="Dusky Sliders"
-readonly SERVICE_NAME="dusky_sliders.service"
-readonly PROCESS_PATTERN='dusky_sliders\.py'
-readonly GUI_SCRIPT_PATH="${HOME}/user_scripts/sliders/dusky_sliders.py"
+readonly APP_NAME="Dusky quickpanal"
+readonly SERVICE_NAME="dusky_quickpanal.service"
+readonly PROCESS_PATTERN='dusky_quickpanal\.py'
+readonly GUI_SCRIPT_PATH="${HOME}/user_scripts/dusky_system/dusky_quickpanal/dusky_quickpanal.py"
 
 # Timing Constants (Seconds)
 readonly GRACE_PERIOD_LOOPS=20

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Dusky Sliders: GTK4/Libadwaita controls for PipeWire volume, Linux backlight,
-DDC/CI monitor brightness, Hyprland hyprsunset temperature, and MPRIS Media.
+Dusky Quick Panal: Unified GTK4/Libadwaita Control Center & Sliders.
 
 Target: Arch Linux + Hyprland + Python 3.14.4+
+Features: Top-Aligned Metrics, 5x2 Glassy Grid, Battle-Tested Hardware Sliders, Full MPRIS.
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ import json
 import logging
 import math
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -22,11 +24,12 @@ import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Final, override
+from typing import Any, Final, override
 
 if sys.version_info < (3, 14, 4):
-    raise SystemExit("Dusky Sliders requires Python 3.14.4 or newer.")
+    raise SystemExit("Dusky Quick Panal requires Python 3.14.4 or newer.")
 
 try:
     import gi
@@ -39,7 +42,8 @@ except (ImportError, ValueError) as exc:
     raise SystemExit(f"Failed to load GTK4/Libadwaita: {exc}") from exc
 
 
-APP_ID: Final = "org.dusky.sliders"
+APP_ID: Final = "org.dusky.quickpanal"
+HOME: Final = os.path.expanduser("~")
 
 if not logging.getLogger().handlers:
     logging.basicConfig(
@@ -67,7 +71,6 @@ DDC_SET_TIMEOUT: Final = 2.75
 SUNSET_READY_TIMEOUT: Final = 2.50
 SUNSET_FALLBACK_READY_TIMEOUT: Final = 1.25
 LIVE_REFRESH_INTERVAL_SECONDS: Final = 2
-MEDIA_REFRESH_INTERVAL_SECONDS: Final = 1.0
 BRIGHTNESS_POST_SUBMIT_REFRESH_GRACE_SECONDS: Final = max(1.50, QUERY_TIMEOUT + 0.50)
 SUNSET_STATE_WRITE_DEBOUNCE_SECONDS: Final = 0.40
 
@@ -82,6 +85,9 @@ PGREP: Final = shutil.which("pgrep")
 SYSTEMCTL: Final = shutil.which("systemctl")
 PLAYERCTL: Final = shutil.which("playerctl")
 
+# ==============================================================================
+# UTILITIES & STATE MANAGEMENT
+# ==============================================================================
 
 def clamp(value: float, lower: float, upper: float) -> float:
     if not math.isfinite(value):
@@ -156,6 +162,17 @@ def run_command(
         LOG.debug("Command failed: %r: %s", argv, exc)
         return None
 
+def execute_cmd(cmd: str) -> None:
+    subprocess.Popen(cmd, shell=True, env=COMMAND_ENV, executable="/usr/bin/bash")
+
+def fetch_json_output(cmd: str) -> dict[str, Any] | None:
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=2.0, env=COMMAND_ENV)
+        if r.returncode == 0 and r.stdout.strip():
+            return json.loads(r.stdout.strip())
+    except Exception:
+        pass
+    return None
 
 def _resolve_state_dir() -> Path | None:
     candidates: list[Path] = []
@@ -252,6 +269,33 @@ def atomic_write_text(path: Path, text: str, *, durable: bool = True) -> bool:
                 temp_path.unlink()
             except OSError:
                 pass
+
+
+# ==============================================================================
+# WORKERS & THREAD POOLING
+# ==============================================================================
+
+class RefreshPool:
+    __slots__ = ("_executor", "_shutdown")
+
+    def __init__(self, max_workers: int = 8) -> None:
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="dusky-refresh",
+        )
+        self._shutdown = False
+
+    def submit(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Future[Any] | None:
+        if self._shutdown:
+            return None
+        try:
+            return self._executor.submit(func, *args, **kwargs)
+        except RuntimeError:
+            return None
+
+    def shutdown(self) -> None:
+        self._shutdown = True
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
 
 class LatestValueWorker:
@@ -470,6 +514,10 @@ class DebouncedValueWriter:
                     self._busy = False
                     self._condition.notify_all()
 
+
+# ==============================================================================
+# HARDWARE CONTROLLERS (BRIGHTNESS, VOLUME, SUNSET)
+# ==============================================================================
 
 @dataclass(frozen=True, slots=True)
 class BacklightDevice:
@@ -1020,102 +1068,6 @@ HAS_SUNSET: Final = (
     and HYPRSUNSET is not None
     and bool(os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"))
 )
-HAS_PLAYERCTL: Final = PLAYERCTL is not None
-
-# ==============================================================================
-# MPRIS MEDIA STATE
-# ==============================================================================
-
-@dataclass
-class MediaState:
-    players: list[str]
-    status: str | None
-    title: str
-    artist: str
-    position: float
-    length: float
-    shuffle: bool
-    loop: str
-
-def _playerctl(cmd_args: list[str], player: str | None = None) -> str | None:
-    if PLAYERCTL is None:
-        return None
-    cmd = [PLAYERCTL]
-    if player and player != "auto":
-        cmd.extend(["-p", player])
-    cmd.extend(cmd_args)
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=0.2, env=COMMAND_ENV)
-        if r.returncode == 0:
-            return r.stdout.strip()
-    except Exception:
-        pass
-    return None
-
-def fetch_media_state(player: str | None = None) -> MediaState | None:
-    if PLAYERCTL is None:
-        return None
-
-    try:
-        r = subprocess.run([PLAYERCTL, "-l"], capture_output=True, text=True, timeout=0.2, env=COMMAND_ENV)
-        current_players = [p.strip() for p in r.stdout.splitlines() if p.strip()]
-    except Exception:
-        current_players = []
-
-    if not current_players:
-        return None
-
-    status = _playerctl(["status"], player)
-    if status not in ("Playing", "Paused"):
-        return None
-
-    raw_meta = _playerctl(["metadata"], player)
-    title, artist, length = "Unknown", "", 0.0
-    if raw_meta:
-        for line in raw_meta.splitlines():
-            parts = line.split(None, 2)
-            if len(parts) >= 3:
-                key, val = parts[1], parts[2]
-                if key == "xesam:title": title = val
-                elif key == "xesam:artist": artist = val
-                elif key == "mpris:length":
-                    try: length = int(val) / 1_000_000.0
-                    except ValueError: pass
-
-    pos_str = _playerctl(["position"], player)
-    pos = 0.0
-    if pos_str:
-        try: pos = float(pos_str)
-        except ValueError: pass
-
-    shuffle = (_playerctl(["shuffle"], player) or "").lower() == "on"
-    loop = _playerctl(["loop"], player) or "None"
-
-    return MediaState(
-        players=current_players,
-        status=status,
-        title=title,
-        artist=artist,
-        position=pos,
-        length=length,
-        shuffle=shuffle,
-        loop=loop
-    )
-
-def execute_player_cmd(cmd_list: list[str], player: str | None = None) -> None:
-    def worker() -> None:
-        _playerctl(cmd_list, player)
-    start_thread("playerctl-cmd", worker, daemon=True)
-
-def cycle_loop(current: str, player: str | None = None) -> None:
-    cycle = {'None': 'Playlist', 'Playlist': 'Track', 'Track': 'None'}
-    execute_player_cmd(['loop', cycle.get(current, 'None')], player)
-
-def _format_time(secs: float) -> str:
-    if secs < 0:
-        secs = 0.0
-    s = int(secs)
-    return f"{s // 60}:{s % 60:02d}"
 
 
 def get_volume() -> float | None:
@@ -1340,36 +1292,9 @@ class HyprsunsetController:
                 self._ready.clear()
 
 
-class RefreshPool:
-    __slots__ = ("_executor", "_shutdown")
-
-    def __init__(self, max_workers: int = 3) -> None:
-        self._executor = ThreadPoolExecutor(
-            max_workers=max_workers,
-            thread_name_prefix="dusky-refresh",
-        )
-        self._shutdown = False
-
-    def submit(self, func: FloatGetter) -> Future[float | None] | None:
-        if self._shutdown:
-            return None
-        try:
-            return self._executor.submit(func)
-        except RuntimeError:
-            return None
-
-    def submit_generic(self, func: Callable) -> Future | None:
-        if self._shutdown:
-            return None
-        try:
-            return self._executor.submit(func)
-        except RuntimeError:
-            return None
-
-    def shutdown(self) -> None:
-        self._shutdown = True
-        self._executor.shutdown(wait=False, cancel_futures=True)
-
+# ==============================================================================
+# GTK4 UI (SLIDERS COMPONENTS)
+# ==============================================================================
 
 class CompactSliderRow(Gtk.Box):
     def __init__(
@@ -1565,186 +1490,288 @@ class CompactSliderRow(Gtk.Box):
         self._submit_cb(snapped)
 
 
+# ==============================================================================
+# MPRIS MEDIA STATE & LOGIC
+# ==============================================================================
+
+@dataclass
+class MediaState:
+    players: list[str]
+    status: str | None
+    title: str
+    artist: str
+    position: float
+    length: float
+    shuffle: bool
+    loop: str
+
+def _playerctl(cmd_args: list[str], player: str | None = None) -> str | None:
+    if PLAYERCTL is None: return None
+    cmd = [PLAYERCTL]
+    if player and player != "auto": cmd.extend(["-p", player])
+    cmd.extend(cmd_args)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=0.2, env=COMMAND_ENV)
+        if r.returncode == 0: return r.stdout.strip()
+    except Exception: pass
+    return None
+
+def fetch_media_state(player: str | None = None) -> MediaState | None:
+    if PLAYERCTL is None: return None
+    try:
+        r = subprocess.run([PLAYERCTL, "-l"], capture_output=True, text=True, timeout=0.2, env=COMMAND_ENV)
+        current_players = [p.strip() for p in r.stdout.splitlines() if p.strip()]
+    except Exception:
+        current_players = []
+
+    if not current_players: return None
+
+    status = _playerctl(["status"], player)
+    if status not in ("Playing", "Paused"): return None
+
+    raw_meta = _playerctl(["metadata"], player)
+    title, artist, length = "Unknown", "", 0.0
+    if raw_meta:
+        for line in raw_meta.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) >= 3:
+                key, val = parts[1], parts[2]
+                if key == "xesam:title": title = val
+                elif key == "xesam:artist": artist = val
+                elif key == "mpris:length":
+                    try: length = int(val) / 1_000_000.0
+                    except ValueError: pass
+
+    pos = 0.0
+    if pos_str := _playerctl(["position"], player):
+        try: pos = float(pos_str)
+        except ValueError: pass
+
+    shuffle = (_playerctl(["shuffle"], player) or "").lower() == "on"
+    loop = _playerctl(["loop"], player) or "None"
+
+    return MediaState(current_players, status, title, artist, pos, length, shuffle, loop)
+
+def _format_time(secs: float) -> str:
+    s = int(max(0.0, secs))
+    return f"{s // 60}:{s % 60:02d}"
+
+# ==============================================================================
+# GTK4 WIDGET ARCHITECTURE (CORE PANEL)
+# ==============================================================================
+
+class QuickIconToggle(Gtk.Overlay):
+    def __init__(self, icon_name: str, tooltip: str, on_left: str = "", on_middle: str = "", on_right: str = ""):
+        super().__init__()
+        self.btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self.btn_box.add_css_class("quick-icon-toggle")
+        self.btn_box.set_tooltip_text(tooltip)
+        
+        self._icon = Gtk.Image.new_from_icon_name(icon_name)
+        self._icon.set_pixel_size(24)
+        self._icon.set_halign(Gtk.Align.CENTER)
+        self._icon.set_valign(Gtk.Align.CENTER)
+        self._icon.set_hexpand(True)
+        self.btn_box.append(self._icon)
+
+        self.set_child(self.btn_box)
+
+        self.badge_lbl = Gtk.Label(css_classes=["notification-badge"])
+        self.badge_lbl.set_halign(Gtk.Align.END)
+        self.badge_lbl.set_valign(Gtk.Align.START)
+        self.badge_lbl.set_visible(False)
+        self.add_overlay(self.badge_lbl)
+
+        click_ctrl = Gtk.GestureClick.new()
+        click_ctrl.set_button(0)
+        click_ctrl.connect("pressed", self._on_clicked)
+        self.add_controller(click_ctrl)
+        
+        self.cmds = {Gdk.BUTTON_PRIMARY: on_left, Gdk.BUTTON_MIDDLE: on_middle, Gdk.BUTTON_SECONDARY: on_right}
+
+    def _on_clicked(self, gesture, n_press, x, y):
+        if cmd := self.cmds.get(gesture.get_current_button()): execute_cmd(cmd)
+
+    def update_state(self, icon: str | None = None, css_class: str | None = None, tooltip: str | None = None, badge: str = ""):
+        if icon: self._icon.set_from_icon_name(icon)
+        if tooltip: self.btn_box.set_tooltip_text(tooltip)
+        if css_class: self.btn_box.set_css_classes(["quick-icon-toggle", css_class])
+        if badge and badge.strip() and badge != "0":
+            self.badge_lbl.set_label(badge)
+            self.badge_lbl.set_visible(True)
+        else:
+            self.badge_lbl.set_visible(False)
+
+class MetricPill(Gtk.Box):
+    def __init__(self, icon: str | None, tooltip: str, on_click: str = "", small_text: bool = False):
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL)
+        self.add_css_class("metric-pill")
+        self.set_tooltip_text(tooltip)
+        self.set_hexpand(True)
+        
+        if on_click:
+            self.add_css_class("clickable-pill")
+            click_ctrl = Gtk.GestureClick.new()
+            click_ctrl.connect("pressed", lambda *args: execute_cmd(on_click))
+            self.add_controller(click_ctrl)
+            
+        self._inner = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._inner.set_halign(Gtk.Align.CENTER)
+        self._inner.set_hexpand(True)
+        
+        if icon:
+            self._icon = Gtk.Image.new_from_icon_name(icon)
+            self._icon.set_pixel_size(16)
+            self._inner.append(self._icon)
+        
+        self._val_lbl = Gtk.Label(label="--")
+        self._val_lbl.add_css_class("metric-value-small" if small_text else "metric-value")
+        self._val_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        
+        self._inner.append(self._val_lbl)
+        self.append(self._inner)
+        
+    def set_value(self, text: str):
+        self._val_lbl.set_label(text)
+        
+    def apply_json(self, data: dict[str, Any] | None, hide_class: str = "empty"):
+        if not data or data.get("class", "") == hide_class:
+            self._val_lbl.set_label("--")
+        else:
+            text = str(data.get("text", "")).replace("\\n", " ").replace("\n", " ").strip()
+            self._val_lbl.set_markup(text)
+
+class DynamicBannerCard(Gtk.Box):
+    def __init__(self, icon: str):
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.add_css_class("banner-card")
+        self.set_visible(False) 
+        self._icon = Gtk.Image.new_from_icon_name(icon)
+        self._icon.set_pixel_size(20)
+        self._icon.add_css_class("accent-icon")
+        self._val_lbl = Gtk.Label()
+        self._val_lbl.set_halign(Gtk.Align.START)
+        self._val_lbl.set_hexpand(True)
+        self.append(self._icon)
+        self.append(self._val_lbl)
+
+    def apply_json(self, data: dict[str, Any] | None, hide_class: str = "empty"):
+        if not data or data.get("class", "") == hide_class:
+            self.set_visible(False)
+        else:
+            self.set_visible(True)
+            self._val_lbl.set_markup(str(data.get("text", "")).replace("\\n", " ").strip())
+
+
 class MediaCard(Gtk.Box):
-    def __init__(self, refresh_pool: RefreshPool):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        self._refresh_pool = refresh_pool
+    def __init__(self, pool: RefreshPool):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self._pool = pool
         self._refresh_future: Future | None = None
         self._suppress_seek = False
         self._pending_seek_deadline = 0.0
-        self._current_players_cache: list[str] = []
-        self._updating_model = False
-
-        self.set_margin_top(8)
-        self.set_margin_bottom(8)
-        self.set_margin_start(14)
-        self.set_margin_end(14)
+        self._cache_players: list[str] = []
+        
         self.add_css_class("media-card")
         self.set_visible(False)
 
-        sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-        sep.set_margin_bottom(8)
-        self.append(sep)
-
-        # -- Player Selection --
-        self.player_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.player_label = Gtk.Label(label="Source:")
-        self.player_label.add_css_class("value-label")
-        self._player_model = Gtk.StringList.new(["Auto"])
-        self.player_combo = Gtk.DropDown.new(model=self._player_model)
-        self.player_combo.set_hexpand(True)
-        self.player_combo.connect("notify::selected", self._on_player_selected)
-        
-        self.player_box.append(self.player_label)
-        self.player_box.append(self.player_combo)
-        self.append(self.player_box)
-
-        # -- Metadata --
-        self.meta_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        meta_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        meta_box.set_hexpand(True)
         self.title_lbl = Gtk.Label(label=" ")
         self.title_lbl.set_halign(Gtk.Align.START)
         self.title_lbl.set_ellipsize(Pango.EllipsizeMode.END)
         self.title_lbl.add_css_class("media-title")
-        self.meta_box.append(self.title_lbl)
-
         self.artist_lbl = Gtk.Label(label=" ")
         self.artist_lbl.set_halign(Gtk.Align.START)
         self.artist_lbl.set_ellipsize(Pango.EllipsizeMode.END)
         self.artist_lbl.add_css_class("media-artist")
-        self.meta_box.append(self.artist_lbl)
-        self.append(self.meta_box)
+        meta_box.append(self.title_lbl)
+        meta_box.append(self.artist_lbl)
+        header_box.append(meta_box)
 
-        # -- Progress Bar --
-        self.progress_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        
-        # Alignment fixes applied here to stop UI clipping and layout jumping
-        self.elapsed_lbl = Gtk.Label(label="0:00")
-        self.elapsed_lbl.add_css_class("media-time")
-        self.elapsed_lbl.set_valign(Gtk.Align.CENTER)
+        self.audio_btn = Gtk.Button(icon_name="audio-speakers-symbolic", css_classes=["flat"])
+        self.audio_btn.set_valign(Gtk.Align.CENTER)
+        self.audio_btn.set_tooltip_text("Switch Audio Output")
+        self.audio_btn.connect("clicked", lambda _: execute_cmd(f"uwsm app -- {HOME}/user_scripts/audio/audio_switch.sh"))
+        header_box.append(self.audio_btn)
+
+        self._player_model = Gtk.StringList.new(["Auto"])
+        self.player_combo = Gtk.DropDown.new(model=self._player_model)
+        self.player_combo.set_valign(Gtk.Align.CENTER)
+        self.player_combo.connect("notify::selected", lambda *_: self.refresh_async())
+        header_box.append(self.player_combo)
+        self.append(header_box)
+
+        prog_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.elapsed_lbl = Gtk.Label(label="0:00", css_classes=["media-time"])
         self.elapsed_lbl.set_width_chars(5)
-        self.elapsed_lbl.set_xalign(1.0)
-        
-        self.seek_adj = Gtk.Adjustment(value=0, lower=0, upper=1, step_increment=1, page_increment=5)
+        self.seek_adj = Gtk.Adjustment(value=0, lower=0, upper=1, step_increment=1)
         self.seek_scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.seek_adj)
-        self.seek_scale.set_hexpand(True)
-        self.seek_scale.set_draw_value(False)
-        self.seek_scale.set_valign(Gtk.Align.CENTER)
-        self.seek_scale.add_css_class("pill-scale")
-        self.seek_scale.add_css_class("media-scale")
-        self.seek_scale.connect("value-changed", self._on_seek_changed)
-        
-        self.duration_lbl = Gtk.Label(label="0:00")
-        self.duration_lbl.add_css_class("media-time")
-        self.duration_lbl.set_valign(Gtk.Align.CENTER)
-        self.duration_lbl.set_width_chars(5)
-        self.duration_lbl.set_xalign(0.0)
-        
-        self.progress_box.append(self.elapsed_lbl)
-        self.progress_box.append(self.seek_scale)
-        self.progress_box.append(self.duration_lbl)
-        self.append(self.progress_box)
+        self.seek_scale.set_hexpand(True); self.seek_scale.set_draw_value(False)
+        self.seek_scale.add_css_class("pill-scale"); self.seek_scale.add_css_class("media-scale")
+        self.seek_scale.connect("value-changed", self._on_seek)
+        self.dur_lbl = Gtk.Label(label="0:00", css_classes=["media-time"])
+        self.dur_lbl.set_width_chars(5)
+        prog_box.append(self.elapsed_lbl)
+        prog_box.append(self.seek_scale)
+        prog_box.append(self.dur_lbl)
+        self.append(prog_box)
 
-        # -- Controls --
-        self.controls_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.controls_box.set_halign(Gtk.Align.CENTER)
+        ctrl_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        ctrl_box.set_halign(Gtk.Align.CENTER)
+        self.shuf_btn = self._btn("media-playlist-shuffle-symbolic", lambda _: self._cmd(["shuffle", "toggle"]))
+        self.prev_btn = self._btn("media-skip-backward-symbolic", lambda _: self._cmd(["previous"]))
+        self.play_btn = self._btn("media-playback-start-symbolic", lambda _: self._cmd(["play-pause"]))
+        self.play_btn.set_size_request(44, 44) 
+        self.next_btn = self._btn("media-skip-forward-symbolic", lambda _: self._cmd(["next"]))
+        self.loop_btn = self._btn("media-playlist-repeat-symbolic", lambda _: self._cmd(["loop", {'None': 'Playlist', 'Playlist': 'Track', 'Track': 'None'}.get(self._loop_state, 'None')]))
         
-        self.shuffle_btn = self._icon_btn("media-playlist-shuffle-symbolic", lambda _: execute_player_cmd(["shuffle", "toggle"], self._get_active_player()))
-        self.prev_btn    = self._icon_btn("media-skip-backward-symbolic", lambda _: execute_player_cmd(["previous"], self._get_active_player()))
-        self.play_btn    = self._icon_btn("media-playback-start-symbolic", lambda _: execute_player_cmd(["play-pause"], self._get_active_player()))
-        self.next_btn    = self._icon_btn("media-skip-forward-symbolic", lambda _: execute_player_cmd(["next"], self._get_active_player()))
-        self.loop_btn    = self._icon_btn("media-playlist-repeat-symbolic", self._on_loop_clicked)
-        
-        for btn in (self.shuffle_btn, self.prev_btn, self.play_btn, self.next_btn, self.loop_btn):
-            self.controls_box.append(btn)
-        self.append(self.controls_box)
-        
+        for b in (self.shuf_btn, self.prev_btn, self.play_btn, self.next_btn, self.loop_btn): ctrl_box.append(b)
+        self.append(ctrl_box)
         self._loop_state = "None"
 
-    def _icon_btn(self, icon: str, callback: Callable) -> Gtk.Button:
-        btn = Gtk.Button()
-        btn.set_icon_name(icon)
-        btn.add_css_class("flat")
-        btn.add_css_class("media-btn")
-        btn.connect("clicked", callback)
-        return btn
+    def _btn(self, icon: str, cb: Callable) -> Gtk.Button:
+        b = Gtk.Button(icon_name=icon, css_classes=["flat", "media-btn"])
+        b.connect("clicked", cb)
+        return b
 
-    def _get_active_player(self) -> str | None:
+    def _get_player(self) -> str | None:
         idx = self.player_combo.get_selected()
-        if idx == 0 or idx > len(self._current_players_cache):
-            return None # translates to "auto" in execution
-        return self._current_players_cache[idx - 1]
+        return self._cache_players[idx - 1] if 0 < idx <= len(self._cache_players) else None
 
-    def _on_player_selected(self, *args) -> None:
-        if self._updating_model:
-            return
-        self.refresh_async()
+    def _cmd(self, args: list[str]):
+        self._pool.submit(lambda: _playerctl(args, self._get_player()))
 
-    def _on_seek_changed(self, scale: Gtk.Scale) -> None:
-        if self._suppress_seek:
-            return
+    def _on_seek(self, scale: Gtk.Scale):
+        if self._suppress_seek: return
         val = scale.get_value()
-        execute_player_cmd(["position", str(val)], self._get_active_player())
+        self._cmd(["position", str(val)])
         self.elapsed_lbl.set_label(_format_time(val))
         self._pending_seek_deadline = time.monotonic() + 1.25
 
-    def _on_loop_clicked(self, _btn) -> None:
-        cycle_loop(self._loop_state, self._get_active_player())
-
-    def refresh_async(self) -> None:
-        if self._refresh_future is not None and not self._refresh_future.done():
-            return
-            
-        future = self._refresh_pool.submit_generic(lambda: fetch_media_state(self._get_active_player()))
-        if future is None:
-            return
-            
-        self._refresh_future = future
-        future.add_done_callback(self._refresh_done)
-
-    def _refresh_done(self, future: Future) -> None:
-        try:
-            state: MediaState | None = future.result()
-        except CancelledError:
-            return
-        except Exception:
-            LOG.exception("Unhandled exception while refreshing media state")
-            state = None
-            
-        GLib.idle_add(self._apply_state, state)
+    def refresh_async(self):
+        if not self._refresh_future or self._refresh_future.done():
+            self._refresh_future = self._pool.submit(lambda: fetch_media_state(self._get_player()))
+            if self._refresh_future: self._refresh_future.add_done_callback(
+                lambda f: GLib.idle_add(self._apply_state, f.result() if not f.cancelled() else None)
+            )
 
     def _apply_state(self, state: MediaState | None) -> bool:
         self._refresh_future = None
-        
-        if state is None:
-            if self.get_visible():
-                self.set_visible(False)
+        if not state:
+            self.set_visible(False)
             return GLib.SOURCE_REMOVE
 
-        if not self.get_visible():
-            self.set_visible(True)
-
-        if state.players != self._current_players_cache:
-            selected_player = self._get_active_player()
-            self._current_players_cache = state.players.copy()
-            new_items = ["Auto"] + [p.capitalize() for p in state.players]
+        self.set_visible(True)
+        if state.players != self._cache_players:
+            cur = self._get_player()
+            self._cache_players = state.players.copy()
+            self._player_model.splice(0, self._player_model.get_n_items(), ["Auto"] + [p.capitalize() for p in state.players])
+            self.player_combo.set_selected(state.players.index(cur) + 1 if cur in state.players else 0)
             
-            # Lock out the selection signal from triggering an immediate refresh
-            self._updating_model = True
-            self._player_model.splice(0, self._player_model.get_n_items(), new_items)
-            
-            if selected_player in state.players:
-                self.player_combo.set_selected(state.players.index(selected_player) + 1)
-            else:
-                self.player_combo.set_selected(0)
-                
-            self._updating_model = False
-            
-        # Ensure label space is preserved even if there is no text
-        title_text = state.title.strip() if state.title else "Unknown"
-        self.title_lbl.set_markup(f'<span weight="bold">{GLib.markup_escape_text(title_text)}</span>')
-        
-        artist_text = state.artist.strip() if state.artist else " "
-        self.artist_lbl.set_label(artist_text if artist_text else " ")
+        self.title_lbl.set_markup(f'<span weight="bold">{GLib.markup_escape_text(state.title or "Unknown")}</span>')
+        self.artist_lbl.set_label(state.artist or " ")
         
         if time.monotonic() >= self._pending_seek_deadline:
             self._suppress_seek = True
@@ -1752,213 +1779,359 @@ class MediaCard(Gtk.Box):
                 self.seek_adj.set_upper(state.length if state.length > 0 else 1)
                 self.seek_adj.set_value(state.position)
                 self.elapsed_lbl.set_label(_format_time(state.position))
-                self.duration_lbl.set_label(_format_time(state.length))
-            finally:
-                self._suppress_seek = False
+                self.dur_lbl.set_label(_format_time(state.length))
+            finally: self._suppress_seek = False
 
         self.play_btn.set_icon_name("media-playback-pause-symbolic" if state.status == "Playing" else "media-playback-start-symbolic")
-        self.shuffle_btn.set_opacity(1.0 if state.shuffle else 0.4)
-        
+        self.shuf_btn.set_opacity(1.0 if state.shuffle else 0.4)
         self._loop_state = state.loop
         self.loop_btn.set_icon_name("media-playlist-repeat-song-symbolic" if state.loop == "Track" else "media-playlist-repeat-symbolic")
         self.loop_btn.set_opacity(0.4 if state.loop == "None" else 1.0)
-        
         return GLib.SOURCE_REMOVE
 
+# ==============================================================================
+# MAIN APPLICATION WINDOW
+# ==============================================================================
 
-class SliderWindow(Adw.ApplicationWindow):
-    def __init__(
-        self,
-        app: Adw.Application,
-        refresh_pool: RefreshPool,
-        *,
-        volume_submit: FloatSubmitter | None,
-        brightness_submit: FloatSubmitter | None,
-        sunset_submit: FloatSubmitter | None,
-    ) -> None:
+class QuickPanalWindow(Adw.ApplicationWindow):
+    def __init__(self, app: Adw.Application, pool: RefreshPool,
+                 volume_submit: FloatSubmitter | None,
+                 brightness_submit: FloatSubmitter | None,
+                 sunset_submit: FloatSubmitter | None):
         super().__init__(application=app)
+        self.pool = pool
+        self._timer_id: int | None = None
+        self._cpu_last = (0, 0)
+        self._updating_power = False
+        self._slider_rows: list[CompactSliderRow] = []
 
-        self._rows: list[CompactSliderRow] = []
-        self._refresh_source_id: int | None = None
-        self._media_refresh_source_id: int | None = None
-        self._media_card: MediaCard | None = None
-
-        self.set_default_size(340, -1)
+        self.set_default_size(380, -1)
         self.set_resizable(False)
-        self.set_show_menubar(False)
         self.set_decorated(False)
+        self.add_css_class("panel-window")
 
-        self.connect("close-request", self._on_close_request)
-        self.connect("notify::visible", self._on_visible_changed)
+        key_ctrl = Gtk.EventControllerKey()
+        key_ctrl.connect("key-pressed", self._on_key_pressed)
+        self.add_controller(key_ctrl)
 
-        key_controller = Gtk.EventControllerKey()
-        key_controller.connect("key-pressed", self._on_key_pressed)
-        self.add_controller(key_controller)
-
-        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        main_box.set_margin_start(18); main_box.set_margin_end(18)
+        main_box.set_margin_top(18); main_box.set_margin_bottom(18)
         self.set_content(main_box)
 
-        card_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        card_box.set_margin_start(14)
-        card_box.set_margin_end(14)
-        card_box.set_margin_top(14)
-        card_box.set_margin_bottom(14)
-        card_box.set_vexpand(True)
-        card_box.set_valign(Gtk.Align.CENTER)
-        main_box.append(card_box)
+        # --- Header ---
+        self.header_center = Gtk.CenterBox()
+        self.weather_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.weather_box.add_css_class("weather-pill")
+        self.weather_box.set_halign(Gtk.Align.START)
+        self.weather_box.set_valign(Gtk.Align.CENTER)
+        self.weather_icon = Gtk.Image.new_from_icon_name("weather-few-clouds-symbolic")
+        self.weather_icon.set_pixel_size(16)
+        self.weather_lbl = Gtk.Label(css_classes=["weather-text"])
+        self.weather_box.append(self.weather_icon); self.weather_box.append(self.weather_lbl)
+        self.weather_box.set_visible(False)
+        self.header_center.set_start_widget(self.weather_box)
 
+        self.clock_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.lbl_time = Gtk.Label(css_classes=["header-time"])
+        self.lbl_date = Gtk.Label(css_classes=["header-date"])
+        self.clock_box.append(self.lbl_time); self.clock_box.append(self.lbl_date)
+        clock_click = Gtk.GestureClick.new()
+        clock_click.connect("pressed", lambda *args: execute_cmd("uwsm app -- kitty --class gnome-clocks gnome-clocks"))
+        self.clock_box.add_controller(clock_click)
+        self.header_center.set_center_widget(self.clock_box)
+
+        self.power_btn = Gtk.Button(icon_name="system-shutdown-symbolic")
+        self.power_btn.add_css_class("power-header-btn")
+        self.power_btn.set_valign(Gtk.Align.CENTER)
+        self.power_btn.set_halign(Gtk.Align.END)
+        self.power_btn.connect("clicked", lambda _: execute_cmd(f"uwsm-app -- {HOME}/user_scripts/wlogout/wlogout_scale.sh"))
+        self.header_center.set_end_widget(self.power_btn)
+
+        main_box.append(self.header_center)
+
+        # --- Metrics Row ---
+        self.metrics_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.metrics_row.set_homogeneous(True)
+        self.pill_net = MetricPill(None, "Network Usage", small_text=True)
+        self.pill_ram = MetricPill("media-memory-symbolic", "RAM Usage\nLMB: Open zramctl", on_click=f"uwsm app -- kitty --class zramctl --hold zramctl")
+        self.pill_cpu = MetricPill("cpu-symbolic", "CPU Usage\nLMB: Open btop", on_click=f"uwsm app -- kitty --class btop btop")
+        self.metrics_row.append(self.pill_net); self.metrics_row.append(self.pill_ram); self.metrics_row.append(self.pill_cpu)
+        main_box.append(self.metrics_row)
+
+        # --- Grid ---
+        self.flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, valign=Gtk.Align.START, halign=Gtk.Align.CENTER, max_children_per_line=5, min_children_per_line=5, column_spacing=14, row_spacing=14)
+        self.tg_wifi = QuickIconToggle("network-wireless-symbolic", "Wi-Fi\nLMB: Network Manager", on_left=f"uwsm app -- kitty --class dusky_network.sh {HOME}/user_scripts/network_manager/dusky_network.sh")
+        self.tg_bt = QuickIconToggle("bluetooth-active-symbolic", "Bluetooth\nLMB: Blueman", on_left="uwsm app -- blueman-manager")
+        self.tg_perf = QuickIconToggle("utilities-system-monitor-symbolic", "Performance\nLMB: Monitor | RMB: Services", on_left=f"uwsm app -- kitty --class services_and_process_terminator.sh {HOME}/user_scripts/performance/services_and_process_terminator.sh", on_right=f"uwsm app -- kitty --class dusky_service_toggle.sh {HOME}/user_scripts/services/dusky_service_toggle.sh")
+        self.tg_idle = QuickIconToggle("timer-symbolic", "Hypridle\nLMB: Toggle | RMB: Lock Screen", on_left=f"uwsm app -- {HOME}/user_scripts/waybar/toggle_hypridle.sh", on_right=f"uwsm-app -- {HOME}/user_scripts/hyprlock/lock.sh")
+        self.tg_dnd = QuickIconToggle("notification-symbolic", "Do Not Disturb", on_left=f"{HOME}/user_scripts/rofi/rofi_mako.sh", on_middle=f"{HOME}/user_scripts/waybar/mako.sh --clear && pkill -RTMIN+8 waybar", on_right="makoctl mode -t do-not-disturb && pkill -RTMIN+8 waybar")
+        self.tg_blur = QuickIconToggle("edit-opacity-symbolic", "Visuals\nLMB: Toggle Blur/Shadow", on_left=f"uwsm app -- {HOME}/user_scripts/hypr/hypr_blur_opacity_shadow_toggle.sh toggle")
+        self.tg_shader = QuickIconToggle("video-display-symbolic", "Shaders\nLMB: Open Selector", on_left=f"uwsm-app -- pkill rofi; {HOME}/user_scripts/rofi/shader_menu.sh")
+        self.tg_settings = QuickIconToggle("preferences-system-symbolic", "Control Center\nLMB: Open", on_left='gdbus call --session --dest com.github.dusky.controlcenter --object-path /com/github/dusky/controlcenter --method org.freedesktop.Application.Activate "{}"')
+        self.tg_theme = QuickIconToggle("preferences-desktop-appearance-symbolic", "Matugen Themes\nLMB: Select Theme | RMB: Presets", on_left=f"uwsm-app -- pkill rofi; {HOME}/user_scripts/rofi/rofi_theme.sh", on_right=f"uwsm app -- kitty --class dusky_matugen_presets.sh {HOME}/user_scripts/theme_matugen/dusky_matugen_presets.sh")
+        self.tg_wall = QuickIconToggle("preferences-desktop-wallpaper-symbolic", "Wallpapers\nLMB: Open Selector", on_left=f"uwsm-app -- pkill rofi; {HOME}/user_scripts/rofi/rofi_wallpaper_selctor.sh")
+
+        for tg in (self.tg_wifi, self.tg_bt, self.tg_perf, self.tg_idle, self.tg_dnd, self.tg_blur, self.tg_shader, self.tg_settings, self.tg_theme, self.tg_wall): self.flow.append(tg)
+        main_box.append(self.flow)
+
+        # --- Power Management ComboRow ---
+        self.power_group = Adw.PreferencesGroup()
+        self.power_combo = Adw.ComboRow(title="Power Profile")
+        power_icon = Gtk.Image.new_from_icon_name("power-profile-balanced-symbolic")
+        power_icon.add_css_class("accent-icon")
+        self.power_combo.add_prefix(power_icon)
+        self.power_mapping = ["Balanced", "Performance", "Power Saver"]
+        self.power_cmds = {
+            "Balanced": "tlpctl balanced && notify-send 'Power Profile' 'Switched to Balanced'",
+            "Performance": "tlpctl performance && notify-send 'Power Profile' 'Switched to Performance'",
+            "Power Saver": "tlpctl power-saver && notify-send 'Power Profile' 'Switched to Power Saver'"
+        }
+        self.power_combo.set_model(Gtk.StringList.new(self.power_mapping))
+        self.power_combo.connect("notify::selected", self._on_power_selected)
+        self.power_group.add(self.power_combo)
+        main_box.append(self.power_group)
+
+        # --- Hardware Sliders Injection ---
+        self.sliders_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.sliders_box.add_css_class("sliders-container")
+        
         if HAS_VOLUME and volume_submit is not None:
-            row = CompactSliderRow(
-                "",
-                "volume",
-                0.0,
-                100.0,
-                1.0,
-                get_volume,
-                volume_submit,
-                refresh_pool,
-            )
-            self._rows.append(row)
-            card_box.append(row)
+            row = CompactSliderRow("", "volume", 0.0, 100.0, 1.0, get_volume, volume_submit, self.pool)
+            self._slider_rows.append(row)
+            self.sliders_box.append(row)
 
         if HAS_BRIGHTNESS and brightness_submit is not None:
-            row = CompactSliderRow(
-                "󰃠",
-                "brightness",
-                1.0,
-                100.0,
-                1.0,
-                get_brightness,
-                brightness_submit,
-                refresh_pool,
-                post_submit_refresh_grace_seconds=BRIGHTNESS_POST_SUBMIT_REFRESH_GRACE_SECONDS,
-            )
-            self._rows.append(row)
-            card_box.append(row)
+            row = CompactSliderRow("󰃠", "brightness", 1.0, 100.0, 1.0, get_brightness, brightness_submit, self.pool, post_submit_refresh_grace_seconds=BRIGHTNESS_POST_SUBMIT_REFRESH_GRACE_SECONDS)
+            self._slider_rows.append(row)
+            self.sliders_box.append(row)
 
         if HAS_SUNSET and sunset_submit is not None:
-            row = CompactSliderRow(
-                "󰡬",
-                "sunset",
-                1000.0,
-                6000.0,
-                50.0,
-                get_hyprsunset_state,
-                sunset_submit,
-                refresh_pool,
-            )
-            self._rows.append(row)
-            card_box.append(row)
+            row = CompactSliderRow("󰡬", "sunset", 1000.0, 6000.0, 50.0, get_hyprsunset_state, sunset_submit, self.pool)
+            self._slider_rows.append(row)
+            self.sliders_box.append(row)
 
-        if not self._rows:
-            empty = Gtk.Label(label="No supported controls available.")
-            empty.add_css_class("value-label")
-            empty.set_margin_top(12)
-            empty.set_margin_bottom(12)
-            card_box.append(empty)
+        if self._slider_rows:
+            main_box.append(self.sliders_box)
 
-        if HAS_PLAYERCTL:
-            self._media_card = MediaCard(refresh_pool)
-            main_box.append(self._media_card)
+        # --- Dynamic Sections ---
+        self.card_updates = DynamicBannerCard("software-update-available-symbolic")
+        main_box.append(self.card_updates)
 
-    def refresh_rows(self) -> None:
-        for row in self._rows:
-            row.refresh_async()
+        if PLAYERCTL:
+            self.media_module = MediaCard(self.pool)
+            main_box.append(self.media_module)
 
-    def stop_refresh_timer(self) -> None:
-        if self._refresh_source_id is not None:
-            GLib.source_remove(self._refresh_source_id)
-            self._refresh_source_id = None
-        if self._media_refresh_source_id is not None:
-            GLib.source_remove(self._media_refresh_source_id)
-            self._media_refresh_source_id = None
+        self.connect("notify::visible", self._on_visible_changed)
 
-    def _ensure_refresh_timer(self) -> None:
-        if self._refresh_source_id is None and self._rows:
-            self._refresh_source_id = GLib.timeout_add_seconds(
-                LIVE_REFRESH_INTERVAL_SECONDS,
-                self._on_refresh_timeout,
-            )
-        if HAS_PLAYERCTL and self._media_refresh_source_id is None and self._media_card is not None:
-            self._media_refresh_source_id = GLib.timeout_add(
-                int(MEDIA_REFRESH_INTERVAL_SECONDS * 1000),
-                self._on_media_refresh_timeout,
-            )
+    def _update_ui_state(self):
+        now = datetime.now()
+        self.lbl_time.set_label(now.strftime("%H:%M"))
+        self.lbl_date.set_label(now.strftime("%A, %B %d"))
 
-    def _on_refresh_timeout(self) -> bool:
-        if not self.is_visible():
-            self._refresh_source_id = None
-            return GLib.SOURCE_REMOVE
-
-        self.refresh_rows()
+        self.pool.submit(self._fetch_weather)
+        self.pool.submit(self._fetch_mako)
+        self.pool.submit(self._fetch_idle)
+        self.pool.submit(self._fetch_blur)
+        self.pool.submit(self._fetch_power_profile)
+        self.pool.submit(self._fetch_hardware_metrics)
+        self.pool.submit(self._fetch_network)
+        self.pool.submit(self._fetch_updates)
+        
+        for row in self._slider_rows: row.refresh_async()
+        if PLAYERCTL: self.media_module.refresh_async()
+        
         return GLib.SOURCE_CONTINUE
 
-    def _on_media_refresh_timeout(self) -> bool:
-        if not self.is_visible():
-            self._media_refresh_source_id = None
-            return GLib.SOURCE_REMOVE
+    def _fetch_weather(self):
+        data = fetch_json_output(f"python3 {HOME}/user_scripts/waybar/weather.py")
+        if data and data.get("text"): GLib.idle_add(self._apply_weather, data.get("text").strip())
+        else: GLib.idle_add(self.weather_box.set_visible, False)
 
-        if self._media_card:
-            self._media_card.refresh_async()
-        return GLib.SOURCE_CONTINUE
+    def _apply_weather(self, text: str):
+        self.weather_lbl.set_label(text)
+        self.weather_box.set_visible(True)
 
-    def _on_visible_changed(self, _window: Gtk.Widget, _pspec: object) -> None:
+    def _fetch_mako(self):
+        data = fetch_json_output(f"{HOME}/user_scripts/waybar/mako.sh --horizontal")
+        if data: GLib.idle_add(self._apply_mako, data)
+
+    def _fetch_idle(self):
+        active = subprocess.run(["pgrep", "-x", "hypridle"], capture_output=True).returncode == 0
+        GLib.idle_add(self._apply_idle, active)
+        
+    def _fetch_blur(self):
+        try:
+            with open(f"{HOME}/.config/dusky/settings/opacity_blur", "r") as f: state = f.read().strip().lower()
+            GLib.idle_add(self._apply_blur, state == "true")
+        except: pass
+
+    def _fetch_power_profile(self):
+        try:
+            profile = subprocess.run(["tlpctl", "get"], capture_output=True, text=True, timeout=1.0).stdout.strip().lower()
+            GLib.idle_add(self._apply_power_profile, profile)
+        except: pass
+
+    def _fetch_hardware_metrics(self):
+        try:
+            with open("/proc/stat", "r") as f: parts = [int(p) for p in f.readline().split()[1:]]
+            idle = parts[3] + parts[4]
+            total = sum(parts)
+            last_idle, last_total = self._cpu_last
+            d_idle, d_total = idle - last_idle, total - last_total
+            cpu_usage = 100 * (1.0 - d_idle / d_total) if d_total > 0 else 0
+            self._cpu_last = (idle, total)
+
+            with open("/proc/meminfo", "r") as f: lines = f.readlines()
+            mem_tot = mem_av = 0
+            for line in lines:
+                if line.startswith("MemTotal:"): mem_tot = int(line.split()[1])
+                elif line.startswith("MemAvailable:"): mem_av = int(line.split()[1])
+            ram_used = (mem_tot - mem_av) / 1048576
+
+            GLib.idle_add(self.pill_cpu.set_value, f"{cpu_usage:.0f}%")
+            GLib.idle_add(self.pill_ram.set_value, f"{ram_used:.1f} GB")
+        except: pass
+
+    def _fetch_network(self):
+        data = fetch_json_output(f"{HOME}/user_scripts/waybar/network/network_meter_calling.sh --horizontal")
+        GLib.idle_add(self.pill_net.apply_json, data, "network-disconnected")
+
+    def _fetch_updates(self):
+        try:
+            with open(f"{HOME}/.config/dusky/settings/waybar_update_counter_h", "r") as f: data = json.load(f)
+            GLib.idle_add(self.card_updates.apply_json, data, "updated")
+        except: pass
+
+    def _apply_mako(self, data: dict):
+        text = data.get("text", "")
+        css = data.get("class", "empty")
+        badge_match = re.search(r'\d+', text)
+        badge = badge_match.group(0) if badge_match else ""
+        base_tt = data.get("tooltip", "Notifications")
+        final_tt = f"{base_tt}\nLMB: Open | MMB: Clear | RMB: Toggle DND"
+        if css in ("dnd", "dnd-pending"): self.tg_dnd.update_state(icon="notifications-disabled-symbolic", css_class="active", tooltip=final_tt, badge=badge)
+        else: self.tg_dnd.update_state(icon="notification-symbolic", css_class="normal", tooltip=final_tt, badge=badge)
+
+    def _apply_idle(self, is_active: bool):
+        if is_active: self.tg_idle.update_state(icon="timer-symbolic", css_class="normal", tooltip="Idle Allowed (Timer Active)\nLMB: Toggle | RMB: Lock Screen")
+        else: self.tg_idle.update_state(icon="coffee-symbolic", css_class="active", tooltip="Idle Inhibited (Awake)\nLMB: Toggle | RMB: Lock Screen")
+            
+    def _apply_blur(self, is_active: bool):
+        if is_active: self.tg_blur.update_state(icon="edit-opacity-symbolic", css_class="active", tooltip="Visuals: Blur & Shadow ON\nLMB: Toggle")
+        else: self.tg_blur.update_state(icon="edit-opacity-symbolic", css_class="normal", tooltip="Visuals: Performance Mode\nLMB: Toggle")
+
+    def _apply_power_profile(self, profile: str):
+        mapping = {"balanced": 0, "performance": 1, "power-saver": 2}
+        idx = mapping.get(profile)
+        if idx is not None and self.power_combo.get_selected() != idx:
+            self._updating_power = True
+            self.power_combo.set_selected(idx)
+            self._updating_power = False
+
+    def _on_power_selected(self, *args):
+        if self._updating_power: return
+        idx = self.power_combo.get_selected()
+        profile_name = self.power_mapping[idx]
+        cmd = self.power_cmds.get(profile_name)
+        if cmd: execute_cmd(cmd)
+
+    def _on_visible_changed(self, *args):
         if self.is_visible():
-            self._ensure_refresh_timer()
-            self.refresh_rows()
-            if self._media_card:
-                self._media_card.refresh_async()
-        else:
-            self.stop_refresh_timer()
+            self._update_ui_state()
+            self._timer_id = GLib.timeout_add(2000, self._update_ui_state)
+        elif self._timer_id:
+            GLib.source_remove(self._timer_id)
+            self._timer_id = None
 
-    def _on_close_request(self, _window: Gtk.Window) -> bool:
-        self.set_visible(False)
-        return True
-
-    def _on_key_pressed(
-        self,
-        _controller: Gtk.EventControllerKey,
-        keyval: int,
-        _keycode: int,
-        _state: Gdk.ModifierType,
-    ) -> bool:
+    def _on_key_pressed(self, ctrl, keyval, keycode, state):
         if keyval == Gdk.KEY_Escape:
             self.set_visible(False)
             return True
         return False
 
+# ==============================================================================
+# UNIFIED CSS STYLING
+# ==============================================================================
 
 CSS: Final = """
-window {
+window.panel-window {
     background-color: alpha(@window_bg_color, 0.95);
-    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 24px;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
 }
 
-.slider-row {
-    background-color: transparent;
-    padding: 10px 12px;
+.header-time { font-size: 46px; font-weight: 800; letter-spacing: -2px; }
+.header-date { font-size: 14px; font-weight: 600; color: @accent_color; }
+
+box.weather-pill { padding: 6px 4px; }
+.weather-text { font-size: 13px; font-weight: 700; opacity: 0.9; }
+
+button.power-header-btn {
+    min-width: 42px; min-height: 42px; border-radius: 21px;
+    background-color: alpha(@error_bg_color, 0.6); color: @error_color;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+button.power-header-btn:hover { background-color: @error_bg_color; }
+
+list.boxed-list {
+    background-color: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 14px;
 }
 
-scale.pill-scale trough {
-    min-height: 16px;
-    border-radius: 8px;
-    background-color: rgba(255, 255, 255, 0.08);
+box.quick-icon-toggle {
+    min-width: 52px; min-height: 52px; border-radius: 26px;
+    background-color: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+box.quick-icon-toggle:hover { background-color: rgba(255, 255, 255, 0.12); }
+box.quick-icon-toggle.active { background-color: alpha(@accent_bg_color, 0.3); border: 1px solid alpha(@accent_bg_color, 0.5); }
+box.quick-icon-toggle.active image { color: @accent_color; }
+box.quick-icon-toggle.normal { opacity: 1.0; }
+
+.notification-badge {
+    background-color: @error_color; color: white;
+    font-size: 11px; font-weight: 900; border-radius: 12px;
+    min-width: 18px; min-height: 18px; padding: 0 5px;
+    margin-top: -2px; margin-right: -2px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    box-shadow: 0 2px 5px rgba(0,0,0,0.5);
 }
 
-scale.pill-scale highlight {
-    min-height: 16px;
-    border-radius: 8px;
+box.metric-pill {
+    background-color: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 14px; padding: 10px 12px;
+    transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
 }
+box.clickable-pill:hover { background-color: rgba(255, 255, 255, 0.12); }
+box.clickable-pill:active { background-color: alpha(@accent_bg_color, 0.3); border-color: alpha(@accent_bg_color, 0.5); }
+.metric-value { font-size: 12px; font-weight: 700; font-family: "JetBrainsMono Nerd Font", monospace; }
+.metric-value-small { font-size: 10px; font-weight: 700; font-family: "JetBrainsMono Nerd Font", monospace; letter-spacing: -0.5px; }
 
-scale.pill-scale slider {
-    min-width: 0px;
-    min-height: 0px;
-    margin: 0px;
-    padding: 0px;
-    background: transparent;
-    border: none;
-    box-shadow: none;
+/* Dynamic Banners and Media */
+box.banner-card { background-color: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 14px; padding: 10px 14px; }
+box.media-card { background-color: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 16px; padding: 14px; }
+
+.media-title { font-size: 14px; font-family: sans-serif; }
+.media-artist { font-size: 12px; opacity: 0.8; font-family: sans-serif; }
+.media-time { font-size: 11px; opacity: 0.7; font-family: "JetBrainsMono Nerd Font", monospace; font-variant-numeric: tabular-nums; }
+.media-btn { min-width: 38px; min-height: 38px; border-radius: 19px; padding: 0; }
+
+/* Sliders specific styling */
+.sliders-container {
+    background-color: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 16px;
+    padding: 6px;
 }
+.slider-row { background-color: transparent; padding: 8px 10px; }
+
+scale.pill-scale trough { min-height: 14px; border-radius: 7px; background-color: rgba(255, 255, 255, 0.08); }
+scale.pill-scale highlight { min-height: 14px; border-radius: 7px; }
+scale.pill-scale slider { min-width: 0px; min-height: 0px; margin: 0px; padding: 0px; background: transparent; border: none; box-shadow: none; }
 
 scale.volume highlight { background-color: #89b4fa; }
 scale.brightness highlight { background-color: #f9e2af; }
@@ -1968,146 +2141,64 @@ scale.media-scale highlight { background-color: #cba6f7; }
 .icon-volume { color: #89b4fa; }
 .icon-brightness { color: #f9e2af; }
 .icon-sunset { color: #fab387; }
-
-.icon-label {
-    font-size: 18px;
-    font-family: "Symbols Nerd Font", "JetBrainsMono Nerd Font", monospace;
-}
-
-.value-label {
-    font-size: 14px;
-    font-weight: 700;
-    opacity: 0.8;
-    font-family: "JetBrainsMono Nerd Font", monospace;
-    font-variant-numeric: tabular-nums;
-}
-
-.media-title {
-    font-size: 15px;
-    font-family: sans-serif;
-}
-
-.media-artist {
-    font-size: 13px;
-    opacity: 0.8;
-    font-family: sans-serif;
-}
-
-.media-time {
-    font-size: 12px;
-    opacity: 0.7;
-    font-family: "JetBrainsMono Nerd Font", monospace;
-    font-variant-numeric: tabular-nums;
-}
-
-.media-btn {
-    min-width: 36px;
-    min-height: 36px;
-    border-radius: 18px;
-    padding: 0;
-}
+.icon-label { font-size: 18px; font-family: "Symbols Nerd Font", "JetBrainsMono Nerd Font", monospace; }
+.value-label { font-size: 14px; font-weight: 700; opacity: 0.8; font-family: "JetBrainsMono Nerd Font", monospace; font-variant-numeric: tabular-nums; }
 """
 
-
-class SliderApp(Adw.Application):
-    def __init__(self) -> None:
+class QuickPanalApp(Adw.Application):
+    def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
-
-        self._window: SliderWindow | None = None
-        self._refresh_pool: RefreshPool | None = None
+        self.window: QuickPanalWindow | None = None
+        self.pool: RefreshPool | None = None
         self._volume_worker: LatestValueWorker | None = None
         self._local_brightness_worker: LatestValueWorker | None = None
         self._sunset_controller: HyprsunsetController | None = None
 
     def _submit_brightness(self, value: float) -> None:
-        if self._local_brightness_worker is not None:
-            self._local_brightness_worker.submit(value)
-        if DDC_MANAGER is not None:
-            DDC_MANAGER.submit(value)
+        if self._local_brightness_worker is not None: self._local_brightness_worker.submit(value)
+        if DDC_MANAGER is not None: DDC_MANAGER.submit(value)
 
     @override
-    def do_startup(self) -> None:
+    def do_startup(self):
         Adw.Application.do_startup(self)
         self.hold()
 
-        if DDC_MANAGER is not None:
-            DDC_MANAGER.start()
+        if DDC_MANAGER is not None: DDC_MANAGER.start()
 
-        if LOG.isEnabledFor(logging.DEBUG):
-            if (name := _preferred_backlight_name()) is not None:
-                LOG.debug("Selected backlight device: %s", name)
-
-        self._refresh_pool = RefreshPool(max_workers=3)
-
+        self.pool = RefreshPool(max_workers=8)
         self._volume_worker = LatestValueWorker("volume", apply_volume) if HAS_VOLUME else None
-        self._local_brightness_worker = (
-            LatestValueWorker("local-brightness", apply_local_brightness)
-            if HAS_LOCAL_BRIGHTNESS
-            else None
-        )
+        self._local_brightness_worker = LatestValueWorker("local-brightness", apply_local_brightness) if HAS_LOCAL_BRIGHTNESS else None
         self._sunset_controller = HyprsunsetController() if HAS_SUNSET else None
 
-        quit_action = Gio.SimpleAction.new("quit", None)
-        quit_action.connect("activate", lambda *_args: self.quit())
-        self.add_action(quit_action)
-        self.set_accels_for_action("app.quit", ["<Primary>q"])
+        style_mgr = Adw.StyleManager.get_default()
+        if style_mgr: style_mgr.set_color_scheme(Adw.ColorScheme.PREFER_DARK)
 
-        if (style_manager := Adw.StyleManager.get_default()) is not None:
-            style_manager.set_color_scheme(Adw.ColorScheme.PREFER_DARK)
+        provider = Gtk.CssProvider()
+        provider.load_from_string(CSS)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-        css_provider = Gtk.CssProvider()
-        css_provider.load_from_string(CSS)
-
-        display = Gdk.Display.get_default()
-        if display is not None:
-            Gtk.StyleContext.add_provider_for_display(
-                display,
-                css_provider,
-                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
-            )
-
-        self._window = SliderWindow(
-            self,
-            self._refresh_pool,
+        self.window = QuickPanalWindow(
+            self, self.pool,
             volume_submit=self._volume_worker.submit if self._volume_worker else None,
             brightness_submit=self._submit_brightness if HAS_BRIGHTNESS else None,
-            sunset_submit=self._sunset_controller.submit if self._sunset_controller else None,
+            sunset_submit=self._sunset_controller.submit if self._sunset_controller else None
         )
-        self._window.set_visible(False)
+        self.window.set_visible(False)
 
     @override
-    def do_activate(self) -> None:
-        if self._window is None:
-            return
-
-        self._window.refresh_rows()
-        if self._window._media_card:
-            self._window._media_card.refresh_async()
-        self._window.present()
+    def do_activate(self):
+        if self.window: self.window.present()
 
     @override
-    def do_shutdown(self) -> None:
-        if self._window is not None:
-            self._window.stop_refresh_timer()
-
-        if self._refresh_pool is not None:
-            self._refresh_pool.shutdown()
-
-        if self._sunset_controller is not None:
-            self._sunset_controller.stop()
-
-        if self._local_brightness_worker is not None:
-            self._local_brightness_worker.stop()
-
-        if DDC_MANAGER is not None:
-            DDC_MANAGER.stop()
-
-        if self._volume_worker is not None:
-            self._volume_worker.stop()
-
+    def do_shutdown(self):
+        if self.window and self.window._timer_id: GLib.source_remove(self.window._timer_id)
+        if self.pool: self.pool.shutdown()
+        if self._sunset_controller is not None: self._sunset_controller.stop()
+        if self._local_brightness_worker is not None: self._local_brightness_worker.stop()
+        if DDC_MANAGER is not None: DDC_MANAGER.stop()
+        if self._volume_worker is not None: self._volume_worker.stop()
         Adw.Application.do_shutdown(self)
 
-
 if __name__ == "__main__":
-    app = SliderApp()
-    raise SystemExit(app.run(sys.argv))
+    app = QuickPanalApp()
+    sys.exit(app.run(sys.argv))
