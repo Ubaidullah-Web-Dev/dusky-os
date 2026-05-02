@@ -19,7 +19,14 @@ declare -r APP_VERSION="v5.0.0-lua"
 # Parser limits for untrusted config evaluation.
 declare -ri LUA_TIMEOUT_SECONDS=4
 declare -ri LUA_KILL_AFTER_SECONDS=1
+declare -ri LUA_CPU_SECONDS=5
 declare -ri LUA_MEMORY_KB=262144
+declare -ri LUA_PROTOCOL_MAX_BYTES=$(( 16 * 1024 * 1024 ))
+declare -ri LUA_MAX_RECORDS=20000
+declare -ri LUA_MAX_FIELD_BYTES=$(( 1024 * 1024 ))
+declare -ri LUA_MAX_SOURCE_BYTES=$(( 16 * 1024 * 1024 ))
+declare -ri LUA_MAX_TABLE_DEPTH=512
+declare -ri LUA_MAX_TABLE_KEYS=50000
 
 # Dimensions & layout.
 declare -ri MAX_DISPLAY_ROWS=14
@@ -219,14 +226,16 @@ remove_temp() {
 
 cleanup() {
     local path
-    if (( TUI_STARTED )); then
-        printf '%s%s%s%s' "$MOUSE_OFF" "$CURSOR_SHOW" "$C_RESET" "$ALT_SCREEN_OFF" 2>/dev/null || :
-    else
-        printf '%s%s%s' "$MOUSE_OFF" "$CURSOR_SHOW" "$C_RESET" 2>/dev/null || :
+    if [[ -t 1 ]]; then
+        if (( TUI_STARTED )); then
+            printf '%s%s%s%s' "$MOUSE_OFF" "$CURSOR_SHOW" "$C_RESET" "$ALT_SCREEN_OFF" 2>/dev/null || :
+        elif [[ -n ${ORIGINAL_STTY:-} ]]; then
+            printf '%s%s%s' "$MOUSE_OFF" "$CURSOR_SHOW" "$C_RESET" 2>/dev/null || :
+        fi
     fi
 
     if [[ -n ${ORIGINAL_STTY:-} ]]; then
-        stty "$ORIGINAL_STTY" 2>/dev/null || :
+        stty "$ORIGINAL_STTY" < /dev/tty 2>/dev/null || :
     fi
 
     for path in "${_TEMP_PATHS[@]:-}"; do
@@ -235,11 +244,15 @@ cleanup() {
     _TEMP_PATHS=()
     _TMPFILE=""
     _TMPMODE=""
-    printf '\n' 2>/dev/null || :
+    if (( TUI_STARTED )) && [[ -t 1 ]]; then
+        printf '\n' 2>/dev/null || :
+    fi
 }
 
 trap cleanup EXIT
+trap 'exit 129' HUP
 trap 'exit 130' INT
+trap 'exit 131' QUIT
 trap 'exit 143' TERM
 
 path_dirname() {
@@ -259,9 +272,10 @@ path_basename() {
 
 find_lua() {
     local candidate found
-    for candidate in lua lua5.4 lua54; do
+    for candidate in lua5.4 lua54 lua; do
         found=$(type -P "$candidate" 2>/dev/null || true)
-        if [[ -n $found ]]; then
+        [[ -n $found ]] || continue
+        if "$found" -e 'local a,b=_VERSION:match("Lua (%d+)%.(%d+)"); assert(a and (tonumber(a)>5 or (tonumber(a)==5 and tonumber(b)>=4)))' >/dev/null 2>&1; then
             LUA_BIN=$found
             return 0
         fi
@@ -269,13 +283,58 @@ find_lua() {
     return 1
 }
 
+read_error_excerpt() {
+    local file=$1
+    REPLY=$(LC_ALL=C head -c 4096 -- "$file" 2>/dev/null || true)
+    [[ -n $REPLY ]] || REPLY="unknown error"
+}
+
+file_signature() {
+    local path=$1
+    LC_ALL=C stat -Lc '%d:%i:%s:%y:%z:%a:%u:%g' -- "$path"
+}
+
+release_lock_fd() {
+    local fd=${1:-}
+    if [[ $fd =~ ^[0-9]+$ ]]; then
+        flock -u "$fd" 2>/dev/null || :
+        exec {fd}>&- 2>/dev/null || :
+    fi
+}
+
+remove_many_temps() {
+    local path
+    for path in "$@"; do
+        remove_temp "$path"
+    done
+}
+
 resolve_write_target() {
     WRITE_TARGET=$(realpath -e -- "$CONFIG_FILE")
     LOCK_TARGET="${WRITE_TARGET}.lock"
 }
 
+create_temp_near() {
+    local target=$1 purpose=${2:-tmp} target_dir target_base
+    path_dirname "$target"; target_dir=$REPLY
+    path_basename "$target"; target_base=$REPLY
+
+    if ! REPLY=$(mktemp --tmpdir="$target_dir" ".${target_base}.${purpose}.XXXXXXXXXX" 2>/dev/null); then
+        REPLY=""
+        return 1
+    fi
+    register_temp "$REPLY"
+    return 0
+}
+
 create_tmpfile_for_target() {
     local target=$1 target_dir target_base
+    if [[ -n ${_TMPFILE:-} ]]; then
+        remove_temp "$_TMPFILE"
+    fi
+    _TMPFILE=""
+    _TMPMODE=""
+
     path_dirname "$target"; target_dir=$REPLY
     path_basename "$target"; target_base=$REPLY
 
@@ -292,11 +351,12 @@ create_tmpfile_for_target() {
 commit_tmpfile_to_target() {
     local target=$1 target_dir
     [[ -n ${_TMPFILE:-} && -f $_TMPFILE && ${_TMPMODE:-} == atomic ]] || return 1
+    [[ -e $target && -f $target ]] || return 1
 
     chown --reference="$target" -- "$_TMPFILE" 2>/dev/null || :
     chmod --reference="$target" -- "$_TMPFILE" 2>/dev/null || return 1
-    sync -f -- "$_TMPFILE" 2>/dev/null || :
-    mv -f -- "$_TMPFILE" "$target" || return 1
+    sync -f -- "$_TMPFILE" 2>/dev/null || return 1
+    mv -fT -- "$_TMPFILE" "$target" || return 1
     path_dirname "$target"; target_dir=$REPLY
     sync -f -- "$target_dir" 2>/dev/null || :
 
@@ -386,6 +446,23 @@ normalize_target() {
 # REGISTRATION
 # =============================================================================
 
+is_int_literal() {
+    [[ $1 =~ ^-?[0-9]+$ ]]
+}
+
+is_float_literal() {
+    [[ $1 =~ ^-?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$ ]]
+}
+
+number_le() {
+    local left=$1 right=$2
+    [[ -n ${LUA_BIN:-} ]] || return 0
+    LC_ALL=C "$LUA_BIN" - "$left" "$right" <<'LUA' >/dev/null 2>&1
+local a, b = tonumber(arg[1]), tonumber(arg[2])
+os.exit(a and b and a <= b and 0 or 1)
+LUA
+}
+
 validate_cycle_options() {
     local label=$1 options=$2 opt
     local -a opts=()
@@ -395,7 +472,7 @@ validate_cycle_options() {
         exit 1
     fi
     for opt in "${opts[@]}"; do
-        if [[ -z $opt || $opt == *$'\n'* || $opt == *'}'* ]]; then
+        if [[ -z $opt || $opt == *$'\n'* || $opt == *'|'* || $opt == *,* ]]; then
             log_err "Register Error: Cycle '$label' contains unsafe option: '$opt'"
             exit 1
         fi
@@ -403,13 +480,13 @@ validate_cycle_options() {
 }
 
 validate_item_config() {
-    local label=$1 key=$2 type=$3 block=$4 min=$5
+    local label=$1 key=$2 type=$3 block=$4 min=${5:-} max=${6:-} step=${7:-}
     if [[ -z $label || $label == *$'\n'* ]]; then
         log_err "Register Error: Invalid label."
         exit 1
     fi
-    if [[ -z $key ]]; then
-        log_err "Register Error: Missing key for '$label'."
+    if [[ -z $key || $key == *$'\n'* || $key == *'|'* || $key == */* ]]; then
+        log_err "Register Error: Invalid key for '$label'."
         exit 1
     fi
     case $type in
@@ -420,9 +497,39 @@ validate_item_config() {
         log_err "Register Error: Invalid block path for '$label': $block"
         exit 1
     fi
-    if [[ $type == cycle ]]; then
-        validate_cycle_options "$label" "$min"
-    fi
+    case $type in
+        int)
+            if [[ -n $min ]] && ! is_int_literal "$min"; then log_err "Register Error: Invalid int min for '$label'."; exit 1; fi
+            if [[ -n $max ]] && ! is_int_literal "$max"; then log_err "Register Error: Invalid int max for '$label'."; exit 1; fi
+            if [[ -n $step ]]; then
+                if ! is_int_literal "$step" || [[ $step == -* || $step == 0 ]]; then
+                    log_err "Register Error: Invalid int step for '$label'."
+                    exit 1
+                fi
+            fi
+            if [[ -n $min && -n $max ]] && ! number_le "$min" "$max"; then
+                log_err "Register Error: min > max for '$label'."
+                exit 1
+            fi
+            ;;
+        float)
+            if [[ -n $min ]] && ! is_float_literal "$min"; then log_err "Register Error: Invalid float min for '$label'."; exit 1; fi
+            if [[ -n $max ]] && ! is_float_literal "$max"; then log_err "Register Error: Invalid float max for '$label'."; exit 1; fi
+            if [[ -n $step ]]; then
+                if ! is_float_literal "$step" || [[ $step == -* || ! $step =~ [1-9] ]]; then
+                    log_err "Register Error: Invalid float step for '$label'."
+                    exit 1
+                fi
+            fi
+            if [[ -n $min && -n $max ]] && ! number_le "$min" "$max"; then
+                log_err "Register Error: min > max for '$label'."
+                exit 1
+            fi
+            ;;
+        cycle)
+            validate_cycle_options "$label" "$min"
+            ;;
+    esac
     if [[ $type == action && ! $key =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
         log_err "Register Error: Action key '$key' is not a safe function suffix."
         exit 1
@@ -439,7 +546,7 @@ register() {
         log_err "Register Error: Tab index out of range for '$label': $tab_idx"
         exit 1
     fi
-    validate_item_config "$label" "$key" "$type" "$block" "$min"
+    validate_item_config "$label" "$key" "$type" "$block" "$min" "$max" "$step"
 
     if [[ -n ${ITEM_MAP["${tab_idx}::${label}"]+_} ]]; then
         log_err "Register Error: Duplicate label in tab $tab_idx: $label"
@@ -474,7 +581,7 @@ register_child() {
         log_err "Register Error: register_child called for unknown menu '$parent_id'."
         exit 1
     fi
-    validate_item_config "$label" "$key" "$type" "$block" "$min"
+    validate_item_config "$label" "$key" "$type" "$block" "$min" "$max" "$step"
     if [[ $type == menu ]]; then
         log_err "Register Error: Nested menus are not supported for '$label'."
         exit 1
@@ -496,30 +603,52 @@ register_child() {
 # =============================================================================
 
 populate_config_cache() {
-    local config_file=${CONFIG_FILE-}
-    local tmp_proto tmp_err err_msg part state=0
-    local tag="" field_a="" field_b="" field_c="" field_d="" cache_key=""
+    local config_file=${CONFIG_FILE-} target_path=${WRITE_TARGET:-}
+    local tmp_proto="" tmp_err="" err_msg="" part="" cache_key="" proto_size=""
+    local tag="" field_a="" field_b="" field_c="" field_d=""
+    local -i state=0 truncated=0 record_count=0
     local -A new_cache=()
     local -A seen_file=()
     local -a new_files=()
+    local LC_ALL=C
 
     if [[ -z $config_file || ! -f $config_file || ! -r $config_file ]]; then
         log_err "Config file missing or unreadable: ${config_file:-<unset>}"
         return 1
     fi
-    [[ -n $LUA_BIN ]] || find_lua || { log_err "Lua interpreter not found"; return 1; }
+    if [[ -z $target_path ]]; then
+        if ! target_path=$(realpath -e -- "$config_file" 2>/dev/null); then
+            log_err "Failed to resolve config path: $config_file"
+            return 1
+        fi
+    fi
+    [[ -n $LUA_BIN ]] || find_lua || { log_err "Lua 5.4 interpreter not found"; return 1; }
 
-    tmp_proto=$(mktemp) || { log_err "Failed to create parser IPC file"; return 1; }
+    tmp_proto=$(mktemp --tmpdir "dusky.parser.proto.XXXXXXXXXX") || { log_err "Failed to create parser IPC file"; return 1; }
     register_temp "$tmp_proto"
-    tmp_err=$(mktemp) || { remove_temp "$tmp_proto"; log_err "Failed to create parser error file"; return 1; }
+    tmp_err=$(mktemp --tmpdir "dusky.parser.err.XXXXXXXXXX") || {
+        remove_temp "$tmp_proto"
+        log_err "Failed to create parser error file"
+        return 1
+    }
     register_temp "$tmp_err"
 
     if ! (
         ulimit -v "$LUA_MEMORY_KB" 2>/dev/null || :
+        ulimit -t "$LUA_CPU_SECONDS" 2>/dev/null || :
         LC_ALL=C timeout --kill-after="${LUA_KILL_AFTER_SECONDS}s" "${LUA_TIMEOUT_SECONDS}s" \
-            "$LUA_BIN" - "$WRITE_TARGET" "$tmp_proto" > /dev/null 2>"$tmp_err" <<'LUA'
+            "$LUA_BIN" - "$target_path" "$tmp_proto" \
+            "$LUA_MAX_FIELD_BYTES" "$LUA_MAX_RECORDS" "$LUA_PROTOCOL_MAX_BYTES" \
+            "$LUA_MAX_SOURCE_BYTES" "$LUA_MAX_TABLE_DEPTH" "$LUA_MAX_TABLE_KEYS" \
+            > /dev/null 2>"$tmp_err" <<'LUA'
 local main_path = assert(arg[1], "missing config path")
 local proto_path = assert(arg[2], "missing protocol path")
+local max_field_bytes = tonumber(arg[3]) or 1048576
+local max_records = tonumber(arg[4]) or 20000
+local max_proto_bytes = tonumber(arg[5]) or (16 * 1024 * 1024)
+local max_source_bytes = tonumber(arg[6]) or (16 * 1024 * 1024)
+local max_table_depth = tonumber(arg[7]) or 512
+local max_table_keys = tonumber(arg[8]) or 50000
 
 local host_io = io
 local host_os = os
@@ -527,6 +656,42 @@ local out, open_err = host_io.open(proto_path, "wb")
 if not out then
     host_io.stderr:write(tostring(open_err), "\n")
     host_os.exit(1)
+end
+
+local emitted_records = 0
+local emitted_bytes = 0
+local merged_keys = 0
+
+local function fail(msg)
+    error(tostring(msg), 0)
+end
+
+local function has_nul(s)
+    return type(s) == "string" and s:find("\0", 1, true) ~= nil
+end
+
+local function checked_field(v, name)
+    v = v or ""
+    if type(v) ~= "string" then v = tostring(v) end
+    if has_nul(v) then fail("NUL byte in protocol " .. name) end
+    if #v > max_field_bytes then fail("protocol field too large: " .. name) end
+    return v
+end
+
+local function emit(tag, a, b, c, d)
+    tag = checked_field(tag, "tag")
+    a = checked_field(a, "a")
+    b = checked_field(b, "b")
+    c = checked_field(c, "c")
+    d = checked_field(d, "d")
+    if #tag ~= 1 then fail("invalid protocol tag") end
+    local record_bytes = #tag + #a + #b + #c + #d + 5
+    if emitted_records + 1 > max_records then fail("parser record limit exceeded") end
+    if emitted_bytes + record_bytes > max_proto_bytes then fail("parser output limit exceeded") end
+    local ok, err = out:write(tag, "\0", a, "\0", b, "\0", c, "\0", d, "\0")
+    if not ok then fail(err or "failed to write parser protocol") end
+    emitted_records = emitted_records + 1
+    emitted_bytes = emitted_bytes + record_bytes
 end
 
 local function dirname(path)
@@ -541,9 +706,10 @@ local loaded_file_seen = {}
 local package_loaded = {}
 local loading = {}
 local config_root = {}
-local reserved = {}
 
 local function record_file(path)
+    if type(path) ~= "string" or path == "" or has_nul(path) then return end
+    if #path > max_field_bytes then fail("loaded file path too long") end
     if not loaded_file_seen[path] then
         loaded_file_seen[path] = true
         loaded_files[#loaded_files + 1] = path
@@ -562,33 +728,36 @@ local function safe_tostring(v)
     return ok and s or "<unprintable>"
 end
 
-local function has_nul(s)
-    return type(s) == "string" and s:find("\0", 1, true) ~= nil
-end
-
 local function scalar_to_string(v)
     local t = type(v)
     if t == "string" then
-        if has_nul(v) then error("NUL bytes not supported in string values", 0) end
+        if has_nul(v) then fail("NUL bytes not supported in string values") end
+        if #v > max_field_bytes then fail("string value too large") end
         return v
     elseif t == "number" then
-        if v ~= v or v == math.huge or v == -math.huge then error("non-finite numbers not supported", 0) end
+        if v ~= v or v == math.huge or v == -math.huge then fail("non-finite numbers not supported") end
         return tostring(v)
     elseif t == "boolean" then
         return v and "true" or "false"
     end
-    error("unsupported value type: " .. t, 0)
+    fail("unsupported value type: " .. t)
+end
+
+local function bump_key_count()
+    merged_keys = merged_keys + 1
+    if merged_keys > max_table_keys then fail("config table key limit exceeded") end
 end
 
 local function deep_merge(dst, src, active, depth)
     if type(src) ~= "table" then return dst end
     active = active or {}
     depth = depth or 0
-    if depth > 256 then error("config table nesting too deep while merging", 0) end
+    if depth > max_table_depth then fail("config table nesting too deep while merging") end
     if active[src] then return dst end
     active[src] = true
     for k, v in pairs(src) do
-        if type(k) == "string" and k ~= "" and not has_nul(k) then
+        if type(k) == "string" and k ~= "" and not has_nul(k) and #k <= max_field_bytes then
+            bump_key_count()
             if type(v) == "table" then
                 if type(dst[k]) ~= "table" then dst[k] = {} end
                 deep_merge(dst[k], v, active, depth + 1)
@@ -608,6 +777,8 @@ local proxy_mt = {
     __call = function(_, ...) return inert_proxy end,
     __tostring = function() return "" end,
     __concat = function(a, b) return tostring(a) .. tostring(b) end,
+    __len = function() return 0 end,
+    __pairs = function() return function() return nil end end,
 }
 inert_proxy = setmetatable({}, proxy_mt)
 
@@ -622,13 +793,13 @@ end)
 
 local function normalize_module_name(name)
     if type(name) ~= "string" or name == "" or has_nul(name) then return nil end
-    if name:sub(1, 1) == "/" or name:find("%.%.", 1, true) then return nil end
+    if name:sub(1, 1) == "/" or name:find("..", 1, true) then return nil end
     return (name:gsub("%.", "/"))
 end
 
 local function path_is_allowed(path)
-    if type(path) ~= "string" or path == "" or path:find("\0", 1, true) then return false end
-    if path:find("%.%.", 1, true) then return false end
+    if type(path) ~= "string" or path == "" or has_nul(path) then return false end
+    if path:find("..", 1, true) then return false end
     if path:sub(1, 1) == "/" then
         return path == config_dir or path:sub(1, #config_dir + 1) == config_dir .. "/"
     end
@@ -644,8 +815,10 @@ end
 local function read_file(path)
     local f, err = host_io.open(path, "rb")
     if not f then return nil, err end
-    local data = f:read("*a")
+    local data, read_err = f:read("*a")
     f:close()
+    if not data then return nil, read_err or "read failed" end
+    if #data > max_source_bytes then return nil, "Lua source file exceeds size limit" end
     if has_nul(data) then return nil, "NUL bytes are not supported in Lua source" end
     return data
 end
@@ -659,42 +832,45 @@ local function candidate_paths(modname)
     }
 end
 
-local env
 local safe_package = { loaded = package_loaded, path = config_dir .. "/?.lua;" .. config_dir .. "/?/init.lua" }
+local make_env
 
-local function load_text_as_chunk(text, chunkname)
-    local chunk, err = load(text, "@" .. chunkname, "t", env)
-    if not chunk then error(err, 0) end
+local function load_text_as_chunk(text, chunkname, chunk_env)
+    local chunk, err = load(text, "@" .. chunkname, "t", chunk_env)
+    if not chunk then fail(err) end
     return chunk
 end
 
-local function safe_dofile(path)
-    if not path_is_allowed(path) then error("dofile path outside config tree", 0) end
+local function safe_dofile(path, current_env)
+    if not path_is_allowed(path) then fail("dofile path outside config tree") end
     if path:sub(1, 1) ~= "/" then path = config_dir .. "/" .. path end
     local text, err = read_file(path)
-    if not text then error(tostring(err), 0) end
+    if not text then fail(tostring(err)) end
     record_file(path)
-    return load_text_as_chunk(text, path)()
+    return load_text_as_chunk(text, path, current_env)()
 end
 
-local function safe_loadfile(path, mode, custom_env)
+local function safe_loadfile(path, mode, use_env)
     if mode ~= nil and mode ~= "t" then return nil, "binary chunks disabled" end
     if not path_is_allowed(path) then return nil, "path outside config tree" end
     if path:sub(1, 1) ~= "/" then path = config_dir .. "/" .. path end
     local text, err = read_file(path)
     if not text then return nil, err end
     record_file(path)
-    return load(text, "@" .. path, "t", custom_env or env)
+    return load(text, "@" .. path, "t", use_env)
 end
 
-local function safe_load(chunk, chunkname, mode, custom_env)
+local function safe_load(chunk, chunkname, mode, use_env)
     if type(chunk) ~= "string" then return nil, "only string chunks are supported" end
     if has_nul(chunk) then return nil, "NUL bytes are not supported in load()" end
+    if #chunk > max_source_bytes then return nil, "load() chunk exceeds size limit" end
     if mode ~= nil and mode ~= "t" then return nil, "binary chunks disabled" end
-    return load(chunk, chunkname or "=(load)", "t", custom_env or env)
+    return load(chunk, chunkname or "=(load)", "t", use_env)
 end
 
 local function safe_require(name)
+    local norm = normalize_module_name(name)
+    if not norm then fail("invalid module name: " .. safe_tostring(name)) end
     if package_loaded[name] ~= nil then return package_loaded[name] end
     if loading[name] then return package_loaded[name] or inert_proxy end
 
@@ -703,14 +879,15 @@ local function safe_require(name)
     for _, p in ipairs(paths) do
         if file_exists(p) then selected = p; break end
     end
-    if not selected then error("module not found in config directory: " .. tostring(name), 0) end
+    if not selected then fail("module not found in config directory: " .. tostring(name)) end
 
     loading[name] = true
     package_loaded[name] = inert_proxy
     local text, err = read_file(selected)
-    if not text then error(tostring(err), 0) end
+    if not text then fail(tostring(err)) end
     record_file(selected)
-    local chunk = load_text_as_chunk(text, selected)
+    local module_env = make_env()
+    local chunk = load_text_as_chunk(text, selected, module_env)
     local result = chunk()
     if type(result) == "table" then deep_merge(config_root, result) end
     if result == nil then result = true end
@@ -726,7 +903,7 @@ local safe_os = {
     time = os.time,
     getenv = function(_) return nil end,
     execute = function() return nil, "sandbox", 1 end,
-    exit = function() error("os.exit disabled in parser sandbox", 0) end,
+    exit = function() fail("os.exit disabled in parser sandbox") end,
     remove = function() return nil, "sandbox" end,
     rename = function() return nil, "sandbox" end,
     setlocale = function() return nil, "sandbox" end,
@@ -755,55 +932,53 @@ safe_coroutine.wrap = nil
 safe_coroutine.resume = nil
 safe_coroutine.yield = nil
 
-local safe_string = shallow_copy(string)
-local safe_table = shallow_copy(table)
-local safe_math = shallow_copy(math)
-
-env = {
+local base_env = {
     _VERSION = _VERSION,
     assert = assert, error = error, ipairs = ipairs, next = next, pairs = pairs,
     pcall = pcall, rawequal = rawequal, rawget = rawget, rawlen = rawlen,
     rawset = rawset, select = select, tonumber = tonumber, tostring = tostring,
     type = type, xpcall = xpcall,
-    math = safe_math, string = safe_string, table = safe_table,
+    math = shallow_copy(math), string = shallow_copy(string), table = shallow_copy(table),
     coroutine = safe_coroutine,
-    os = safe_os, io = safe_io,
-    package = safe_package,
-    require = safe_require, dofile = safe_dofile, loadfile = safe_loadfile, load = safe_load,
+    os = safe_os, io = safe_io, package = safe_package,
     print = function(...) end,
     warn = function(...) end,
     hl = hl,
 }
-if utf8 then env.utf8 = shallow_copy(utf8) end
-if bit32 then env.bit32 = shallow_copy(bit32) end
-env._G = env
-for k in pairs(env) do reserved[k] = true end
+if utf8 then base_env.utf8 = shallow_copy(utf8) end
+if bit32 then base_env.bit32 = shallow_copy(bit32) end
+
+make_env = function()
+    local env = {}
+    for k, v in pairs(base_env) do env[k] = v end
+    env.require = safe_require
+    env.dofile = function(path) return safe_dofile(path, env) end
+    env.loadfile = function(path, mode, custom_env) return safe_loadfile(path, mode, custom_env or env) end
+    env.load = function(chunk, chunkname, mode, custom_env) return safe_load(chunk, chunkname, mode, custom_env or env) end
+    env._G = env
+    return env
+end
 
 local hook_interval = 100000
 local hook_steps = 0
 local hook_limit = 50000000
 debug.sethook(function()
     hook_steps = hook_steps + hook_interval
-    if hook_steps > hook_limit then error("config evaluation exceeded instruction limit", 0) end
+    if hook_steps > hook_limit then fail("config evaluation exceeded instruction limit") end
 end, "", hook_interval)
 
 local function evaluate_main()
     local text, err = read_file(main_path)
-    if not text then error(tostring(err), 0) end
-    local chunk = load_text_as_chunk(text, main_path)
+    if not text then fail(tostring(err)) end
+    local main_env = make_env()
+    local chunk = load_text_as_chunk(text, main_path, main_env)
     local result = chunk()
     if type(result) == "table" then deep_merge(config_root, result) end
-
-    for k, v in pairs(env) do
-        if not reserved[k] and type(v) == "table" then
-            deep_merge(config_root, v)
-        end
-    end
 end
 
 local function valid_key(k)
-    return type(k) == "string" and k ~= "" and not k:find("\0", 1, true)
-        and not k:find("|", 1, true) and not k:find("/", 1, true)
+    return type(k) == "string" and k ~= "" and #k <= max_field_bytes
+        and not k:find("\0", 1, true) and not k:find("|", 1, true) and not k:find("/", 1, true)
 end
 
 local scope = {}
@@ -814,12 +989,15 @@ local function scope_text(depth)
 end
 
 local function walk(t, depth)
-    if depth > 512 then error("table nesting too deep", 0) end
+    if depth > max_table_depth then fail("table nesting too deep") end
     if active[t] then return end
     active[t] = true
     local keys = {}
     for k in pairs(t) do
-        if valid_key(k) then keys[#keys + 1] = k end
+        if valid_key(k) then
+            keys[#keys + 1] = k
+            if #keys > max_table_keys then fail("config table key limit exceeded while walking") end
+        end
     end
     table.sort(keys)
     for _, k in ipairs(keys) do
@@ -831,7 +1009,7 @@ local function walk(t, depth)
         else
             local ok, str_val = pcall(scalar_to_string, v)
             if ok then
-                out:write("V", "\0", k, "\0", scope_text(depth), "\0", str_val, "\0", "", "\0")
+                emit("V", k, scope_text(depth), str_val, "")
             end
         end
     end
@@ -841,13 +1019,17 @@ end
 local ok, err = xpcall(function()
     evaluate_main()
     for _, p in ipairs(loaded_files) do
-        out:write("F", "\0", p, "\0", "", "\0", "", "\0", "", "\0")
+        emit("F", p, "", "", "")
     end
     walk(config_root, 0)
 end, function(msg) return type(msg) == "string" and msg or safe_tostring(msg) end)
 
 debug.sethook()
-out:close()
+local close_ok, close_err = out:close()
+if ok and not close_ok then
+    ok = false
+    err = close_err or "failed to close parser output"
+end
 
 if not ok then
     host_io.stderr:write(tostring(err), "\n")
@@ -855,11 +1037,24 @@ if not ok then
 end
 LUA
     ); then
-        err_msg=$(<"$tmp_err")
-        [[ -n $err_msg ]] || err_msg="unknown Lua parser error"
+        read_error_excerpt "$tmp_err"
+        err_msg=$REPLY
         log_err "Parser failed on $config_file: $err_msg"
         remove_temp "$tmp_proto"
         remove_temp "$tmp_err"
+        return 1
+    fi
+
+    if ! proto_size=$(stat -c '%s' -- "$tmp_proto" 2>/dev/null); then
+        remove_temp "$tmp_proto"
+        remove_temp "$tmp_err"
+        log_err "Failed to stat parser output file"
+        return 1
+    fi
+    if (( proto_size > LUA_PROTOCOL_MAX_BYTES )); then
+        remove_temp "$tmp_proto"
+        remove_temp "$tmp_err"
+        log_err "Parser output exceeded ${LUA_PROTOCOL_MAX_BYTES} bytes"
         return 1
     fi
 
@@ -871,7 +1066,23 @@ LUA
         return 1
     fi
 
-    while IFS= read -r -d '' part <&"$proto_fd"; do
+    while true; do
+        part=""
+        if IFS= read -r -d '' part <&"$proto_fd"; then
+            :
+        else
+            if [[ -n $part ]]; then
+                truncated=1
+            fi
+            break
+        fi
+        if (( ${#part} > LUA_MAX_FIELD_BYTES )); then
+            exec {proto_fd}<&-
+            remove_temp "$tmp_proto"
+            remove_temp "$tmp_err"
+            log_err "Internal parser emitted an oversized field."
+            return 1
+        fi
         case $state in
             0) tag=$part; state=1 ;;
             1) field_a=$part; state=2 ;;
@@ -879,6 +1090,14 @@ LUA
             3) field_c=$part; state=4 ;;
             4)
                 field_d=$part
+                (( ++record_count ))
+                if (( record_count > LUA_MAX_RECORDS )); then
+                    exec {proto_fd}<&-
+                    remove_temp "$tmp_proto"
+                    remove_temp "$tmp_err"
+                    log_err "Internal parser emitted too many records."
+                    return 1
+                fi
                 case $tag in
                     V)
                         cache_key="${field_a}|${field_b}"
@@ -903,6 +1122,7 @@ LUA
                         return 1
                         ;;
                 esac
+                tag=""; field_a=""; field_b=""; field_c=""; field_d=""
                 state=0
                 ;;
         esac
@@ -912,7 +1132,7 @@ LUA
     remove_temp "$tmp_proto"
     remove_temp "$tmp_err"
 
-    if (( state != 0 )); then
+    if (( truncated || state != 0 )); then
         log_err "Internal parser output was truncated."
         return 1
     fi
@@ -922,7 +1142,11 @@ LUA
     for k in "${!new_cache[@]}"; do
         CONFIG_CACHE["$k"]=${new_cache[$k]}
     done
-    CONFIG_SOURCE_FILES=("${new_files[@]:-$WRITE_TARGET}")
+    if (( ${#new_files[@]} > 0 )); then
+        CONFIG_SOURCE_FILES=("${new_files[@]}")
+    else
+        CONFIG_SOURCE_FILES=("$target_path")
+    fi
 }
 
 # =============================================================================
@@ -931,24 +1155,35 @@ LUA
 
 run_lua_mutator_for_file() {
     local src_file=$1 target_key=$2 target_scope=$3 val_file=$4
-    LC_ALL=C "$LUA_BIN" - "$src_file" "$target_key" "$target_scope" "$val_file" <<'LUA'
+    (
+        ulimit -v "$LUA_MEMORY_KB" 2>/dev/null || :
+        ulimit -t "$LUA_CPU_SECONDS" 2>/dev/null || :
+        LC_ALL=C timeout --kill-after="${LUA_KILL_AFTER_SECONDS}s" "${LUA_TIMEOUT_SECONDS}s" \
+            "$LUA_BIN" - "$src_file" "$target_key" "$target_scope" "$val_file" "$LUA_MAX_SOURCE_BYTES" <<'LUA'
 local src_path = assert(arg[1], "missing source")
 local target_key = assert(arg[2], "missing key")
 local target_scope = assert(arg[3], "missing scope")
 local val_path = assert(arg[4], "missing value file")
+local max_source_bytes = tonumber(arg[5]) or (16 * 1024 * 1024)
 
-local function read_file(path)
+local function die(code, msg)
+    io.stderr:write(tostring(msg), "\n")
+    os.exit(code)
+end
+
+local function read_file(path, code)
     local f, err = io.open(path, "rb")
-    if not f then io.stderr:write(tostring(err), "\n"); os.exit(4) end
-    local s = f:read("*a")
+    if not f then die(code, err or "open failed") end
+    local s, read_err = f:read("*a")
     f:close()
-    if s:find("\0", 1, true) then io.stderr:write("NUL bytes not supported\n"); os.exit(4) end
+    if not s then die(code, read_err or "read failed") end
+    if #s > max_source_bytes then die(code, "source exceeds size limit") end
+    if s:find("\0", 1, true) then die(code, "NUL bytes not supported") end
     return s
 end
 
-local text = read_file(src_path)
-local new_value = read_file(val_path)
-
+local text = read_file(src_path, 4)
+local new_value = read_file(val_path, 4)
 local len = #text
 local tokens = {}
 local pos = 1
@@ -966,8 +1201,8 @@ local function long_bracket_end_at(p)
     local eqs = text:sub(p + 1, q - 1)
     local close = "]" .. eqs .. "]"
     local found = text:find(close, q + 1, true)
-    if found then return found + #close - 1 end
-    return len
+    if not found then die(5, "unterminated long bracket") end
+    return found + #close - 1
 end
 
 while pos <= len do
@@ -987,17 +1222,20 @@ while pos <= len do
         local quote = c
         local s = pos
         pos = pos + 1
+        local closed = false
         while pos <= len do
             local ch = text:sub(pos, pos)
             if ch == "\\" then
                 pos = pos + 2
             elseif ch == quote then
                 pos = pos + 1
+                closed = true
                 break
             else
                 pos = pos + 1
             end
         end
+        if not closed then die(5, "unterminated quoted string") end
         add("STRING", text:sub(s, pos - 1), s, pos - 1)
     elseif c == "[" then
         local lb_end = long_bracket_end_at(pos)
@@ -1030,37 +1268,11 @@ while pos <= len do
 end
 
 local function unquote_string(raw)
-    local first = raw:sub(1, 1)
-    if first == "[" then
-        local open_end = raw:find("%[", 2)
-        local close_start = raw:match("()]=*]$")
-        if not open_end or not close_start then return raw end
-        local body = raw:sub(open_end + 1, close_start - 1)
-        if body:sub(1, 1) == "\n" then body = body:sub(2) end
-        return body
-    end
-    local out = {}
-    local i = 2
-    local last = #raw - 1
-    while i <= last do
-        local ch = raw:sub(i, i)
-        if ch == "\\" and i < last then
-            local nx = raw:sub(i + 1, i + 1)
-            if nx == "n" then out[#out + 1] = "\n"
-            elseif nx == "r" then out[#out + 1] = "\r"
-            elseif nx == "t" then out[#out + 1] = "\t"
-            elseif nx == "b" then out[#out + 1] = "\b"
-            elseif nx == "f" then out[#out + 1] = "\f"
-            elseif nx == "v" then out[#out + 1] = "\v"
-            elseif nx == "\\" or nx == "'" or nx == '"' then out[#out + 1] = nx
-            else out[#out + 1] = "\\" .. nx end
-            i = i + 2
-        else
-            out[#out + 1] = ch
-            i = i + 1
-        end
-    end
-    return table.concat(out)
+    local chunk, err = load("return " .. raw, "=(dusky-key)", "t", {})
+    if not chunk then return raw end
+    local ok, value = pcall(chunk)
+    if ok and type(value) == "string" then return value end
+    return raw
 end
 
 local function trim(s)
@@ -1069,28 +1281,42 @@ end
 
 local function is_lua_number_literal(raw)
     raw = trim(raw)
-    return raw:match("^[+-]?%d+%.?%d*$")
-        or raw:match("^[+-]?%d+%.?%d*[eE][+-]?%d+$")
-        or raw:match("^[+-]?%.%d+$")
-        or raw:match("^[+-]?%.%d+[eE][+-]?%d+$")
-        or raw:match("^[+-]?0[xX][%da-fA-F]+$")
+    return raw:match("^[+-]?%d+%.?%d*([eE][+-]?%d+)?$") ~= nil
+        or raw:match("^[+-]?%.%d+([eE][+-]?%d+)?$") ~= nil
+        or raw:match("^[+-]?0[xX][%da-fA-F]+$") ~= nil
 end
 
 local function format_short_string(value, quote)
-    value = value:gsub("\\", "\\\\")
-    value = value:gsub("\n", "\\n")
-    value = value:gsub("\r", "\\r")
-    value = value:gsub("\t", "\\t")
-    value = value:gsub("\b", "\\b")
-    value = value:gsub("\f", "\\f")
-    value = value:gsub("\v", "\\v")
-    local pat = quote == '"' and '"' or "'"
-    value = value:gsub(pat, "\\" .. pat)
-    return quote .. value .. quote
+    local out = { quote }
+    for i = 1, #value do
+        local ch = value:sub(i, i)
+        local b = value:byte(i)
+        if ch == "\\" then out[#out + 1] = "\\\\"
+        elseif ch == "\n" then out[#out + 1] = "\\n"
+        elseif ch == "\r" then out[#out + 1] = "\\r"
+        elseif ch == "\t" then out[#out + 1] = "\\t"
+        elseif ch == "\b" then out[#out + 1] = "\\b"
+        elseif ch == "\f" then out[#out + 1] = "\\f"
+        elseif ch == "\v" then out[#out + 1] = "\\v"
+        elseif ch == quote then out[#out + 1] = "\\" .. quote
+        elseif b < 32 or b == 127 then out[#out + 1] = string.format("\\x%02X", b)
+        else out[#out + 1] = ch end
+    end
+    out[#out + 1] = quote
+    return table.concat(out)
+end
+
+local function long_string_open_info(raw)
+    local q = 2
+    while q <= #raw and raw:sub(q, q) == "=" do q = q + 1 end
+    local eqs = raw:sub(2, q - 1)
+    local body_start = q + 1
+    local first = raw:sub(body_start, body_start)
+    return eqs, first == "\n" or first == "\r"
 end
 
 local function format_long_string(value, old_raw)
-    local eqs = old_raw:match("^%[(=*)%[") or ""
+    local eqs, had_initial_newline = long_string_open_info(old_raw)
     local open = "[" .. eqs .. "["
     local close = "]" .. eqs .. "]"
     while value:find(close, 1, true) do
@@ -1098,8 +1324,7 @@ local function format_long_string(value, old_raw)
         open = "[" .. eqs .. "["
         close = "]" .. eqs .. "]"
     end
-    local body = value
-    if body:sub(1, 1) == "\n" then body = "\n" .. body end
+    local body = had_initial_newline and ("\n" .. value) or value
     return open .. body .. close
 end
 
@@ -1138,15 +1363,21 @@ local parse_table
 local function find_rhs_end(i)
     local j = i
     local depth = 0
-    local fn_depth = 0
+    local block_depth = 0
     local rhs_end = i
     while j <= #tokens do
         local tp = tokens[j].type
         local val = tokens[j].val
-        if tp == "IDENT" and val == "function" then fn_depth = fn_depth + 1
-        elseif tp == "IDENT" and val == "end" and fn_depth > 0 then fn_depth = fn_depth - 1
-        elseif fn_depth == 0 then
-            if tp == "LBRACE" or tp == "LPAREN" or tp == "LBRACK" then depth = depth + 1
+        if tp == "IDENT" then
+            if val == "function" or val == "if" or val == "for" or val == "while" or val == "repeat" then
+                block_depth = block_depth + 1
+            elseif (val == "end" or val == "until") and block_depth > 0 then
+                block_depth = block_depth - 1
+            end
+        end
+        if block_depth == 0 then
+            if tp == "LBRACE" or tp == "LPAREN" or tp == "LBRACK" then
+                depth = depth + 1
             elseif tp == "RBRACE" then
                 if depth == 0 then break end
                 depth = depth - 1
@@ -1208,24 +1439,50 @@ parse_table = function(i, scope_parts)
     return i
 end
 
-local function is_hl_config_call(i)
-    return tokens[i] and tokens[i].type == "IDENT" and tokens[i].val == "hl"
+local function config_arg_index(i)
+    if not (tokens[i] and tokens[i].type == "IDENT" and tokens[i].val == "hl"
         and tokens[i + 1] and tokens[i + 1].type == "DOT"
-        and tokens[i + 2] and tokens[i + 2].type == "IDENT" and tokens[i + 2].val == "config"
-        and tokens[i + 3] and tokens[i + 3].type == "LPAREN"
+        and tokens[i + 2] and tokens[i + 2].type == "IDENT" and tokens[i + 2].val == "config") then
+        return nil
+    end
+    if tokens[i + 3] and tokens[i + 3].type == "LPAREN" then return i + 4 end
+    if tokens[i + 3] and tokens[i + 3].type == "LBRACE" then return i + 3 end
+    return nil
+end
+
+local end_blocks = { ["if"] = true, ["for"] = true, ["while"] = true, ["function"] = true }
+local stack = {}
+local function in_function()
+    for n = #stack, 1, -1 do
+        if stack[n] == "function" then return true end
+    end
+    return false
+end
+local function update_block_stack(tok)
+    if tok.type ~= "IDENT" then return end
+    local v = tok.val
+    if end_blocks[v] then
+        stack[#stack + 1] = v
+    elseif v == "repeat" then
+        stack[#stack + 1] = "repeat"
+    elseif v == "end" then
+        if #stack > 0 then stack[#stack] = nil end
+    elseif v == "until" then
+        for n = #stack, 1, -1 do
+            if stack[n] == "repeat" then table.remove(stack, n); break end
+        end
+    end
 end
 
 local i = 1
 while i <= #tokens do
-    if is_hl_config_call(i) then
-        local arg = i + 4
-        if tokens[arg] and tokens[arg].type == "LBRACE" then
-            parse_table(arg, {})
-        end
-        i = arg + 1
-    else
-        i = i + 1
+    local arg = nil
+    if not in_function() then arg = config_arg_index(i) end
+    if arg and tokens[arg] and tokens[arg].type == "LBRACE" then
+        parse_table(arg, {})
     end
+    update_block_stack(tokens[i])
+    i = i + 1
 end
 
 if #matches == 0 then os.exit(1) end
@@ -1241,37 +1498,45 @@ local new_text = text:sub(1, m.s - 1) .. repl_or_err .. text:sub(m.e + 1)
 io.write(new_text)
 os.exit(0)
 LUA
+    )
 }
 
 write_value_to_file() {
     local requested_key=$1 new_val=$2 requested_scope=${3:-}
     local target_key target_scope cache_key current_val
-    local lock_fd val_file scratch src status match_count=0 matched_src="" matched_scratch="" err_file
+    local lock_fd="" val_file="" scratch="" src="" status=0 err_file="" err_msg=""
+    local match_count=0 matched_src="" matched_scratch="" src_sig="" matched_sig="" current_sig="" scratch_size=""
     local -a scratch_files=()
 
     LAST_WRITE_CHANGED=0
 
-    if [[ ! -f $WRITE_TARGET || ! -r $WRITE_TARGET ]]; then
+    if [[ -z ${WRITE_TARGET:-} || ! -f $WRITE_TARGET || ! -r $WRITE_TARGET ]]; then
         set_status "Config file missing or unreadable."
         return 1
     fi
+    if [[ -z ${LOCK_TARGET:-} ]]; then
+        set_status "Config lock path is not initialized."
+        return 1
+    fi
 
-    normalize_target "$requested_key" "$requested_scope"
-    target_key=$TARGET_KEY
-    target_scope=$TARGET_SCOPE
-    cache_key="${target_key}|${target_scope}"
-    current_val=${CONFIG_CACHE[$cache_key]:-}
-
-    exec {lock_fd}>>"$LOCK_TARGET"
-    if ! flock -n "$lock_fd"; then
-        exec {lock_fd}>&-
+    if ! exec {lock_fd}>>"$LOCK_TARGET"; then
+        set_status "Unable to open config lock."
+        return 1
+    fi
+    if ! flock -x -n "$lock_fd"; then
+        release_lock_fd "$lock_fd"
         set_status "Config file is locked by another process."
         return 1
     fi
 
+    if [[ ! -f $WRITE_TARGET || ! -r $WRITE_TARGET ]]; then
+        release_lock_fd "$lock_fd"
+        set_status "Config file disappeared or became unreadable."
+        return 1
+    fi
+
     if ! populate_config_cache; then
-        flock -u "$lock_fd" || :
-        exec {lock_fd}>&-
+        release_lock_fd "$lock_fd"
         set_status "Lua config parse failed; refusing to write."
         return 1
     fi
@@ -1283,38 +1548,67 @@ write_value_to_file() {
     current_val=${CONFIG_CACHE[$cache_key]:-}
 
     if [[ -n ${CONFIG_CACHE[$cache_key]+_} && $current_val == "$new_val" ]]; then
-        flock -u "$lock_fd" || :
-        exec {lock_fd}>&-
+        release_lock_fd "$lock_fd"
         return 0
     fi
 
-    err_file=$(mktemp) || {
-        flock -u "$lock_fd" || :
-        exec {lock_fd}>&-
+    err_file=$(mktemp --tmpdir "dusky.mutator.err.XXXXXXXXXX") || {
+        release_lock_fd "$lock_fd"
         set_status "Failed to create error transfer file."
         return 1
     }
     register_temp "$err_file"
 
-    val_file=$(mktemp) || {
+    val_file=$(mktemp --tmpdir "dusky.value.XXXXXXXXXX") || {
         remove_temp "$err_file"
-        flock -u "$lock_fd" || :
-        exec {lock_fd}>&-
+        release_lock_fd "$lock_fd"
         set_status "Failed to create value transfer file."
         return 1
     }
     register_temp "$val_file"
-    printf '%s' "$new_val" > "$val_file"
+    if ! printf '%s' "$new_val" > "$val_file"; then
+        remove_many_temps "$val_file" "$err_file"
+        release_lock_fd "$lock_fd"
+        set_status "Failed to stage new value."
+        return 1
+    fi
 
     for src in "${CONFIG_SOURCE_FILES[@]:-$WRITE_TARGET}"; do
         [[ -f $src && -r $src ]] || continue
-        scratch=$(mktemp) || continue
-        register_temp "$scratch"
+        if ! src_sig=$(file_signature "$src" 2>/dev/null); then
+            continue
+        fi
+        if ! create_temp_near "$src" "mut"; then
+            continue
+        fi
+        scratch=$REPLY
+        : > "$err_file"
         if run_lua_mutator_for_file "$src" "$target_key" "$target_scope" "$val_file" > "$scratch" 2>"$err_file"; then
-            match_count=$(( match_count + 1 ))
+            if ! scratch_size=$(stat -c '%s' -- "$scratch" 2>/dev/null); then
+                remove_temp "$scratch"
+                remove_many_temps "${scratch_files[@]:-}" "$val_file" "$err_file"
+                release_lock_fd "$lock_fd"
+                set_status "Failed to stat staged write."
+                return 1
+            fi
+            if (( scratch_size == 0 )); then
+                remove_temp "$scratch"
+                remove_many_temps "${scratch_files[@]:-}" "$val_file" "$err_file"
+                release_lock_fd "$lock_fd"
+                set_status "Refusing empty write."
+                return 1
+            fi
+            scratch_files+=("$scratch")
+            (( ++match_count ))
+            if (( match_count > 1 )); then
+                remove_many_temps "${scratch_files[@]:-}" "$val_file" "$err_file"
+                release_lock_fd "$lock_fd"
+                set_status "Ambiguous key appears in multiple literal hl.config tables."
+                return 1
+            fi
             matched_src=$src
             matched_scratch=$scratch
-            scratch_files+=("$scratch")
+            matched_sig=$src_sig
         else
             status=$?
             case $status in
@@ -1323,77 +1617,84 @@ write_value_to_file() {
                     ;;
                 2)
                     remove_temp "$scratch"
-                    local sf
-                    for sf in "${scratch_files[@]:-}"; do remove_temp "$sf"; done
-                    remove_temp "$val_file"
-                    remove_temp "$err_file"
-                    flock -u "$lock_fd" || :
-                    exec {lock_fd}>&-
+                    remove_many_temps "${scratch_files[@]:-}" "$val_file" "$err_file"
+                    release_lock_fd "$lock_fd"
                     set_status "Ambiguous duplicate keys in $src. Refusing to write."
                     return 1
                     ;;
                 3)
+                    read_error_excerpt "$err_file"; err_msg=$REPLY
                     remove_temp "$scratch"
-                    local sf
-                    for sf in "${scratch_files[@]:-}"; do remove_temp "$sf"; done
-                    remove_temp "$val_file"
-                    remove_temp "$err_file"
-                    flock -u "$lock_fd" || :
-                    exec {lock_fd}>&-
-                    set_status "Target is computed/custom logic; refusing to overwrite."
+                    remove_many_temps "${scratch_files[@]:-}" "$val_file" "$err_file"
+                    release_lock_fd "$lock_fd"
+                    set_status "Target is computed/custom logic: $err_msg"
+                    return 1
+                    ;;
+                4)
+                    read_error_excerpt "$err_file"; err_msg=$REPLY
+                    remove_temp "$scratch"
+                    remove_many_temps "${scratch_files[@]:-}" "$val_file" "$err_file"
+                    release_lock_fd "$lock_fd"
+                    set_status "Mutator I/O failed for $src: $err_msg"
+                    return 1
+                    ;;
+                5)
+                    read_error_excerpt "$err_file"; err_msg=$REPLY
+                    remove_temp "$scratch"
+                    remove_many_temps "${scratch_files[@]:-}" "$val_file" "$err_file"
+                    release_lock_fd "$lock_fd"
+                    set_status "Malformed Lua syntax in $src: $err_msg"
+                    return 1
+                    ;;
+                124|137)
+                    remove_temp "$scratch"
+                    remove_many_temps "${scratch_files[@]:-}" "$val_file" "$err_file"
+                    release_lock_fd "$lock_fd"
+                    set_status "Lua mutator timed out while parsing $src."
                     return 1
                     ;;
                 *)
+                    read_error_excerpt "$err_file"; err_msg=$REPLY
                     remove_temp "$scratch"
-                    local sf
-                    for sf in "${scratch_files[@]:-}"; do remove_temp "$sf"; done
-                    remove_temp "$val_file"
-                    remove_temp "$err_file"
-                    flock -u "$lock_fd" || :
-                    exec {lock_fd}>&-
-                    set_status "Lua mutator failed while parsing $src."
+                    remove_many_temps "${scratch_files[@]:-}" "$val_file" "$err_file"
+                    release_lock_fd "$lock_fd"
+                    set_status "Lua mutator failed in $src: $err_msg"
                     return 1
                     ;;
             esac
         fi
     done
-    remove_temp "$err_file"
-    remove_temp "$val_file"
+    remove_many_temps "$err_file" "$val_file"
 
     if (( match_count == 0 )); then
-        flock -u "$lock_fd" || :
-        exec {lock_fd}>&-
-        set_status "Key not found in literal hl.config table."
-        return 1
-    fi
-    if (( match_count > 1 )); then
-        local sf
-        for sf in "${scratch_files[@]:-}"; do remove_temp "$sf"; done
-        flock -u "$lock_fd" || :
-        exec {lock_fd}>&-
-        set_status "Ambiguous key appears in multiple config files."
+        release_lock_fd "$lock_fd"
+        set_status "Key not found in a literal top-level hl.config table."
         return 1
     fi
 
     if [[ ! -w $matched_src ]]; then
         remove_temp "$matched_scratch"
-        flock -u "$lock_fd" || :
-        exec {lock_fd}>&-
+        release_lock_fd "$lock_fd"
         set_status "Config source is not writable."
         return 1
     fi
-    if [[ ! -s $matched_scratch ]]; then
+
+    if ! current_sig=$(file_signature "$matched_src" 2>/dev/null); then
         remove_temp "$matched_scratch"
-        flock -u "$lock_fd" || :
-        exec {lock_fd}>&-
-        set_status "Refusing empty write."
+        release_lock_fd "$lock_fd"
+        set_status "Config source changed or disappeared before save."
+        return 1
+    fi
+    if [[ $current_sig != "$matched_sig" ]]; then
+        remove_temp "$matched_scratch"
+        release_lock_fd "$lock_fd"
+        set_status "Config changed during edit; refusing stale write."
         return 1
     fi
 
     if ! create_tmpfile_for_target "$matched_src"; then
         remove_temp "$matched_scratch"
-        flock -u "$lock_fd" || :
-        exec {lock_fd}>&-
+        release_lock_fd "$lock_fd"
         set_status "Atomic save unavailable."
         return 1
     fi
@@ -1401,8 +1702,7 @@ write_value_to_file() {
     if ! cat -- "$matched_scratch" > "$_TMPFILE"; then
         remove_temp "$matched_scratch"
         remove_temp "$_TMPFILE"
-        flock -u "$lock_fd" || :
-        exec {lock_fd}>&-
+        release_lock_fd "$lock_fd"
         set_status "Failed to stage atomic write."
         return 1
     fi
@@ -1410,14 +1710,12 @@ write_value_to_file() {
 
     if ! commit_tmpfile_to_target "$matched_src"; then
         remove_temp "$_TMPFILE"
-        flock -u "$lock_fd" || :
-        exec {lock_fd}>&-
+        release_lock_fd "$lock_fd"
         set_status "Atomic save failed."
         return 1
     fi
 
-    flock -u "$lock_fd" || :
-    exec {lock_fd}>&-
+    release_lock_fd "$lock_fd"
 
     CONFIG_CACHE["$cache_key"]=$new_val
     LAST_WRITE_CHANGED=1
@@ -1474,11 +1772,19 @@ load_active_values() {
 calc_float() {
     local current=$1 direction=$2 step=$3 min=$4 max=$5
     LC_ALL=C "$LUA_BIN" - "$current" "$direction" "$step" "$min" "$max" <<'LUA'
-local c = tonumber(arg[1]) or 0
-local dir = tonumber(arg[2]) or 0
-local step = tonumber(arg[3]) or 0.1
+local function finite(v)
+    return v and v == v and v ~= math.huge and v ~= -math.huge
+end
+local c = tonumber(arg[1])
+local dir = tonumber(arg[2])
+local step = tonumber(arg[3])
 local mn = arg[4] ~= "" and tonumber(arg[4]) or nil
 local mx = arg[5] ~= "" and tonumber(arg[5]) or nil
+if not finite(c) then c = 0 end
+if not finite(dir) then dir = 0 end
+if not finite(step) or step <= 0 then step = 0.1 end
+if not finite(mn) then mn = nil end
+if not finite(mx) then mx = nil end
 local v = c + dir * step
 if mn and v < mn then v = mn end
 if mx and v > mx then v = mx end
@@ -1506,25 +1812,40 @@ modify_value() {
     case $type in
         int)
             [[ $current =~ ^-?[0-9]+$ ]] || current=${min:-0}
-            local sign= unsigned int_val int_step min_i max_i
+            local unsigned int_val int_step min_i max_i
             unsigned=${current#-}
+            if (( ${#unsigned} > 18 )); then
+                current=${min:-0}
+                [[ $current =~ ^-?[0-9]+$ ]] || current=0
+                unsigned=${current#-}
+            fi
             int_val=$(( 10#${unsigned:-0} ))
             [[ $current == -* ]] && int_val=$(( -int_val ))
             int_step=${step:-1}
+            if [[ ! $int_step =~ ^[0-9]+$ || ${#int_step} -gt 18 || $int_step == 0 ]]; then int_step=1; fi
             int_val=$(( int_val + direction * int_step ))
             if [[ -n $min ]]; then
-                unsigned=${min#-}; min_i=$(( 10#${unsigned:-0} )); [[ $min == -* ]] && min_i=$(( -min_i ))
-                (( int_val < min_i )) && int_val=$min_i
+                unsigned=${min#-}
+                if (( ${#unsigned} <= 18 )); then
+                    min_i=$(( 10#${unsigned:-0} )); [[ $min == -* ]] && min_i=$(( -min_i ))
+                    (( int_val < min_i )) && int_val=$min_i
+                fi
             fi
             if [[ -n $max ]]; then
-                unsigned=${max#-}; max_i=$(( 10#${unsigned:-0} )); [[ $max == -* ]] && max_i=$(( -max_i ))
-                (( int_val > max_i )) && int_val=$max_i
+                unsigned=${max#-}
+                if (( ${#unsigned} <= 18 )); then
+                    max_i=$(( 10#${unsigned:-0} )); [[ $max == -* ]] && max_i=$(( -max_i ))
+                    (( int_val > max_i )) && int_val=$max_i
+                fi
             fi
             new_val=$int_val
             ;;
         float)
-            [[ $current =~ ^-?([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]] || current=${min:-0.0}
-            new_val=$(calc_float "$current" "$direction" "${step:-0.1}" "$min" "$max")
+            [[ $current =~ ^-?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$ ]] || current=${min:-0.0}
+            if ! new_val=$(calc_float "$current" "$direction" "${step:-0.1}" "$min" "$max"); then
+                set_status "Float calculation failed."
+                return 0
+            fi
             ;;
         bool)
             [[ $current == true ]] && new_val=false || new_val=true
@@ -1609,7 +1930,7 @@ acquire_sudo() {
     local -i result=0
     sudo -v 2>/dev/null || result=$?
 
-    stty -icanon -echo min 0 time 0 < /dev/tty 2>/dev/null || :
+    stty -icanon -echo -ixon min 0 time 0 < /dev/tty 2>/dev/null || :
     printf '%s%s%s%s' "$MOUSE_ON" "$CURSOR_HIDE" "$CLR_SCREEN" "$CURSOR_HOME"
 
     if (( result == 0 )); then
@@ -1623,6 +1944,7 @@ acquire_sudo() {
 
 prompt_line_input() {
     local prompt_text=$1 __result_var=$2 input="" prompt_row
+    [[ $__result_var =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || return 1
     printf '%s%s' "$MOUSE_OFF" "$CURSOR_SHOW"
     stty "$ORIGINAL_STTY" < /dev/tty 2>/dev/null || :
 
@@ -1633,7 +1955,7 @@ prompt_line_input() {
 
     IFS= read -r input < /dev/tty || input=""
 
-    stty -icanon -echo min 0 time 0 < /dev/tty 2>/dev/null || :
+    stty -icanon -echo -ixon min 0 time 0 < /dev/tty 2>/dev/null || :
     printf '%s%s%s%s' "$CURSOR_HIDE" "$MOUSE_ON" "$CLR_SCREEN" "$CURSOR_HOME"
 
     trim_spaces "$input"
@@ -2107,10 +2429,10 @@ read_escape_seq() {
     local -n _esc_out=$1
     _esc_out=""
     local char
-    if ! IFS= read -rsn1 -t "$ESC_READ_TIMEOUT" char; then return 1; fi
+    if ! IFS= read -rsn1 -t "$ESC_READ_TIMEOUT" char < /dev/tty; then return 1; fi
     _esc_out+=$char
     if [[ $char == '[' || $char == 'O' ]]; then
-        while IFS= read -rsn1 -t "$ESC_READ_TIMEOUT" char; do
+        while IFS= read -rsn1 -t "$ESC_READ_TIMEOUT" char < /dev/tty; do
             _esc_out+=$char
             [[ $char =~ [a-zA-Z~] ]] && break
         done
@@ -2252,7 +2574,7 @@ main() {
     if [[ ! -f $CONFIG_FILE ]]; then log_err "Config not found: $CONFIG_FILE"; exit 1; fi
 
     local dep
-    for dep in realpath mktemp timeout flock sync cat chmod chown mv rm stty sudo; do
+    for dep in realpath mktemp timeout flock sync stat head cat chmod chown mv rm stty sudo; do
         command -v "$dep" >/dev/null 2>&1 || { log_err "Missing dependency: $dep"; exit 1; }
     done
     find_lua || { log_err "Lua interpreter not found"; exit 1; }
@@ -2265,7 +2587,7 @@ main() {
 
     ORIGINAL_STTY=$(stty -g < /dev/tty 2>/dev/null) || ORIGINAL_STTY=""
     if [[ -z $ORIGINAL_STTY ]]; then log_err "Failed to read terminal settings. A controlling TTY is required."; exit 1; fi
-    stty -icanon -echo min 0 time 0 < /dev/tty 2>/dev/null || { log_err "Failed to configure terminal raw input."; exit 1; }
+    stty -icanon -echo -ixon min 0 time 0 < /dev/tty 2>/dev/null || { log_err "Failed to configure terminal raw input."; exit 1; }
 
     TUI_STARTED=1
     printf '%s%s%s%s%s' "$ALT_SCREEN_ON" "$MOUSE_ON" "$CURSOR_HIDE" "$CLR_SCREEN" "$CURSOR_HOME"
@@ -2275,7 +2597,7 @@ main() {
     local key
     while true; do
         draw_ui
-        if IFS= read -rsn1 -t "$READ_LOOP_TIMEOUT" key; then
+        if IFS= read -rsn1 -t "$READ_LOOP_TIMEOUT" key < /dev/tty; then
             (( RESIZE_PENDING )) && RESIZE_PENDING=0
             handle_input_router "$key"
         else
