@@ -1869,8 +1869,9 @@ modify_value() {
     if write_value_to_file "$key" "$new_val" "$block"; then
         VALUE_CACHE["${REPLY_CTX}::${label}"]=$new_val
         clear_status
-        (( LAST_WRITE_CHANGED )) && post_write_action
+        if (( LAST_WRITE_CHANGED )); then post_write_action; fi
     fi
+    return 0
 }
 
 set_absolute_value() {
@@ -1969,7 +1970,7 @@ prompt_line_input() {
 compute_scroll_window() {
     local -i count=$1
     if (( count == 0 )); then
-        SELECTED_ROW=0; SCROLL_OFFSET=0; _vis_start=0; _vis_end=0; return
+        SELECTED_ROW=0; SCROLL_OFFSET=0; _vis_start=0; _vis_end=0; return 0
     fi
     (( SELECTED_ROW < 0 )) && SELECTED_ROW=0
     (( SELECTED_ROW >= count )) && SELECTED_ROW=$(( count - 1 ))
@@ -1981,6 +1982,7 @@ compute_scroll_window() {
     _vis_start=$SCROLL_OFFSET
     _vis_end=$(( SCROLL_OFFSET + MAX_DISPLAY_ROWS ))
     (( _vis_end > count )) && _vis_end=$count
+    return 0
 }
 
 render_scroll_indicator() {
@@ -2591,15 +2593,22 @@ main() {
 
     TUI_STARTED=1
     printf '%s%s%s%s%s' "$ALT_SCREEN_ON" "$MOUSE_ON" "$CURSOR_HIDE" "$CLR_SCREEN" "$CURSOR_HOME"
-    load_active_values
+    
+    # FIX: Protect the initial UI data load from set -e aborts
+    load_active_values || true
     trap 'RESIZE_PENDING=1' WINCH
 
     local key
     while true; do
-        draw_ui
+        # FIX: Protect the UI rendering math and shorthands
+        draw_ui || true
+        
         if IFS= read -rsn1 -t "$READ_LOOP_TIMEOUT" key < /dev/tty; then
-            (( RESIZE_PENDING )) && RESIZE_PENDING=0
-            handle_input_router "$key"
+            # FIX: Replaced '&&' shorthand with standard if-statement
+            if (( RESIZE_PENDING )); then RESIZE_PENDING=0; fi
+            
+            # FIX: Protect the navigation and input router math
+            handle_input_router "$key" || true
         else
             if (( RESIZE_PENDING )); then RESIZE_PENDING=0; fi
         fi
