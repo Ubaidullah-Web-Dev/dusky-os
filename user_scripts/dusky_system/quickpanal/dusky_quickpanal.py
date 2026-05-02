@@ -2076,7 +2076,7 @@ class QuickPanalWindow(Adw.ApplicationWindow):
         else: self.tg_idle.update_state(icon="view-reveal-symbolic", css_class="active", tooltip="Idle Inhibited (Awake)\nLMB: Toggle | RMB: Lock Screen")
             
     def _apply_blur(self, is_active: bool):
-        if is_active: self.tg_blur.update_state(icon="edit-opacity-symbolic", css_class="active", tooltip="Visuals: Blur & Shadow ON\nLMB: Toggle")
+        if is_active: self.tg_blur.update_state(icon="applications-graphics-symbolic", css_class="active", tooltip="Visuals: Blur & Shadow ON\nLMB: Toggle")
         else: self.tg_blur.update_state(icon="edit-opacity-symbolic", css_class="normal", tooltip="Visuals: Performance Mode\nLMB: Toggle")
 
     def _apply_power_profile(self, profile: str):
