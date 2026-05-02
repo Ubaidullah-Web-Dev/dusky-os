@@ -4,7 +4,7 @@
 # Target: current Arch Linux, Wayland, Hyprland 0.55+ Lua config, UWSM sessions
 # -----------------------------------------------------------------------------
 
-set -Eeuo pipefail
+set -E -o pipefail
 shopt -s extglob
 
 # =============================================================================
@@ -2077,8 +2077,10 @@ draw_main_view() {
 
         for (( i = TAB_SCROLL_START; i < TAB_COUNT; i++ )); do
             name=${TABS[i]}; display_name=$name
-            local -i tab_name_len=${#name} chunk_len=$(( tab_name_len + 4 )) reserve=0
-            (( i < TAB_COUNT - 1 )) && reserve=2
+            local -i tab_name_len=${#name}
+            local -i chunk_len=$(( tab_name_len + 4 ))
+            local -i reserve=0
+            if (( i < TAB_COUNT - 1 )); then reserve=2; fi
             if (( used_len + chunk_len + reserve > max_tab_width )); then
                 if (( i < CURRENT_TAB || (i == CURRENT_TAB && TAB_SCROLL_START < CURRENT_TAB) )); then
                     TAB_SCROLL_START=$(( TAB_SCROLL_START + 1 )); continue 2
