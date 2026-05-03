@@ -3,6 +3,7 @@
 # Arch System Settings TUI Engine
 # Target: Arch Linux, systemd (timedatectl/localectl), Wayland/UWSM sessions
 # Derived from the Dusky TUI Engine blueprint.
+# Based on Tui 5.2
 # -----------------------------------------------------------------------------
 
 set -E -o pipefail

@@ -2,6 +2,7 @@
 # -----------------------------------------------------------------------------
 # Dusky TUI Engine - Lua/Hyprland Refactor
 # Target: current Arch Linux, Wayland, Hyprland 0.55+ Lua config, UWSM sessions
+# Based on TUI Template v5.2
 # -----------------------------------------------------------------------------
 
 set -E -o pipefail
@@ -14,7 +15,7 @@ shopt -s extglob
 : "${XDG_CONFIG_HOME:=${HOME}/.config}"
 declare CONFIG_FILE="${DUSKY_CONFIG_FILE:-${XDG_CONFIG_HOME}/hypr/hyprland.lua}"
 declare -r APP_TITLE="Dusky Config Editor"
-declare -r APP_VERSION="v5.2.0-lua"
+declare -r APP_VERSION="v5.2"
 
 # Parser limits for untrusted config evaluation.
 declare -ri LUA_TIMEOUT_SECONDS=4
