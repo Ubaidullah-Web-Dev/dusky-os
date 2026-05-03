@@ -14,7 +14,7 @@ shopt -s extglob
 : "${XDG_CONFIG_HOME:=${HOME}/.config}"
 declare CONFIG_FILE="${DUSKY_CONFIG_FILE:-${XDG_CONFIG_HOME}/hypr/hyprland.lua}"
 declare -r APP_TITLE="Hyprland Lua Config Editor"
-declare -r APP_VERSION="v5.0.0-lua"
+declare -r APP_VERSION="v5.2.0-lua"
 
 # Parser limits for untrusted config evaluation.
 declare -ri LUA_TIMEOUT_SECONDS=4
@@ -111,7 +111,7 @@ post_write_action() {
 
 declare _h_line_buf
 printf -v _h_line_buf '%*s' "$BOX_INNER_WIDTH" ''
-declare -r H_LINE="${_h_line_buf// /-}"
+declare -r H_LINE="${_h_line_buf// /─}"
 unset _h_line_buf
 
 # ANSI constants.
@@ -132,12 +132,12 @@ declare -r CURSOR_HIDE=$'\033[?25l'
 declare -r CURSOR_SHOW=$'\033[?25h'
 declare -r ALT_SCREEN_ON=$'\033[?1049h'
 declare -r ALT_SCREEN_OFF=$'\033[?1049l'
-declare -r MOUSE_ON=$'\033[?1000h\033[?1006h'
-declare -r MOUSE_OFF=$'\033[?1000l\033[?1006l'
+declare -r MOUSE_ON=$'\033[?1000h\033[?1002h\033[?1006h'
+declare -r MOUSE_OFF=$'\033[?1000l\033[?1002l\033[?1006l'
 
 declare -r ESC_READ_TIMEOUT=0.08
 declare -r READ_LOOP_TIMEOUT=0.25
-declare -r UNSET_MARKER='<unset>'
+declare -r UNSET_MARKER='«unset»'
 
 declare -i SELECTED_ROW=0 CURRENT_TAB=0 SCROLL_OFFSET=0
 declare -ri TAB_COUNT=${#TABS[@]}
@@ -384,8 +384,8 @@ terminal_size_ok() {
 draw_small_terminal_notice() {
     printf '%s%s' "$CURSOR_HOME" "$CLR_SCREEN"
     printf '%sTerminal too small%s\n' "$C_RED" "$C_RESET"
-    printf '%sNeed at least:%s %d cols x %d rows\n' "$C_YELLOW" "$C_RESET" "$MIN_TERM_COLS" "$MIN_TERM_ROWS"
-    printf '%sCurrent size:%s %d cols x %d rows\n' "$C_WHITE" "$C_RESET" "$TERM_COLS" "$TERM_ROWS"
+    printf '%sNeed at least:%s %d cols × %d rows\n' "$C_YELLOW" "$C_RESET" "$MIN_TERM_COLS" "$MIN_TERM_ROWS"
+    printf '%sCurrent size:%s %d cols × %d rows\n' "$C_WHITE" "$C_RESET" "$TERM_COLS" "$TERM_ROWS"
     printf '%sResize the terminal, then continue. Press q to quit.%s%s' "$C_CYAN" "$C_RESET" "$CLR_EOS"
 }
 
@@ -1924,9 +1924,9 @@ acquire_sudo() {
     [[ -n ${ORIGINAL_STTY:-} ]] && stty "$ORIGINAL_STTY" < /dev/tty 2>/dev/null || :
 
     printf '%s%s' "$CLR_SCREEN" "$CURSOR_HOME"
-    printf '\n  %s+------------------------------------------------+%s\n' "$C_MAGENTA" "$C_RESET"
-    printf '  %s|%s  System operation requires administrator access  %s|%s\n' "$C_MAGENTA" "$C_YELLOW" "$C_MAGENTA" "$C_RESET"
-    printf '  %s+------------------------------------------------+%s\n\n' "$C_MAGENTA" "$C_RESET"
+    printf '\n  %s┌────────────────────────────────────────────────┐%s\n' "$C_MAGENTA" "$C_RESET"
+    printf '  %s│%s  System operation requires administrator access  %s│%s\n' "$C_MAGENTA" "$C_YELLOW" "$C_MAGENTA" "$C_RESET"
+    printf '  %s└────────────────────────────────────────────────┘%s\n\n' "$C_MAGENTA" "$C_RESET"
 
     local -i result=0
     sudo -v 2>/dev/null || result=$?
@@ -1990,11 +1990,11 @@ render_scroll_indicator() {
     local position=$2
     local -i count=$3 boundary=$4
     if [[ $position == above ]]; then
-        if (( SCROLL_OFFSET > 0 )); then _buf+="${C_GREY}    ^ (more above)${CLR_EOL}${C_RESET}"$'\n'; else _buf+="${CLR_EOL}"$'\n'; fi
+        if (( SCROLL_OFFSET > 0 )); then _buf+="${C_GREY}    ▲ (more above)${CLR_EOL}${C_RESET}"$'\n'; else _buf+="${CLR_EOL}"$'\n'; fi
     else
         if (( count > MAX_DISPLAY_ROWS )); then
             local position_info="[$(( SELECTED_ROW + 1 ))/${count}]"
-            if (( boundary < count )); then _buf+="${C_GREY}    v (more below) ${position_info}${CLR_EOL}${C_RESET}"$'\n'; else _buf+="${C_GREY}                   ${position_info}${CLR_EOL}${C_RESET}"$'\n'; fi
+            if (( boundary < count )); then _buf+="${C_GREY}    ▼ (more below) ${position_info}${CLR_EOL}${C_RESET}"$'\n'; else _buf+="${C_GREY}                   ${position_info}${CLR_EOL}${C_RESET}"$'\n'; fi
         else
             _buf+="${CLR_EOL}"$'\n'
         fi
@@ -2015,24 +2015,24 @@ render_item_list() {
         IFS='|' read -r _ type _ _ _ _ <<< "$config"
         case $type in
             menu) display="${C_YELLOW}[+] Open Menu ...${C_RESET}" ;;
-            action) display="${C_GREEN}> press Enter${C_RESET}" ;;
+            action) display="${C_GREEN}▶ press Enter${C_RESET}" ;;
             *)
                 case $val in
                     true) display="${C_GREEN}ON${C_RESET}" ;;
                     false) display="${C_RED}OFF${C_RESET}" ;;
-                    "$UNSET_MARKER") display="${C_YELLOW}! UNSET${C_RESET}" ;;
+                    "$UNSET_MARKER") display="${C_YELLOW}⚠ UNSET${C_RESET}" ;;
                     *) display="${C_WHITE}${val}${C_RESET}" ;;
                 esac
                 ;;
         esac
         max_len=$(( ITEM_PADDING - 1 ))
         if (( ${#item} > ITEM_PADDING )); then
-            printf -v padded_item "%-${max_len}s~" "${item:0:max_len}"
+            printf -v padded_item "%-${max_len}s…" "${item:0:max_len}"
         else
             printf -v padded_item "%-${ITEM_PADDING}s" "$item"
         fi
         if (( ri == SELECTED_ROW )); then
-            _buf+="${C_CYAN} > ${C_INVERSE}${padded_item}${C_RESET} : ${display}${CLR_EOL}"$'\n'
+            _buf+="${C_CYAN} ➤ ${C_INVERSE}${padded_item}${C_RESET} : ${display}${CLR_EOL}"$'\n'
         else
             _buf+="    ${padded_item} : ${display}${CLR_EOL}"$'\n'
         fi
@@ -2046,16 +2046,16 @@ draw_main_view() {
     local buf="" pad_buf="" tab_line name display_name item_var
     local -i i current_col=3 zone_start count left_pad right_pad vis_len _vis_start _vis_end
 
-    buf+="${CURSOR_HOME}${C_MAGENTA}+${H_LINE}+${C_RESET}${CLR_EOL}"$'\n'
+    buf+="${CURSOR_HOME}${C_MAGENTA}┌${H_LINE}┐${C_RESET}${CLR_EOL}"$'\n'
     strip_ansi "$APP_TITLE"; local -i t_len=${#REPLY}
     strip_ansi "$APP_VERSION"; local -i v_len=${#REPLY}
     vis_len=$(( t_len + v_len + 1 ))
     left_pad=$(( (BOX_INNER_WIDTH - vis_len) / 2 )); (( left_pad < 0 )) && left_pad=0
     right_pad=$(( BOX_INNER_WIDTH - vis_len - left_pad )); (( right_pad < 0 )) && right_pad=0
     printf -v pad_buf '%*s' "$left_pad" ''
-    buf+="${C_MAGENTA}|${pad_buf}${C_WHITE}${APP_TITLE} ${C_CYAN}${APP_VERSION}${C_MAGENTA}"
+    buf+="${C_MAGENTA}│${pad_buf}${C_WHITE}${APP_TITLE} ${C_CYAN}${APP_VERSION}${C_MAGENTA}"
     printf -v pad_buf '%*s' "$right_pad" ''
-    buf+="${pad_buf}|${C_RESET}${CLR_EOL}"$'\n'
+    buf+="${pad_buf}│${C_RESET}${CLR_EOL}"$'\n'
 
     (( TAB_SCROLL_START > CURRENT_TAB )) && TAB_SCROLL_START=$CURRENT_TAB
     (( TAB_SCROLL_START < 0 )) && TAB_SCROLL_START=0
@@ -2063,12 +2063,12 @@ draw_main_view() {
     LEFT_ARROW_ZONE=""; RIGHT_ARROW_ZONE=""
 
     while true; do
-        tab_line="${C_MAGENTA}| "
+        tab_line="${C_MAGENTA}│ "
         current_col=3
         TAB_ZONES=()
         local -i used_len=0
         if (( TAB_SCROLL_START > 0 )); then
-            tab_line+="${C_YELLOW}<${C_RESET} "
+            tab_line+="${C_YELLOW}«${C_RESET} "
             LEFT_ARROW_ZONE="$current_col:$(( current_col + 1 ))"
         else
             tab_line+="  "
@@ -2089,38 +2089,38 @@ draw_main_view() {
                     local -i avail_label=$(( max_tab_width - used_len - reserve - 4 ))
                     (( avail_label < 1 )) && avail_label=1
                     if (( tab_name_len > avail_label )); then
-                        if (( avail_label == 1 )); then display_name="~"; else display_name="${name:0:avail_label-1}~"; fi
+                        if (( avail_label == 1 )); then display_name="…"; else display_name="${name:0:avail_label-1}…"; fi
                         tab_name_len=${#display_name}; chunk_len=$(( tab_name_len + 4 ))
                     fi
                     zone_start=$current_col
-                    tab_line+="${C_CYAN}${C_INVERSE} ${display_name} ${C_RESET}${C_MAGENTA}| "
+                    tab_line+="${C_CYAN}${C_INVERSE} ${display_name} ${C_RESET}${C_MAGENTA}│ "
                     TAB_ZONES+=("${zone_start}:$(( zone_start + tab_name_len + 1 ))")
                     used_len=$(( used_len + chunk_len )); current_col=$(( current_col + chunk_len ))
                     if (( i < TAB_COUNT - 1 )); then
-                        tab_line+="${C_YELLOW}> ${C_RESET}"
+                        tab_line+="${C_YELLOW}» ${C_RESET}"
                         RIGHT_ARROW_ZONE="$current_col:$(( current_col + 1 ))"
                         used_len=$(( used_len + 2 ))
                     fi
                     break
                 fi
-                tab_line+="${C_YELLOW}> ${C_RESET}"
+                tab_line+="${C_YELLOW}» ${C_RESET}"
                 RIGHT_ARROW_ZONE="$current_col:$(( current_col + 1 ))"
                 used_len=$(( used_len + 2 ))
                 break
             fi
             zone_start=$current_col
-            if (( i == CURRENT_TAB )); then tab_line+="${C_CYAN}${C_INVERSE} ${display_name} ${C_RESET}${C_MAGENTA}| "; else tab_line+="${C_GREY} ${display_name} ${C_MAGENTA}| "; fi
+            if (( i == CURRENT_TAB )); then tab_line+="${C_CYAN}${C_INVERSE} ${display_name} ${C_RESET}${C_MAGENTA}│ "; else tab_line+="${C_GREY} ${display_name} ${C_MAGENTA}│ "; fi
             TAB_ZONES+=("${zone_start}:$(( zone_start + tab_name_len + 1 ))")
             used_len=$(( used_len + chunk_len )); current_col=$(( current_col + chunk_len ))
         done
         local -i pad=$(( BOX_INNER_WIDTH - used_len - 1 ))
         if (( pad > 0 )); then printf -v pad_buf '%*s' "$pad" ''; tab_line+="$pad_buf"; fi
-        tab_line+="${C_MAGENTA}|${C_RESET}"
+        tab_line+="${C_MAGENTA}│${C_RESET}"
         break
     done
 
     buf+="${tab_line}${CLR_EOL}"$'\n'
-    buf+="${C_MAGENTA}+${H_LINE}+${C_RESET}${CLR_EOL}"$'\n'
+    buf+="${C_MAGENTA}└${H_LINE}┘${C_RESET}${CLR_EOL}"$'\n'
 
     item_var="TAB_ITEMS_${CURRENT_TAB}"
     local -n _draw_items_ref="$item_var"
@@ -2130,7 +2130,7 @@ draw_main_view() {
     render_item_list buf _draw_items_ref "${CURRENT_TAB}" "$_vis_start" "$_vis_end"
     render_scroll_indicator buf below "$count" "$_vis_end"
 
-    buf+=$'\n'"${C_CYAN} [Tab] Category  [r] Reset  [Left/Right h/l] Adjust  [Enter] Action  [q] Quit${C_RESET}${CLR_EOL}"$'\n'
+    buf+=$'\n'"${C_CYAN} [Tab] Category  [r] Reset  [←/→ h/l] Adjust  [Enter] Action  [q] Quit${C_RESET}${CLR_EOL}"$'\n'
     if [[ -n $STATUS_MESSAGE ]]; then buf+="${C_CYAN} Status: ${C_RED}${STATUS_MESSAGE}${C_RESET}${CLR_EOL}${CLR_EOS}"; else buf+="${C_CYAN} File: ${C_WHITE}${WRITE_TARGET}${C_RESET}${CLR_EOL}${CLR_EOS}"; fi
     printf '%s' "$buf"
 }
@@ -2138,20 +2138,20 @@ draw_main_view() {
 draw_detail_view() {
     local buf="" pad_buf="" items_var breadcrumb title sub
     local -i count pad_needed left_pad right_pad vis_len _vis_start _vis_end
-    buf+="${CURSOR_HOME}${C_MAGENTA}+${H_LINE}+${C_RESET}${CLR_EOL}"$'\n'
+    buf+="${CURSOR_HOME}${C_MAGENTA}┌${H_LINE}┐${C_RESET}${CLR_EOL}"$'\n'
     title=" DETAIL VIEW "; sub=" ${CURRENT_MENU_ID} "
     strip_ansi "$title"; local -i t_len=${#REPLY}; strip_ansi "$sub"; local -i s_len=${#REPLY}
     vis_len=$(( t_len + s_len )); left_pad=$(( (BOX_INNER_WIDTH - vis_len) / 2 )); (( left_pad < 0 )) && left_pad=0
     right_pad=$(( BOX_INNER_WIDTH - vis_len - left_pad )); (( right_pad < 0 )) && right_pad=0
     printf -v pad_buf '%*s' "$left_pad" ''
-    buf+="${C_MAGENTA}|${pad_buf}${C_YELLOW}${title}${C_GREY}${sub}${C_MAGENTA}"
+    buf+="${C_MAGENTA}│${pad_buf}${C_YELLOW}${title}${C_GREY}${sub}${C_MAGENTA}"
     printf -v pad_buf '%*s' "$right_pad" ''
-    buf+="${pad_buf}|${C_RESET}${CLR_EOL}"$'\n'
-    breadcrumb=" < Back to ${TABS[CURRENT_TAB]}"
+    buf+="${pad_buf}│${C_RESET}${CLR_EOL}"$'\n'
+    breadcrumb=" « Back to ${TABS[CURRENT_TAB]}"
     strip_ansi "$breadcrumb"; local -i b_len=${#REPLY}; pad_needed=$(( BOX_INNER_WIDTH - b_len )); (( pad_needed < 0 )) && pad_needed=0
     printf -v pad_buf '%*s' "$pad_needed" ''
-    buf+="${C_MAGENTA}|${C_CYAN}${breadcrumb}${C_RESET}${pad_buf}${C_MAGENTA}|${C_RESET}${CLR_EOL}"$'\n'
-    buf+="${C_MAGENTA}+${H_LINE}+${C_RESET}${CLR_EOL}"$'\n'
+    buf+="${C_MAGENTA}│${C_CYAN}${breadcrumb}${C_RESET}${pad_buf}${C_MAGENTA}│${C_RESET}${CLR_EOL}"$'\n'
+    buf+="${C_MAGENTA}└${H_LINE}┘${C_RESET}${CLR_EOL}"$'\n'
 
     items_var="SUBMENU_ITEMS_${CURRENT_MENU_ID}"
     local -n _detail_items_ref="$items_var"
@@ -2160,7 +2160,7 @@ draw_detail_view() {
     render_scroll_indicator buf above "$count" "$_vis_start"
     render_item_list buf _detail_items_ref "${CURRENT_MENU_ID}" "$_vis_start" "$_vis_end"
     render_scroll_indicator buf below "$count" "$_vis_end"
-    buf+=$'\n'"${C_CYAN} [Esc/Sh+Tab] Back  [r] Reset  [Left/Right h/l] Adjust  [Enter] Toggle  [q] Quit${C_RESET}${CLR_EOL}"$'\n'
+    buf+=$'\n'"${C_CYAN} [Esc/Sh+Tab] Back  [r] Reset  [←/→ h/l] Adjust  [Enter] Toggle  [q] Quit${C_RESET}${CLR_EOL}"$'\n'
     if [[ -n $STATUS_MESSAGE ]]; then buf+="${C_CYAN} Status: ${C_RED}${STATUS_MESSAGE}${C_RESET}${CLR_EOL}${CLR_EOS}"; else buf+="${C_CYAN} Submenu: ${C_WHITE}${CURRENT_MENU_ID}${C_RESET}${CLR_EOL}${CLR_EOS}"; fi
     printf '%s' "$buf"
 }
@@ -2168,19 +2168,19 @@ draw_detail_view() {
 draw_picker_view() {
     local buf="" pad_buf="" title sub breadcrumb item hint padded hint_trim
     local -i left_pad right_pad vis_len pad_needed count i vstart vend rows_rendered max_len
-    buf+="${CURSOR_HOME}${C_MAGENTA}+${H_LINE}+${C_RESET}${CLR_EOL}"$'\n'
+    buf+="${CURSOR_HOME}${C_MAGENTA}┌${H_LINE}┐${C_RESET}${CLR_EOL}"$'\n'
     title=" PICKER "; sub=" ${PICKER_TITLE} "
     strip_ansi "$title"; local -i t_len=${#REPLY}; strip_ansi "$sub"; local -i s_len=${#REPLY}
     vis_len=$(( t_len + s_len )); left_pad=$(( (BOX_INNER_WIDTH - vis_len) / 2 )); (( left_pad < 0 )) && left_pad=0
     right_pad=$(( BOX_INNER_WIDTH - vis_len - left_pad )); (( right_pad < 0 )) && right_pad=0
     printf -v pad_buf '%*s' "$left_pad" ''
-    buf+="${C_MAGENTA}|${pad_buf}${C_YELLOW}${title}${C_GREY}${sub}${C_MAGENTA}"
+    buf+="${C_MAGENTA}│${pad_buf}${C_YELLOW}${title}${C_GREY}${sub}${C_MAGENTA}"
     printf -v pad_buf '%*s' "$right_pad" ''
-    buf+="${pad_buf}|${C_RESET}${CLR_EOL}"$'\n'
-    breadcrumb=" < Esc to cancel"; strip_ansi "$breadcrumb"; local -i b_len=${#REPLY}; pad_needed=$(( BOX_INNER_WIDTH - b_len )); (( pad_needed < 0 )) && pad_needed=0
+    buf+="${pad_buf}│${C_RESET}${CLR_EOL}"$'\n'
+    breadcrumb=" « Esc to cancel"; strip_ansi "$breadcrumb"; local -i b_len=${#REPLY}; pad_needed=$(( BOX_INNER_WIDTH - b_len )); (( pad_needed < 0 )) && pad_needed=0
     printf -v pad_buf '%*s' "$pad_needed" ''
-    buf+="${C_MAGENTA}|${C_CYAN}${breadcrumb}${C_RESET}${pad_buf}${C_MAGENTA}|${C_RESET}${CLR_EOL}"$'\n'
-    buf+="${C_MAGENTA}+${H_LINE}+${C_RESET}${CLR_EOL}"$'\n'
+    buf+="${C_MAGENTA}│${C_CYAN}${breadcrumb}${C_RESET}${pad_buf}${C_MAGENTA}│${C_RESET}${CLR_EOL}"$'\n'
+    buf+="${C_MAGENTA}└${H_LINE}┘${C_RESET}${CLR_EOL}"$'\n'
 
     count=${#PICKER_ITEMS[@]}
     if (( count == 0 )); then
@@ -2193,22 +2193,22 @@ draw_picker_view() {
         local -i max_scroll=$(( count - MAX_DISPLAY_ROWS )); (( max_scroll < 0 )) && max_scroll=0; (( PICKER_SCROLL > max_scroll )) && PICKER_SCROLL=$max_scroll
     fi
     vstart=$PICKER_SCROLL; vend=$(( PICKER_SCROLL + MAX_DISPLAY_ROWS )); (( vend > count )) && vend=$count
-    (( PICKER_SCROLL > 0 )) && buf+="${C_GREY}    ^ (more above)${CLR_EOL}${C_RESET}"$'\n' || buf+="${CLR_EOL}"$'\n'
+    (( PICKER_SCROLL > 0 )) && buf+="${C_GREY}    ▲ (more above)${CLR_EOL}${C_RESET}"$'\n' || buf+="${CLR_EOL}"$'\n'
     max_len=$(( ITEM_PADDING - 1 ))
     for (( i = vstart; i < vend; i++ )); do
         item=${PICKER_ITEMS[i]}; hint=${PICKER_HINTS[i]:-}
-        if (( ${#item} > ITEM_PADDING )); then printf -v padded "%-${max_len}s~" "${item:0:max_len}"; else printf -v padded "%-${ITEM_PADDING}s" "$item"; fi
-        hint_trim=$hint; (( ${#hint_trim} > 32 )) && hint_trim="${hint_trim:0:31}~"
-        if (( i == PICKER_SELECTED )); then buf+="${C_CYAN} > ${C_INVERSE}${padded}${C_RESET} ${C_GREY}${hint_trim}${C_RESET}${CLR_EOL}"$'\n'; else buf+="    ${padded} ${C_GREY}${hint_trim}${C_RESET}${CLR_EOL}"$'\n'; fi
+        if (( ${#item} > ITEM_PADDING )); then printf -v padded "%-${max_len}s…" "${item:0:max_len}"; else printf -v padded "%-${ITEM_PADDING}s" "$item"; fi
+        hint_trim=$hint; (( ${#hint_trim} > 32 )) && hint_trim="${hint_trim:0:31}…"
+        if (( i == PICKER_SELECTED )); then buf+="${C_CYAN} ➤ ${C_INVERSE}${padded}${C_RESET} ${C_GREY}${hint_trim}${C_RESET}${CLR_EOL}"$'\n'; else buf+="    ${padded} ${C_GREY}${hint_trim}${C_RESET}${CLR_EOL}"$'\n'; fi
     done
     rows_rendered=$(( vend - vstart )); for (( i = rows_rendered; i < MAX_DISPLAY_ROWS; i++ )); do buf+="${CLR_EOL}"$'\n'; done
     if (( count > MAX_DISPLAY_ROWS )); then
         local pos_info="[$(( PICKER_SELECTED + 1 ))/${count}]"
-        (( vend < count )) && buf+="${C_GREY}    v (more below) ${pos_info}${CLR_EOL}${C_RESET}"$'\n' || buf+="${C_GREY}                   ${pos_info}${CLR_EOL}${C_RESET}"$'\n'
+        (( vend < count )) && buf+="${C_GREY}    ▼ (more below) ${pos_info}${CLR_EOL}${C_RESET}"$'\n' || buf+="${C_GREY}                   ${pos_info}${CLR_EOL}${C_RESET}"$'\n'
     else
         buf+="${CLR_EOL}"$'\n'
     fi
-    buf+=$'\n'"${C_CYAN} [Up/Down j/k] Navigate  [Enter] Select  [Esc] Cancel  [q] Quit${C_RESET}${CLR_EOL}"$'\n'
+    buf+=$'\n'"${C_CYAN} [↑/↓ j/k] Navigate  [Enter] Select  [Esc] Cancel  [q] Quit${C_RESET}${CLR_EOL}"$'\n'
     if [[ -n $STATUS_MESSAGE ]]; then buf+="${C_CYAN} Status: ${C_RED}${STATUS_MESSAGE}${C_RESET}${CLR_EOL}${CLR_EOS}"; elif (( count == 0 )); then buf+="${C_CYAN} ${C_YELLOW}(no items - press Esc to go back)${C_RESET}${CLR_EOL}${CLR_EOS}"; else buf+="${C_CYAN} ${count} item(s)${C_RESET}${CLR_EOL}${CLR_EOS}"; fi
     printf '%s' "$buf"
 }
@@ -2357,46 +2357,95 @@ go_back() {
 }
 
 handle_mouse() {
-    local input=$1 body terminator field1 field2 field3 zone
-    local -i button x y i start end effective_start clicked_idx count
-    body=${input#'[<'}
-    [[ $body == "$input" ]] && return 0
-    terminator=${body: -1}
-    [[ $terminator != M && $terminator != m ]] && return 0
-    body=${body%[Mm]}
+    local input="$1"
+    local -i button x y i start end
+    local zone
+
+    local body="${input#'[<'}"
+    if [[ "$body" == "$input" ]]; then return 0; fi
+
+    local terminator="${body: -1}"
+    if [[ "$terminator" != "M" && "$terminator" != "m" ]]; then return 0; fi
+
+    body="${body%[Mm]}"
+    local field1 field2 field3
     IFS=';' read -r field1 field2 field3 <<< "$body"
-    [[ $field1 =~ ^[0-9]+$ && $field2 =~ ^[0-9]+$ && $field3 =~ ^[0-9]+$ ]] || return 0
-    button=$field1; x=$field2; y=$field3
-    (( button == 64 )) && { navigate -1; return 0; }
-    (( button == 65 )) && { navigate 1; return 0; }
-    [[ $terminator != M ]] && return 0
+    if [[ ! "$field1" =~ ^[0-9]+$ ]]; then return 0; fi
+    if [[ ! "$field2" =~ ^[0-9]+$ ]]; then return 0; fi
+    if [[ ! "$field3" =~ ^[0-9]+$ ]]; then return 0; fi
+
+    button=$field1
+    x=$field2
+    y=$field3
+
+    if (( button == 64 )); then navigate -1; return 0; fi
+    if (( button == 65 )); then navigate 1; return 0; fi
+
+    if [[ "$terminator" != "M" ]]; then return 0; fi
 
     if (( y == TAB_ROW )); then
         if (( CURRENT_VIEW == 0 )); then
-            if [[ -n $LEFT_ARROW_ZONE ]]; then start=${LEFT_ARROW_ZONE%%:*}; end=${LEFT_ARROW_ZONE##*:}; (( x >= start && x <= end )) && { switch_tab -1; return 0; }; fi
-            if [[ -n $RIGHT_ARROW_ZONE ]]; then start=${RIGHT_ARROW_ZONE%%:*}; end=${RIGHT_ARROW_ZONE##*:}; (( x >= start && x <= end )) && { switch_tab 1; return 0; }; fi
+            if [[ -n "$LEFT_ARROW_ZONE" ]]; then
+                start="${LEFT_ARROW_ZONE%%:*}"
+                end="${LEFT_ARROW_ZONE##*:}"
+                if (( x >= start && x <= end )); then
+                    switch_tab -1
+                    return 0
+                fi
+            fi
+
+            if [[ -n "$RIGHT_ARROW_ZONE" ]]; then
+                start="${RIGHT_ARROW_ZONE%%:*}"
+                end="${RIGHT_ARROW_ZONE##*:}"
+                if (( x >= start && x <= end )); then
+                    switch_tab 1
+                    return 0
+                fi
+            fi
+
             for (( i = 0; i < ${#TAB_ZONES[@]}; i++ )); do
-                zone=${TAB_ZONES[i]}; start=${zone%%:*}; end=${zone##*:}
-                (( x >= start && x <= end )) && { set_tab "$(( i + TAB_SCROLL_START ))"; return 0; }
+                zone="${TAB_ZONES[i]}"
+                start="${zone%%:*}"
+                end="${zone##*:}"
+                if (( x >= start && x <= end )); then
+                    set_tab "$(( i + TAB_SCROLL_START ))"
+                    return 0
+                fi
             done
         else
-            (( button == 0 )) && go_back
+            if (( button == 0 )); then
+                go_back
+            fi
             return 0
         fi
     fi
 
-    effective_start=$(( ITEM_START_ROW + 1 ))
+    local -i effective_start=$(( ITEM_START_ROW + 1 ))
     if (( y >= effective_start && y < effective_start + MAX_DISPLAY_ROWS )); then
-        clicked_idx=$(( y - effective_start + SCROLL_OFFSET ))
-        local target_var_name
-        (( CURRENT_VIEW == 0 )) && target_var_name="TAB_ITEMS_${CURRENT_TAB}" || target_var_name="SUBMENU_ITEMS_${CURRENT_MENU_ID}"
-        local -n _mouse_items_ref="$target_var_name"
-        count=${#_mouse_items_ref[@]}
+        local -i clicked_idx=$(( y - effective_start + SCROLL_OFFSET ))
+
+        local _target_var_name
+        if (( CURRENT_VIEW == 0 )); then
+            _target_var_name="TAB_ITEMS_${CURRENT_TAB}"
+        else
+            _target_var_name="SUBMENU_ITEMS_${CURRENT_MENU_ID}"
+        fi
+
+        local -n _mouse_items_ref="$_target_var_name"
+        local -i count=${#_mouse_items_ref[@]}
+
         if (( clicked_idx >= 0 && clicked_idx < count )); then
             SELECTED_ROW=$clicked_idx
             if (( x > ADJUST_THRESHOLD )); then
-                (( button == 0 )) && { activate_item || adjust 1; }
-                (( button == 2 )) && adjust -1
+                if (( button == 0 )); then
+                    if (( CURRENT_VIEW == 0 )); then
+                        activate_item || adjust 1
+                    else
+                        activate_item || adjust 1
+                    fi
+                elif (( button == 2 )); then
+                    adjust -1
+                fi
             fi
         fi
     fi
@@ -2404,26 +2453,37 @@ handle_mouse() {
 }
 
 handle_mouse_picker() {
-    local input=$1 body terminator field1 field2 field3
-    local -i button x y effective_start clicked_idx count
-    body=${input#'[<'}
-    [[ $body == "$input" ]] && return 0
-    terminator=${body: -1}
-    [[ $terminator != M && $terminator != m ]] && return 0
-    body=${body%[Mm]}
+    local input="$1"
+    local -i button x y
+
+    local body="${input#'[<'}"
+    if [[ "$body" == "$input" ]]; then return 0; fi
+
+    local terminator="${body: -1}"
+    if [[ "$terminator" != "M" && "$terminator" != "m" ]]; then return 0; fi
+    body="${body%[Mm]}"
+
+    local field1 field2 field3
     IFS=';' read -r field1 field2 field3 <<< "$body"
-    [[ $field1 =~ ^[0-9]+$ && $field2 =~ ^[0-9]+$ && $field3 =~ ^[0-9]+$ ]] || return 0
+    if [[ ! "$field1" =~ ^[0-9]+$ ]]; then return 0; fi
+    if [[ ! "$field2" =~ ^[0-9]+$ ]]; then return 0; fi
+    if [[ ! "$field3" =~ ^[0-9]+$ ]]; then return 0; fi
     button=$field1; x=$field2; y=$field3
-    (( button == 64 )) && { picker_navigate -1; return 0; }
-    (( button == 65 )) && { picker_navigate 1; return 0; }
-    [[ $terminator != M ]] && return 0
-    effective_start=$(( ITEM_START_ROW + 1 ))
+
+    if (( button == 64 )); then picker_navigate -1; return 0; fi
+    if (( button == 65 )); then picker_navigate 1; return 0; fi
+
+    if [[ "$terminator" != "M" ]]; then return 0; fi
+
+    local -i effective_start=$(( ITEM_START_ROW + 1 ))
     if (( y >= effective_start && y < effective_start + MAX_DISPLAY_ROWS )); then
-        clicked_idx=$(( y - effective_start + PICKER_SCROLL ))
-        count=${#PICKER_ITEMS[@]}
+        local -i clicked_idx=$(( y - effective_start + PICKER_SCROLL ))
+        local -i count=${#PICKER_ITEMS[@]}
         if (( clicked_idx >= 0 && clicked_idx < count )); then
             PICKER_SELECTED=$clicked_idx
-            (( button == 0 )) && picker_confirm
+            if (( button == 0 )); then
+                picker_confirm
+            fi
         fi
     fi
     return 0
