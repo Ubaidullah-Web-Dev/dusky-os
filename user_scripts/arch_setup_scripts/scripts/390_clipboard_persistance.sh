@@ -92,10 +92,12 @@ update_config() {
         echo "false" > "$STATE_FILE"
         log_success "Set to Ephemeral (RAM). State file updated."
     elif [[ "$mode" == "persistent" ]]; then
-        # Emptying the file removes the export, falling back to disk default
-        > "$DB_ENV_FILE"
+        # EXPLICITLY set the disk path to violently override any global pollution
+        local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}"
+        mkdir -p "${cache_dir}/cliphist"
+        printf 'export CLIPHIST_DB_PATH="%s/cliphist/db"\n' "${cache_dir}" > "$DB_ENV_FILE"
         echo "true" > "$STATE_FILE"
-        log_success "Set to Persistent (Disk). State file cleared."
+        log_success "Set to Persistent (Disk). State file updated."
     fi
     return 0
 }
