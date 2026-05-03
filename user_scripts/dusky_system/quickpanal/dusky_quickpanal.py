@@ -1939,20 +1939,25 @@ class QuickPanalWindow(Adw.ApplicationWindow):
             "Power Saver": "tlpctl power-saver && notify-send 'Power Profile' 'Switched to Power Saver'"
         }
 
-        self.power_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        self.power_box.add_css_class("linked")
+        self.power_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.power_box.set_valign(Gtk.Align.CENTER)
         self.power_box.set_margin_top(8)
         self.power_box.set_margin_bottom(8)
 
         self.btn_save = Gtk.ToggleButton(icon_name="power-profile-power-saver-symbolic")
         self.btn_save.set_tooltip_text("Power Saver")
+        self.btn_save.add_css_class("circular")
+        self.btn_save.add_css_class("flat")
         
         self.btn_bal = Gtk.ToggleButton(icon_name="power-profile-balanced-symbolic")
         self.btn_bal.set_tooltip_text("Balanced")
+        self.btn_bal.add_css_class("circular")
+        self.btn_bal.add_css_class("flat")
         
         self.btn_perf = Gtk.ToggleButton(icon_name="power-profile-performance-symbolic")
         self.btn_perf.set_tooltip_text("Performance")
+        self.btn_perf.add_css_class("circular")
+        self.btn_perf.add_css_class("flat")
         
         self.btn_bal.set_group(self.btn_save)
         self.btn_perf.set_group(self.btn_save)
