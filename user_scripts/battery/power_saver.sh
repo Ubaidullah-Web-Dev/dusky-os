@@ -23,6 +23,7 @@ readonly VOLUME_CAP=50
 
 # Integrations & Peripherals
 readonly THEME_SCRIPT="${HOME}/user_scripts/theme_matugen/theme_ctl.sh"
+readonly VISUALS_SCRIPT="${HOME}/user_scripts/hypr/hypr_blur_opacity_shadow_toggle.sh"
 readonly DDC_VCP_BRIGHTNESS_CODE="10"
 readonly WP_AUDIO_SINK="@DEFAULT_AUDIO_SINK@"
 
@@ -349,7 +350,7 @@ manage_services() {
             fi
         done
 
-        # User Services
+        # User Services (UWSM graphical targets managed here exclusively)
         for svc in "${TARGET_USER_SERVICES[@]}"; do
             if systemctl --user is-active --quiet "$svc" 2>/dev/null; then
                 save_state "usr_svc_${svc}" "active"
@@ -408,6 +409,35 @@ manage_animations() {
     
     log_step "Configuring Hyprland visual states..."
     
+    # 1. UI Theme/Blur External Script Integration
+    if [[ -x "${VISUALS_SCRIPT}" ]]; then
+        if [[ "$mode" == "enable" ]]; then
+            # Protect state so sequential executions don't lock visuals off
+            if [[ ! -f "${STATE_DIR}/visuals.state" ]]; then
+                local current_visuals="False"
+                # Check the exact file where the toggle script saves its state
+                if [[ -f "${HOME}/.config/dusky/settings/opacity_blur" ]]; then
+                    current_visuals=$(<"${HOME}/.config/dusky/settings/opacity_blur")
+                fi
+                save_state "visuals" "$current_visuals"
+            fi
+            # Execute the toggle script to disable blur/shadows and edit config files
+            "${VISUALS_SCRIPT}" off &>/dev/null || true
+            
+        elif [[ "$mode" == "disable" ]]; then
+            local prev_visuals
+            prev_visuals=$(get_state "visuals")
+            # Only restore visuals if they were actually ON before power saver started
+            if [[ "$prev_visuals" == "True" ]]; then
+                "${VISUALS_SCRIPT}" on &>/dev/null || true
+            fi
+            clear_state "visuals"
+        fi
+    else
+        log_warn "Visuals script not found or not executable at: ${VISUALS_SCRIPT}"
+    fi
+
+    # 2. Hyprshade
     if has_cmd hyprshade; then
         if [[ "$mode" == "enable" ]]; then
             local current_shader
@@ -426,25 +456,18 @@ manage_animations() {
         fi
     fi
 
+    # 3. Core Animations (In-Memory IPC)
     if has_cmd uwsm && has_cmd hyprctl; then
-        # UWSM strictly manages Wayland environment boundaries.
-        # We inject commands via uwsm to ensure guaranteed IPC routing
-        # without dangerous filesystem timestamp guesswork.
         if [[ "$mode" == "enable" ]]; then
             uwsm app -- hyprctl keyword animations:enabled 0 &>/dev/null || log_warn "IPC signal dropped: animations"
-            uwsm app -- hyprctl keyword decoration:blur:enabled 0 &>/dev/null || true
         else
             uwsm app -- hyprctl keyword animations:enabled 1 &>/dev/null || log_warn "IPC signal dropped: animations"
-            uwsm app -- hyprctl keyword decoration:blur:enabled 1 &>/dev/null || true
         fi
     elif has_cmd hyprctl && [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
-        # Fallback for strict native environments where the signature is already exported.
         if [[ "$mode" == "enable" ]]; then
             hyprctl keyword animations:enabled 0 &>/dev/null || log_warn "IPC signal dropped: animations"
-            hyprctl keyword decoration:blur:enabled 0 &>/dev/null || true
         else
             hyprctl keyword animations:enabled 1 &>/dev/null || log_warn "IPC signal dropped: animations"
-            hyprctl keyword decoration:blur:enabled 1 &>/dev/null || true
         fi
     fi
 }
