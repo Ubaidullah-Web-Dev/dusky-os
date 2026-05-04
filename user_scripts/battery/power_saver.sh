@@ -40,7 +40,7 @@ readonly -a TARGET_SCRIPTS=("dusky_main.py" "dusky_stt_main.py")
 readonly -a TARGET_SYSTEM_SERVICES=("firewalld" "vsftpd" "waydroid-container" "logrotate.timer" "sshd" "ufw")
 
 # Note: 'hypridle' explicitly removed to preserve Wayland DPMS idle power-saving management.
-readonly -a TARGET_USER_SERVICES=("battery_notify" "blueman-applet" "gvfs-daemon" "gvfs-metadata" "network_meter" "dusky_quickpanal" "dusky")
+readonly -a TARGET_USER_SERVICES=("battery_notify" "update_checker.timer" "osd_lock" "blueman-applet" "gvfs-daemon" "gvfs-metadata" "network_meter" "dusky_quickpanal" "dusky")
 
 # --- INITIALIZATION ---
 mkdir -p "${STATE_DIR}"
@@ -440,7 +440,7 @@ manage_services() {
 
     else
         log_step "Restoring previously active services & processes..."
-        
+
         # System Services
         for svc in "${TARGET_SYSTEM_SERVICES[@]}"; do
             if [[ "$(get_state "sys_svc_${svc}")" == "active" ]]; then
