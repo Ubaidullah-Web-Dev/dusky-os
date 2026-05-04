@@ -14,7 +14,7 @@ shopt -s extglob
 # =============================================================================
 
 declare -r APP_TITLE="Dusky System Region Manager"
-declare -r APP_VERSION="v1.0.1"
+declare -r APP_VERSION="v1.1.0"
 
 # Dimensions & layout.
 declare -ri MAX_DISPLAY_ROWS=14
@@ -26,26 +26,150 @@ declare -ri HEADER_ROWS=4
 declare -ri TAB_ROW=3
 declare -ri ITEM_START_ROW=$(( HEADER_ROWS + 1 ))
 
-declare -ra TABS=("Time & Date" "Locales & Input")
+declare -ra TABS=("Time & Date" "Locales & Input" "System Info")
 
 register_items() {
     # Schema: key|type|block|min|max|step
     # For system settings, 'key' maps to our internal query router.
     
     # Tab 0: Time & Date
-    register 0 "NTP Time Sync"  'ntp|bool||||'              "true"
-    register 0 "Set Timezone"   'pick_timezone|action||||'  ""
+    register 0 "Current Date"       'curr_date|info||||'        ""
+    register 0 "Current Time"       'curr_time|info||||'        ""
+    register 0 "NTP Time Sync"      'ntp|bool||||'              "true"
+    register 0 "Set Timezone"       'pick_timezone|action||||'  ""
+    register 0 "Set Date (Manual)"  'set_date|action||||'       ""
+    register 0 "Set Time (Manual)"  'set_time|action||||'       ""
+    register 0 "RTC in Local TZ"    'rtc_local|bool||||'        "false"
     
     # Tab 1: Locales & Input
     register 1 "System Locale"  'pick_locale|action||||'    ""
     register 1 "TTY Keymap"     'pick_keymap|action||||'    ""
     
-    # Hidden menus or actions can be added using type 'menu' or 'action'
+    # Tab 2: System Info
+    register 2 "Hostname"         'sys_host|info||||'         ""
+    register 2 "Operating System" 'sys_os|info||||'           ""
+    register 2 "Kernel Version"   'sys_kernel|info||||'       ""
+    register 2 "Uptime"           'sys_uptime|info||||'       ""
 }
 
 # -----------------------------------------------------------------------------
 # ACTIONS AND CALLBACKS
 # -----------------------------------------------------------------------------
+
+prompt_input() {
+    local prompt_text=$1
+    local -n var_ref=$2
+    
+    printf '%s%s%s' "$MOUSE_OFF" "$CURSOR_SHOW" "$C_RESET" 2>/dev/null || :
+    [[ -n ${ORIGINAL_STTY:-} ]] && stty "$ORIGINAL_STTY" < /dev/tty 2>/dev/null || :
+
+    printf '%s%s' "$CLR_SCREEN" "$CURSOR_HOME"
+    printf '\n  %s┌──────────────────────────────────────────────────┐%s\n' "$C_CYAN" "$C_RESET"
+    printf '  %s│%s  Interactive Parameter Input                     %s│%s\n' "$C_CYAN" "$C_WHITE" "$C_CYAN" "$C_RESET"
+    printf '  %s└──────────────────────────────────────────────────┘%s\n\n' "$C_CYAN" "$C_RESET"
+
+    local temp_input=""
+    read -e -p "  $prompt_text" temp_input < /dev/tty
+    var_ref=$temp_input
+
+    stty -icanon -echo -ixon min 0 time 0 < /dev/tty 2>/dev/null || :
+    printf '%s%s%s%s' "$MOUSE_ON" "$CURSOR_HIDE" "$CLR_SCREEN" "$CURSOR_HOME"
+}
+
+action_set_date() {
+    if [[ $(timedatectl show -p NTP --value 2>/dev/null) == "yes" ]]; then
+        set_status "Error: Disable NTP Time Sync first."
+        return 1
+    fi
+    
+    local new_date=""
+    prompt_input "Enter new date (YYYY-MM-DD): " new_date
+    
+    trim_spaces "$new_date"
+    new_date=$REPLY
+    
+    if [[ -n "$new_date" ]]; then
+        if [[ ! "$new_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            set_status "Failed: Format must be exactly YYYY-MM-DD."
+            CURRENT_VIEW=0
+            load_active_values
+            return 1
+        fi
+        
+        if ! acquire_sudo; then return 1; fi
+        local curr_time
+        curr_time=$(date +%H:%M:%S)
+        set_status "Applying date: $new_date..."
+        
+        local err_msg
+        if err_msg=$(sudo timedatectl set-time "$new_date $curr_time" 2>&1); then
+            set_status "Date successfully set to $new_date."
+            LAST_WRITE_CHANGED=1
+        else
+            # systemd protects against setting time before its build date. Bypass via kernel date.
+            if sudo date -s "$new_date $curr_time" >/dev/null 2>&1; then
+                sudo hwclock --systohc >/dev/null 2>&1 || true
+                set_status "Date successfully set to $new_date (via raw override)."
+                LAST_WRITE_CHANGED=1
+            else
+                # Output the actual system error instead of a hardcoded string
+                set_status "Failed: $(echo "$err_msg" | head -n 1)"
+            fi
+        fi
+    else
+        set_status "Date change cancelled."
+    fi
+    CURRENT_VIEW=0
+    load_active_values
+}
+
+action_set_time() {
+    if [[ $(timedatectl show -p NTP --value 2>/dev/null) == "yes" ]]; then
+        set_status "Error: Disable NTP Time Sync first."
+        return 1
+    fi
+    
+    local new_time=""
+    prompt_input "Enter new time (HH:MM:SS): " new_time
+    
+    trim_spaces "$new_time"
+    new_time=$REPLY
+    
+    if [[ -n "$new_time" ]]; then
+        if [[ ! "$new_time" =~ ^[0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]; then
+            set_status "Failed: Format must be exactly HH:MM:SS."
+            CURRENT_VIEW=0
+            load_active_values
+            return 1
+        fi
+
+        if ! acquire_sudo; then return 1; fi
+        
+        local curr_date
+        curr_date=$(date +%Y-%m-%d)
+        
+        set_status "Applying time: $new_time..."
+        
+        local err_msg
+        if err_msg=$(sudo timedatectl set-time "$curr_date $new_time" 2>&1); then
+            set_status "Time successfully set to $new_time."
+            LAST_WRITE_CHANGED=1
+        else
+            # systemd protects against setting time before its build date. Bypass via kernel date.
+            if sudo date -s "$curr_date $new_time" >/dev/null 2>&1; then
+                sudo hwclock --systohc >/dev/null 2>&1 || true
+                set_status "Time successfully set to $new_time (via raw override)."
+                LAST_WRITE_CHANGED=1
+            else
+                set_status "Failed: $(echo "$err_msg" | head -n 1)"
+            fi
+        fi
+    else
+        set_status "Time change cancelled."
+    fi
+    CURRENT_VIEW=0
+    load_active_values
+}
 
 action_pick_timezone() {
     PICKER_TITLE="Select System Timezone"
@@ -362,8 +486,15 @@ load_active_values() {
         
         # Pull live state from systemd dbus interfaces
         case $key in
+            curr_date) value=$(date +'%Y-%m-%d') ;;
+            curr_time) value=$(date +'%H:%M:%S %Z') ;;
+            set_date|set_time) value="[Interactive Prompt]" ;;
             ntp) 
                 value=$(timedatectl show -p NTP --value 2>/dev/null)
+                [[ $value == yes ]] && value=true || value=false
+                ;;
+            rtc_local)
+                value=$(timedatectl show -p LocalRTC --value 2>/dev/null)
                 [[ $value == yes ]] && value=true || value=false
                 ;;
             pick_timezone)
@@ -377,6 +508,10 @@ load_active_values() {
                 value=$(localectl status 2>/dev/null | grep 'VC Keymap' | awk -F': ' '{print $2}')
                 [[ -z $value ]] && value="$UNSET_MARKER"
                 ;;
+            sys_host) value=$(hostname 2>/dev/null || echo "Unknown") ;;
+            sys_os) value=$(grep -m1 PRETTY_NAME /etc/os-release | cut -d '"' -f 2 2>/dev/null || echo "Arch Linux") ;;
+            sys_kernel) value=$(uname -r 2>/dev/null || echo "Unknown") ;;
+            sys_uptime) value=$(uptime -p 2>/dev/null | sed 's/up //' || echo "Unknown") ;;
             *) 
                 value="$UNSET_MARKER" 
                 ;;
@@ -394,13 +529,13 @@ modify_value() {
     IFS='|' read -r key type _ _ _ _ <<< "${ITEM_MAP["${REPLY_CTX}::${label}"]}"
     current=${VALUE_CACHE["${REPLY_CTX}::${label}"]:-}
 
-    # Only booleans (NTP) are handled by arrow keys directly in this refactor.
+    # Only booleans (NTP, RTC) are handled by arrow keys directly in this refactor.
     # Timezones and Locales use the explicit Action -> Picker flow.
     case $type in
         bool)
             [[ $current == true ]] && new_val=false || new_val=true
             ;;
-        action|menu) return 0 ;;
+        info|action|menu) return 0 ;;
         *) return 0 ;;
     esac
 
@@ -417,6 +552,19 @@ modify_value() {
             post_write_action
         else
             set_status "Failed to modify NTP via timedatectl."
+        fi
+    elif [[ $key == "rtc_local" ]]; then
+        if ! acquire_sudo; then return 0; fi
+        local sysd_val="0"
+        [[ $new_val == true ]] && sysd_val="1"
+        
+        if sudo timedatectl set-local-rtc "$sysd_val"; then
+            VALUE_CACHE["${REPLY_CTX}::${label}"]=$new_val
+            clear_status
+            LAST_WRITE_CHANGED=1
+            post_write_action
+        else
+            set_status "Failed to modify Local RTC."
         fi
     fi
     return 0
@@ -508,6 +656,7 @@ render_item_list() {
         case $type in
             menu) display="${C_YELLOW}[+] Open Menu ...${C_RESET}" ;;
             action) display="${C_GREEN}▶ [${val}]${C_RESET}" ;;
+            info) display="${C_WHITE}${val}${C_RESET}" ;;
             *)
                 case $val in
                     true) display="${C_GREEN}ON${C_RESET}" ;;
@@ -754,7 +903,7 @@ adjust() {
     (( ${#_items_ref[@]} == 0 )) && return 0
     label=${_items_ref[SELECTED_ROW]}
     IFS='|' read -r _ type _ _ _ _ <<< "${ITEM_MAP["${REPLY_CTX}::${label}"]}"
-    [[ $type == action ]] && return 0
+    [[ $type == action || $type == info ]] && return 0
     modify_value "$label" "$dir"
 }
 
@@ -798,6 +947,9 @@ activate_item() {
                 set_status "No handler defined for action: $key"
             fi
             return 0
+            ;;
+        info)
+            return 1
             ;;
     esac
     return 1
