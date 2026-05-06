@@ -355,18 +355,15 @@ case "$MODE" in
 
         socket_path="$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock"
         if command -v socat >/dev/null 2>&1 && [[ -S "$socket_path" ]]; then
-            # Run the blocking pipeline in the background
-            {
-                socat -U - UNIX-CONNECT:"$socket_path" 2>/dev/null | while read -r line; do
-                    if [[ "$line" == "workspace>>"* ]]; then
-                        send_osd "WS: ${line#workspace>>}"
-                    fi
-                done
-            } &
+            # OPTIMIZATION: Background the pipeline directly without the { } wrapper
+            socat -U - UNIX-CONNECT:"$socket_path" 2>/dev/null | while read -r line; do
+                if [[ "$line" == "workspace>>"* ]]; then
+                    send_osd "WS: ${line#workspace>>}"
+                fi
+            done &
+            
             bg_pid=$!
             
-            # Use 'wait' which is instantly interruptible by SIGTERM, 
-            # allowing the trap to fire immediately and kill the background process.
             wait "$bg_pid" 2>/dev/null || true
         else
             while true; do
