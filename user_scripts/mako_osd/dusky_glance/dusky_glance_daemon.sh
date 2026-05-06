@@ -88,7 +88,7 @@ START_SEC=$SECONDS
 case "$MODE" in
     --clock)
         while true; do
-            printf -v current_time '%(%H:%M:%S)T' -1
+            printf -v current_time '%(%I:%M:%S)T' -1
             send_osd "$current_time"
             sleep 1
         done
