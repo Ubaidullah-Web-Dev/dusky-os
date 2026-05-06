@@ -111,8 +111,8 @@ case "$MODE" in
             left=$((TARGET_SEC - SECONDS))
             if (( left <= 0 )); then
                 
-                # RE-ADDED: The Top-Center Alert Notification
-                local alert_msg="Your timer has finished."
+                # FIXED: Removed 'local' keyword to prevent Bash syntax crash in global scope
+                alert_msg="Your timer has finished."
                 [[ "$MODE" == "--pomodoro" ]] && alert_msg="Your Pomodoro session has finished."
                 notify-send -u critical -a "dusky-glance-alert" "Time's Up!" "$alert_msg"
                 
