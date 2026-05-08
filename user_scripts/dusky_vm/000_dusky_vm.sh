@@ -17,6 +17,7 @@
 
 # Directories to search for scripts (in order — first match wins)
 SCRIPT_SEARCH_DIRS=(
+  "${HOME}/user_scripts/dusky_vm"
 )
 
 # Delay (in seconds) after each successful script. Set to 0 to disable.
@@ -24,10 +25,10 @@ POST_SCRIPT_DELAY=0
 
 INSTALL_SEQUENCE=(
 
-  "| 010_kvm_host_setup.sh"
-  "| 020_kvm_storage_setup.sh"
-  "| 030_kvm_vfio_isolation.sh"
-  "| 040_kvm_vm_deploy.sh"
+  "S | 010_kvm_host_setup.sh"
+  "S | 020_kvm_storage_setup.sh"
+  "S | 030_kvm_vfio_isolation.sh"
+  "S | 040_kvm_vm_deploy.sh"
 
 )
 
