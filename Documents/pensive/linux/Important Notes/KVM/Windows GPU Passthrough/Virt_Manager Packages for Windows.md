@@ -9,12 +9,8 @@ We need a specific suite of tools to handle the hypervisor (KVM), the emulator (
 Run the following command in your terminal:
 
 ```bash
-sudo pacman --needed -S qemu-full libvirt virt-install virt-manager virt-viewer dnsmasq iproute2 openbsd-netcat edk2-ovmf swtpm iptables-nft libosinfo
+sudo pacman --needed -S qemu-full libvirt virt-install virt-manager virt-viewer dnsmasq iproute2 openbsd-netcat edk2-ovmf swtpm iptables libosinfo
 ```
-
-> [!TIP] Firewall Selection
-> 
-> If prompted to replace iptables with iptables-nft, answer YES (type y and hit Enter). Arch Linux is moving to nftables as the backend, and this package ensures libvirt can correctly manage network rules using the modern standard.
 
 ### 📦 Understanding the Packages
 
