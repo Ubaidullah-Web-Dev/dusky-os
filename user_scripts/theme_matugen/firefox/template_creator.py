@@ -357,23 +357,6 @@ def extract_domain(raw_input: str) -> str:
         
     return domain
 
-def copy_to_clipboard(text: str) -> None:
-    try:
-        subprocess.run(['wl-copy'], input=text, text=True, check=True, capture_output=True)
-        console.print("[bold green]📋 Hot Preview automatically copied to clipboard! (via wl-copy)[/]")
-        return
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        pass
-
-    try:
-        subprocess.run(['xclip', '-selection', 'clipboard'], input=text, text=True, check=True, capture_output=True)
-        console.print("[bold green]📋 Hot Preview automatically copied to clipboard! (via xclip)[/]")
-        return
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        pass
-
-    console.print("[bold yellow]⚠️ Could not automatically copy. Please install `wl-clipboard` or `xclip`.[/]")
-
 def show_instructions() -> None:
     intro_text = (
         "[bold cyan]How to copy the correct CSS Selector:[/]\n"
@@ -464,8 +447,6 @@ def main() -> None:
         subtitle="[dim]Paste these into Stylus to test your newly added elements[/]"
     )
     console.print(preview_panel)
-    
-    copy_to_clipboard(preview_css)
 
     console.print("\n[dim]Your Managing/Production Template uses dynamic var(--...) variables.[/]")
     save = Confirm.ask(f"Do you want to apply and save this to [bold]{file_path}[/]?")
@@ -483,18 +464,14 @@ def main() -> None:
             tui_script = Path.home() / "user_scripts" / "theme_matugen" / "firefox" / "dusky_firefox_tui.sh"
             
             if tui_script.exists():
-                auto_deploy = Confirm.ask("\n[bold cyan]Do you want to auto-deploy these changes to Firefox now?[/]")
-                if auto_deploy:
-                    console.print("[dim]Deploying autonomously using Dusky Firefox Themer...[/]")
-                    try:
-                        subprocess.run([str(tui_script), "--auto"], check=True)
-                        console.print("\n[bold green]✔ Deployment complete! Restart Firefox to see your changes.[/]")
-                    except subprocess.CalledProcessError as e:
-                        console.print(f"\n[bold red]✖ Auto-deploy failed (exit code {e.returncode}).[/]")
-                    except Exception as e:
-                        console.print(f"\n[bold red]✖ Error executing script: {e}[/]")
-                else:
-                    console.print("\n[bold cyan]You can open your Dusky TUI Manager later to enable and deploy it.[/]")
+                console.print("\n[dim]Deploying autonomously using Dusky Firefox Themer...[/]")
+                try:
+                    subprocess.run([str(tui_script), "--auto"], check=True)
+                    console.print("\n[bold green]✔ Deployment complete! Restart Firefox to see your changes.[/]")
+                except subprocess.CalledProcessError as e:
+                    console.print(f"\n[bold red]✖ Auto-deploy failed (exit code {e.returncode}).[/]")
+                except Exception as e:
+                    console.print(f"\n[bold red]✖ Error executing script: {e}[/]")
             else:
                 console.print("\n[bold cyan]You can now open your Dusky TUI Manager to enable and deploy it.[/]")
             # -----------------------------------
