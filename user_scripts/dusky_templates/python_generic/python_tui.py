@@ -205,20 +205,25 @@ class ConfigOptionList(OptionList):
             self.app._update_scroll_indicators()
 
 class ScrollIndicator(Label):
+    _dragging: bool = False
+    _max_scroll_y: float = 0
+    _track_height: int = 0
+
     def update_scroll(self, scroll_y: float, max_scroll_y: float, viewport_height: float, virtual_height: float) -> None:
         if max_scroll_y <= 0 or virtual_height <= 0 or viewport_height <= 2:
             self.display = False
             return
         
         self.display = True
+        self._max_scroll_y = max_scroll_y
+        self._track_height = int(viewport_height) - 2
         
-        track_height = int(viewport_height) - 2
-        if track_height < 1:
+        if self._track_height < 1:
             self.update("▲\n▼")
             return
             
-        thumb_size = max(1, int(track_height * (viewport_height / virtual_height)))
-        max_pos = track_height - thumb_size
+        thumb_size = max(1, int(self._track_height * (viewport_height / virtual_height)))
+        max_pos = self._track_height - thumb_size
         
         if max_scroll_y > 0:
             pos = int((scroll_y / max_scroll_y) * max_pos)
@@ -227,13 +232,48 @@ class ScrollIndicator(Label):
             
         txt = Text()
         txt.append("▲\n", style="bold")
-        for i in range(track_height):
+        for i in range(self._track_height):
             if pos <= i < pos + thumb_size:
                 txt.append("█\n")
             else:
                 txt.append("│\n", style="dim")
         txt.append("▼", style="bold")
         self.update(txt)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if self._max_scroll_y <= 0: return
+        try: tab_idx = int(self.id.split("-")[1])
+        except (AttributeError, IndexError, ValueError): return
+        
+        ol = self.app.query_one(f"#list-{tab_idx}", ConfigOptionList)
+
+        if event.y == 0:
+            ol.scroll_y -= 1
+        elif event.y == self.size.height - 1:
+            ol.scroll_y += 1
+        else:
+            self._dragging = True
+            self.capture_mouse()
+            self._jump_to_y(event.y, ol)
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if self._dragging:
+            try: tab_idx = int(self.id.split("-")[1])
+            except (AttributeError, IndexError, ValueError): return
+            
+            ol = self.app.query_one(f"#list-{tab_idx}", ConfigOptionList)
+            self._jump_to_y(event.y, ol)
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if self._dragging:
+            self._dragging = False
+            self.release_mouse()
+
+    def _jump_to_y(self, y: float, ol: ConfigOptionList) -> None:
+        if self._track_height < 1: return
+        relative_y = max(0, min(self._track_height - 1, y - 1))
+        ratio = relative_y / (self._track_height - 1) if self._track_height > 1 else 0
+        ol.scroll_y = int(ratio * self._max_scroll_y)
 
 class Shortcut(Label):
     def __init__(self, key_text: str, label: str, action_name: str | None = None) -> None:
@@ -259,6 +299,7 @@ class FileLink(Label):
         txt = Text()
         txt.append(" File: ", style=THEME["accent"])
         txt.append(self.path, style=THEME["fg"] + " underline")
+        txt.append("  (Edit: LMB/RMB- GUI/Neovim)", style=f"italic {THEME['muted']}")
         return txt
         
     def on_click(self, event: events.Click) -> None:
@@ -286,14 +327,10 @@ class AppFooter(Vertical):
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="footer-controls"):
-            yield Shortcut("Tab", "Category", "next_tab")
             yield Shortcut("r", "Reset Item", "reset_item")
-            yield Shortcut("R", "Reset All", "reset_all")
-            yield Shortcut("←/→ h/l", "Adjust")
-        with Horizontal(id="footer-secondary"):
-            yield Shortcut("Enter", "Action", "submit_current")
+            yield Shortcut("R", "Reset Page", "reset_all")
             yield Shortcut("q", "Quit", "quit")
-            yield Label(f"   [{THEME['muted']}]●[/] Default  [{THEME['error']}]●[/] Modified", id="footer-legend")
+            yield Label(f"   [{THEME['error']}]●[/] Modified", id="footer-legend")
         
         with Horizontal(id="footer-bottom-row"):
             yield Label("", id="status-bar")
@@ -351,13 +388,14 @@ class DuskyApp(App):
     
     .indicator-column { width: 2; height: 1fr; background: transparent; align: right top; }
     ScrollIndicator { width: 1; height: 1fr; color: $primary; }
+    ScrollIndicator:hover { color: $text; }
     
     #footer { height: 4; dock: bottom; border-top: solid $secondary; padding-top: 0; background: transparent; }
     #footer-controls { width: 100%; }
     
     .footer-shortcut { margin-right: 2; padding: 0 1; background: transparent; }
     .footer-shortcut:hover { text-style: bold; color: $text; background: $primary 25%; }
-    #footer-legend { color: $text; }
+    #footer-legend { color: $text; padding-top: 0; }
     
     #footer-bottom-row { margin-top: 1; }
     #file-link { padding: 0 1; background: transparent; }
@@ -388,9 +426,16 @@ class DuskyApp(App):
         Binding("h,left,backspace", "adjust(-1)", "Adjust Down", priority=True),
         Binding("l,right", "adjust(1)", "Adjust Up", priority=True),
         Binding("r", "reset_item", "Reset", priority=True),
-        Binding("R", "reset_all", "Reset All", priority=True),
+        Binding("R", "reset_all", "Reset Page", priority=True),
         Binding("ctrl+d,page_down", "page_down", "Page Down", priority=True),
         Binding("ctrl+u,page_up", "page_up", "Page Up", priority=True),
+        Binding("alt+1", "switch_tab(0)", "Tab 1", show=False),
+        Binding("alt+2", "switch_tab(1)", "Tab 2", show=False),
+        Binding("alt+3", "switch_tab(2)", "Tab 3", show=False),
+        Binding("alt+4", "switch_tab(3)", "Tab 4", show=False),
+        Binding("alt+5", "switch_tab(4)", "Tab 5", show=False),
+        Binding("alt+6", "switch_tab(5)", "Tab 6", show=False),
+        Binding("alt+7", "switch_tab(6)", "Tab 7", show=False),
     ]
 
     last_theme_mtime: float = 0.0
@@ -500,7 +545,7 @@ class DuskyApp(App):
                     
                 for footer in self.query(AppFooter):
                     for legend in footer.query("#footer-legend"):
-                        legend.update(f"   [{THEME['muted']}]●[/] Default  [{THEME['error']}]●[/] Modified")
+                        legend.update(f"   [{THEME['error']}]●[/] Modified")
                 for link in self.query(FileLink):
                     link.refresh()
         except OSError:
@@ -604,6 +649,11 @@ class DuskyApp(App):
     def action_prev_tab(self) -> None: 
         self.query_one(Tabs).action_previous_tab()
         
+    def action_switch_tab(self, index: int) -> None:
+        if 0 <= index < len(TABS):
+            tc = self.query_one(TabbedContent)
+            tc.active = f"tab-{index}"
+            
     def action_cursor_down(self) -> None: 
         if ol := self.current_option_list: ol.action_cursor_down()
             
