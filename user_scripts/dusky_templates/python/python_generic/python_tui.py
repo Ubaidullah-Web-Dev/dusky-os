@@ -543,9 +543,9 @@ class Shortcut(Label):
         txt.append(self.label_text, style=THEME["fg"])
         return txt
 
-    def on_click(self) -> None:
+    async def on_click(self) -> None:
         if self.action_name:
-            getattr(self.app, f"action_{self.action_name}")()
+            await self.app.run_action(self.action_name)
 
 class FileLink(Label):
     path = "~/.config/myapp/settings.conf"
@@ -879,10 +879,10 @@ class DuskyApp(App):
         try:
             current_mtime = THEME_FILE_PATH.stat().st_mtime
             if current_mtime > self.last_theme_mtime:
-                self.last_theme_mtime = current_mtime
                 new_theme = load_matugen_json(THEME_FILE_PATH)
                 
                 if new_theme is not None:
+                    self.last_theme_mtime = current_mtime
                     THEME.update(new_theme) 
                     self.apply_theme_to_engine()
                     
