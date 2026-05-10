@@ -9,6 +9,13 @@ from typing import Any, Dict, Tuple, List
 
 from python.frontend.core_types import BaseEngine
 
+# =============================================================================
+# [ BLOCK 1: THE ENGINE ]
+# Armored with Python Raw Strings (r"") to prevent Python from parsing
+# Lua escape sequences, completely neutralizing syntax corruption.
+# Optimized with Atomic Commit/Rollback integrity.
+# =============================================================================
+
 class HyprlandLuaEngine(BaseEngine):
     def __init__(self, config_path: str = "~/Documents/hyprland.lua"):
         self.config_path = Path(config_path).expanduser().resolve()
@@ -20,6 +27,7 @@ class HyprlandLuaEngine(BaseEngine):
 
     @property
     def target_path(self) -> str:
+        """Fulfills BaseEngine contract to supply the UI with the file path."""
         return str(self.config_path)
 
     def _find_lua(self) -> str:
@@ -31,6 +39,7 @@ class HyprlandLuaEngine(BaseEngine):
         raise RuntimeError("Lua 5.4+ not found.")
 
     def _is_safe_path(self, target_path: str) -> bool:
+        """Jail constraint: Only allow .lua files within the config directory hierarchy."""
         try:
             resolved = Path(target_path).resolve()
             return resolved.suffix == '.lua' and self.config_dir in resolved.parents
@@ -164,6 +173,7 @@ class HyprlandLuaEngine(BaseEngine):
         else:
             val_str = json.dumps(new_value, ensure_ascii=False)
             
+        # Concurrency guard: verify MTime before starting mutation
         for src_file in self.loaded_files:
             target_path = Path(src_file)
             if target_path.exists():
@@ -416,8 +426,11 @@ class HyprlandLuaEngine(BaseEngine):
                 os.close(out_fd)
                 temp_files_created.append(out_path)
 
-                try: os.chmod(out_path, stat.S_IMODE(target_path.stat().st_mode))
-                except OSError: pass
+                # POSIX Permission synchronization
+                try:
+                    os.chmod(out_path, stat.S_IMODE(target_path.stat().st_mode))
+                except OSError:
+                    pass
 
                 res = subprocess.run(
                     [self.lua_bin, "-", str(target_path), target_key, target_scope, val_path, out_path], 
@@ -429,10 +442,13 @@ class HyprlandLuaEngine(BaseEngine):
                 if res.returncode == 0:
                     pending_replacements.append((out_path, target_path, src_file))
                 else:
-                    if res.returncode != 1: status_msg = f"Lua Error {res.returncode} in {src_file}"
+                    if res.returncode != 1:
+                        status_msg = f"Lua Error {res.returncode} in {src_file}"
                     break
             else:
-                if pending_replacements: success = True
+                # Execution finishes clean if no break was hit
+                if pending_replacements:
+                    success = True
 
         except Exception as e:
             success = False
@@ -449,6 +465,7 @@ class HyprlandLuaEngine(BaseEngine):
                     success = False
                     status_msg = f"Transaction Commit Error: {e}"
 
+            # Post-transaction guaranteed garbage collection
             for tmp_file in temp_files_created:
                 if os.path.exists(tmp_file):
                     try: os.unlink(tmp_file)
@@ -458,6 +475,10 @@ class HyprlandLuaEngine(BaseEngine):
                 try: os.unlink(val_path)
                 except OSError: pass
 
-        if success: return True, status_msg, debug_output
-        if not pending_replacements and status_msg == "Failed": return False, "No matches found in configuration tree", debug_output
+        if success:
+            return True, status_msg, debug_output
+            
+        if not pending_replacements and status_msg == "Failed":
+            return False, "No matches found in configuration tree", debug_output
+            
         return False, status_msg, debug_output
