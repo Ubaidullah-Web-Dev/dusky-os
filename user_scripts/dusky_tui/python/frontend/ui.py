@@ -1607,5 +1607,3 @@ class DuskyTUI(App):
         def check_reply(new_val: str | None) -> None:
             if new_val is not None: self._apply_value(tab_idx, item_idx, item, new_val)
         self.push_screen(PickerScreen(item.label, item.options, item.hints), check_reply)
-
-}
