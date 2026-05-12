@@ -1021,14 +1021,22 @@ class DuskyTUI(App):
                     if cache_key in state:
                         item.exists_in_target = True
                         raw_val = state[cache_key]
+                        
+                        # [SURGICAL FIX]: Robust Type Safety checks for native JSON engines vs Stringified engines.
                         if item.type_ == "bool":
-                            item.value = (raw_val == "true")
+                            if isinstance(raw_val, bool):
+                                item.value = raw_val
+                            else:
+                                item.value = (str(raw_val).lower() == "true")
                         elif item.type_ in ("int", "float"):
                             try:
                                 item.value = float(raw_val) if item.type_ == "float" else int(float(raw_val))
-                            except ValueError: pass
+                            except (ValueError, TypeError): pass
                         elif item.type_ in ("string", "picker", "cycle", "color"):
-                            item.value = raw_val[1:-1] if raw_val.startswith('"') and raw_val.endswith('"') else raw_val
+                            if isinstance(raw_val, str):
+                                item.value = raw_val[1:-1] if raw_val.startswith('"') and raw_val.endswith('"') else raw_val
+                            else:
+                                item.value = raw_val
                         else:
                             item.value = raw_val
                     else:
@@ -1591,7 +1599,7 @@ class DuskyTUI(App):
                     except ValueError: 
                         self.notify_status("Error: Value must be a float.")
                         return
-                        
+
                 self._apply_value(tab_idx, item_idx, item, new_val)
         self.push_screen(TextInputOverlay(f"Enter new {item.label}:", str(item.value)), check_reply)
 
@@ -1599,3 +1607,5 @@ class DuskyTUI(App):
         def check_reply(new_val: str | None) -> None:
             if new_val is not None: self._apply_value(tab_idx, item_idx, item, new_val)
         self.push_screen(PickerScreen(item.label, item.options, item.hints), check_reply)
+
+}
