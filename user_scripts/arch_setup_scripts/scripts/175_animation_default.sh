@@ -8,8 +8,8 @@
 set -euo pipefail
 
 # --- Configuration ---
-readonly SOURCE_FILE="${HOME}/.config/hypr/source/animations/horizontal_dusky.conf"
-readonly TARGET_FILE="${HOME}/.config/hypr/source/animations/active/active.conf"
+readonly SOURCE_FILE="${HOME}/.config/hypr/source/animations/dusky.lua"
+readonly TARGET_FILE="${HOME}/.config/hypr/source/animations/active/active.lua"
 
 # --- Colors ---
 readonly C_RESET=$'\033[0m'
