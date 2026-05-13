@@ -94,6 +94,7 @@ TABS = [
     "Decoration",    # tab index 1
     "Animations",    # tab index 2
     "Keybinds",      # tab index 3
+    "Profiles",      # tab index 4
 ]
 
 # =============================================================================
@@ -141,6 +142,9 @@ TABS = [
 #     "action"   A non-editable label that triggers a shell command when
 #                selected. Set default= to the shell command string.
 #
+#     "preset"   A non-editable label that batch-applies multiple configuration 
+#                values simultaneously. Requires the `preset_payload` dict.
+#
 #   default      (Any)        The value the item resets to with `r` or `--default`.
 #                             Use Python booleans (True/False), not strings.
 #
@@ -153,6 +157,10 @@ TABS = [
 #   hints        (list[str])  Optional for "picker". One hint string per option,
 #                             shown as a subtitle in the picker pop-up. Must be
 #                             the same length as options if provided.
+#
+#   preset_payload(dict)      Required for "preset" type. A dictionary mapping the
+#                             "scope.key" path to the desired value. Or, you can pass
+#                             {"__ALL_DEFAULTS__": True} to restore all items to default.
 #
 #   min_val      (float|None) Minimum value for "int" and "float". Ignored otherwise.
 #   max_val      (float|None) Maximum value for "int" and "float". Ignored otherwise.
@@ -459,6 +467,43 @@ SCHEMA: dict[int, list[ConfigItem]] = {
             default="hyprctl reload",
         ),
     ],
+    
+    # -------------------------------------------------------------------------
+    # TAB 4 — Profiles (Batch/Preset System)
+    # -------------------------------------------------------------------------
+    4: [
+        # --- PRESET EXAMPLE (Custom Payload) ---------------------------------
+        # "preset" items allow applying a batch of configuration changes at once.
+        # They visually reflect their status in the UI (Active/Apply).
+        ConfigItem(
+            label="Performance Mode",
+            key="perf_mode_preset",       # key is arbitrary for presets
+            scope="presets",              # scope is arbitrary for presets
+            type_="preset",
+            default=None,
+            preset_payload={
+                # Map paths via "scope.key" exactly as they exist in your schema
+                "decoration/blur.passes": 0,
+                "decoration.drop_shadow": False,
+                "animations.enabled": False,
+                "general.gaps_in": 0,
+                "general.gaps_out": 0
+            },
+            extended_help="Instantly disables blur, shadows, animations, and gaps for maximum performance."
+        ),
+        
+        # --- PRESET EXAMPLE (Global Reset) -----------------------------------
+        # A special payload key "__ALL_DEFAULTS__" invokes the TUI's global reset.
+        ConfigItem(
+            label="Restore All Defaults",
+            key="restore_defaults",
+            scope="presets",
+            type_="preset",
+            default=None,
+            preset_payload={"__ALL_DEFAULTS__": True},
+            extended_help="Resets every configured item across all tabs back to its default value."
+        ),
+    ],
 }
 
 
@@ -467,19 +512,20 @@ SCHEMA: dict[int, list[ConfigItem]] = {
 # =============================================================================
 #
 # ConfigItem(
-#     label         = "Human-readable name shown in the TUI",
-#     key           = "lua_key_name",
-#     scope         = "lua/table/path",   # "" for top-level, "/" separates nesting
-#     type_         = "bool",             # bool | int | float | string | cycle |
-#                                         # color | picker | action
-#     default       = ...,               # Python value: True/False, int, float, str
-#     options       = [],                # Overrides arrow-key behavior for int/color/etc.
-#     hints         = [],                # Optional for picker (must match len(options))
-#     min_val       = None,              # int/float lower bound
-#     max_val       = None,              # int/float upper bound
-#     step          = None,              # arrow-key step size for int/float
-#     group         = None,              # Visual grouping label in the TUI
-#     extended_help = None,              # Shown in --export-docs output
+#     label          = "Human-readable name shown in the TUI",
+#     key            = "lua_key_name",
+#     scope          = "lua/table/path",   # "" for top-level, "/" separates nesting
+#     type_          = "bool",             # bool | int | float | string | cycle |
+#                                          # color | picker | action | preset
+#     default        = ...,                # Python value: True/False, int, float, str
+#     options        = [],                 # Overrides arrow-key behavior for int/color/etc.
+#     hints          = [],                 # Optional for picker (must match len(options))
+#     preset_payload = {},                 # Dict of {"scope.key": value} for "preset" type
+#     min_val        = None,               # int/float lower bound
+#     max_val        = None,               # int/float upper bound
+#     step           = None,               # arrow-key step size for int/float
+#     group          = None,               # Visual grouping label in the TUI
+#     extended_help  = None,               # Shown in --export-docs output
 # )
 #
 # =============================================================================
