@@ -1404,8 +1404,8 @@ hl.config({
 hl.config({
     misc = {
         close_special_on_empty    = true,   -- clean up empty scratchpads
-        focus_on_activate         = false,  -- don't steal focus on activation
-        on_focus_under_fullscreen = 0,      -- 0 = stay behind | 1 = take over | 2 = swap fs
+        focus_on_activate         = true,  -- steal focus on activation
+        on_focus_under_fullscreen = 2,      -- 0 = stay behind | 1 = take over | 2 = swap fs
     },
 })
 
