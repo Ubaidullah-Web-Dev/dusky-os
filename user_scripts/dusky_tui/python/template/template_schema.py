@@ -7,13 +7,14 @@
 # -----------------
 # This is the schema that drives the entire TUI. It tells the app:
 #   1. Which Lua config file to read and write (TARGET_FILE)
-#   2. What tabs to show in the UI (TABS)
-#   3. What settings live on each tab, their type, and their defaults (SCHEMA)
+#   2. Which engine to use to parse it (ENGINE_TYPE)
+#   3. What tabs to show in the UI (TABS)
+#   4. What settings live on each tab, their type, and their defaults (SCHEMA)
 #
-# HOW IT MAPS TO YOUR LUA FILE
+# HOW IT MAPS TO YOUR FILE
 # ----------------------------
 # Every ConfigItem has a `scope` and a `key`. These map DIRECTLY to the
-# nested table path in your Lua config's hl.config({}) call.
+# structure of your target file (e.g., nested tables in Lua, or sections in INI).
 #
 # Example Lua file:
 #
@@ -30,7 +31,7 @@
 #       },
 #   })
 #
-# The engine walks the Lua AST and uses scope/key to find the exact token to
+# The engine walks the AST and uses scope/key to find the exact token to
 # overwrite in-place — it does NOT regenerate the file from scratch, so all
 # your comments and formatting are preserved.
 #
@@ -47,12 +48,13 @@
 # HOW TO CREATE A NEW SCHEMA
 # --------------------------
 # 1. Copy this file.
-# 2. Set TARGET_FILE to the absolute path of the Lua config you want to edit.
-# 3. Set APP_TITLE to a meaningful name.
-# 4. Edit TABS to list your section names.
-# 5. Edit SCHEMA to map each tab index (0, 1, 2 ...) to a list of ConfigItems.
-# 6. Set scope= and key= on each ConfigItem to match your Lua table paths.
-# 7. Done. Run it.
+# 2. Set TARGET_FILE to the absolute path of the config you want to edit.
+# 3. Set ENGINE_TYPE to "lua" or "ini" depending on the target file.
+# 4. Set APP_TITLE to a meaningful name.
+# 5. Edit TABS to list your section names.
+# 6. Edit SCHEMA to map each tab index (0, 1, 2 ...) to a list of ConfigItems.
+# 7. Set scope= and key= on each ConfigItem to match your file's paths.
+# 8. Done. Run it.
 #
 # =============================================================================
 
@@ -69,6 +71,16 @@ TARGET_FILE = "~/.config/hypr/edit_here/source/monitors.lua"
 # Optional: path to a matugen-generated JSON theme file.
 # Set to None if you don't use matugen.
 THEME_FILE = "~/.config/matugen/generated/dusky_tui.json"
+
+# =============================================================================
+# SECTION 1.5 — ENGINE CONFIGURATION
+# =============================================================================
+# Specifies which backend engine to use for parsing and writing.
+# Options:
+#   "lua" - The AST-preserving engine for Hyprland/Lua tables.
+#   "ini" - The AST-preserving engine for standard Linux config files (e.g., pacman.conf)
+# Note: This is REQUIRED. The router will crash intentionally if this is missing.
+ENGINE_TYPE = "lua"
 
 # =============================================================================
 # SECTION 2 — APP METADATA
@@ -107,15 +119,15 @@ TABS = [
 #
 #   label        (str)        Display name shown in the TUI list.
 #
-#   key          (str)        The Lua table key to read/write. Must match the
-#                             key name exactly as it appears in your Lua file.
+#   key          (str)        The table key to read/write. Must match the
+#                             key name exactly as it appears in your config file.
 #
-#   scope        (str)        The slash-separated path of nested Lua tables
+#   scope        (str)        The slash-separated path of nested tables
 #                             leading to this key, e.g. "general" or
 #                             "general/col". Use "" (empty string) for keys
-#                             sitting at the top level of hl.config({}).
-#                             Default is "DEFAULT" — only use that if your Lua
-#                             file actually has a table called DEFAULT.
+#                             sitting at the top level.
+#                             Default is "DEFAULT" — use that if your file
+#                             has a root section literally called DEFAULT.
 #
 #   type_        (str)        One of the following (choose exactly one):
 #
@@ -168,7 +180,7 @@ TABS = [
 #
 #   group        (str|None)   Optional visual group label. Items with the same
 #                             group string are shown together under that heading.
-#                             Has no effect on the Lua write logic.
+#                             Has no effect on the write logic.
 #
 #   extended_help (str|None)  Long-form description shown when you run:
 #                               python main/main.py my_schema --export-docs

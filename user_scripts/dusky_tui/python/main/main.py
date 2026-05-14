@@ -29,7 +29,9 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from python.engines.lua import HyprlandLuaEngine
+# Notice: We DO NOT import the engines here. They are imported dynamically
+# in the router block below to prevent crashing if a dependency is missing
+# for an engine you aren't currently using.
 from python.frontend.ui import DuskyTUI, is_theme_variable
 
 # =============================================================================
@@ -133,7 +135,6 @@ EXAMPLES:
     safety_group.add_argument("--backup", action="store_true", help="Create a backup of the target config before doing anything.")
     safety_group.add_argument("--restore", action="store_true", help="Restore the target config from the latest backup and exit.")
     
-    # Mutually exclusive group to prevent silent CLI fall-through via hard exits
     headless_group = parser.add_mutually_exclusive_group()
     headless_group.add_argument("--default", action="store_true", help="Headlessly restore all schema items to their default values.")
     headless_group.add_argument("--reset-key", metavar="KEY", type=str, help="Headlessly restore a specific key to its default.")
@@ -191,14 +192,27 @@ EXAMPLES:
         SCHEMA = schema_module.SCHEMA
         TABS = schema_module.TABS
         TARGET_FILE = Path(schema_module.TARGET_FILE).expanduser().resolve()
+        
+        # Optional attributes
         THEME_FILE = getattr(schema_module, "THEME_FILE", None)
         APP_TITLE = getattr(schema_module, "APP_TITLE", "Dusky Configurator")
         DEFAULT_MODE = getattr(schema_module, "DEFAULT_MODE", "auto")
+        
+        # STRICT REQUIREMENT: The schema MUST explicitly define ENGINE_TYPE.
+        # We access it directly so it throws an AttributeError if it's missing.
+        ENGINE_TYPE = schema_module.ENGINE_TYPE.lower()
+
     except AttributeError as e:
-        print(f"[-] Invalid schema file '{schema_path.name}'. Missing required attribute: {e}")
+        print(f"\n[-] Fatal: Invalid schema file '{schema_path.name}'.")
+        if "ENGINE_TYPE" in str(e):
+            print("[-] Missing required attribute: 'ENGINE_TYPE'")
+            print("[i] You must explicitly define ENGINE_TYPE in your schema.")
+            print("[i] Example: ENGINE_TYPE = \"lua\"  (or \"ini\")\n")
+        else:
+            print(f"[-] Missing required attribute: {e}\n")
         sys.exit(1)
 
-    logger.info(f"Loaded schema: {schema_path} | Target: {TARGET_FILE}")
+    logger.info(f"Loaded schema: {schema_path} | Target: {TARGET_FILE} | Engine: {ENGINE_TYPE}")
 
     # --- 2. PRE-FLIGHT CHECKS (Backups / Restores) ---
     is_headless = any([args.default, args.reset_key, args.set, args.export_state, args.export_docs])
@@ -214,8 +228,28 @@ EXAMPLES:
         if not is_headless:
             sys.exit(0)
 
-    # --- 3. INSTANTIATE ENGINE ---
-    engine = HyprlandLuaEngine(config_path=str(TARGET_FILE))
+    # =========================================================================
+    # --- 3. INSTANTIATE ENGINE (ROUTER BLOCK) ---
+    # =========================================================================
+    # ADD NEW ENGINES HERE
+    # To add a new engine in the future:
+    # 1. Create your engine file in python/engines/ (e.g., yaml.py)
+    # 2. Add an `elif ENGINE_TYPE == "yaml":` block below.
+    # 3. Import your engine class locally inside that block.
+    # 4. Instantiate it: engine = MyNewEngine(config_path=str(TARGET_FILE))
+    # =========================================================================
+    if ENGINE_TYPE == "lua":
+        from python.engines.lua import HyprlandLuaEngine
+        engine = HyprlandLuaEngine(config_path=str(TARGET_FILE))
+    
+    elif ENGINE_TYPE == "ini":
+        from python.engines.ini import IniConfigEngine
+        engine = IniConfigEngine(config_path=str(TARGET_FILE))
+    
+    else:
+        print(f"[-] Fatal: Unknown ENGINE_TYPE '{ENGINE_TYPE}' specified in schema '{schema_path.name}'.")
+        print("[i] Supported engines are: 'lua', 'ini'")
+        sys.exit(1)
 
     # --- 4. HEADLESS OPERATIONS ---
     if is_headless:
