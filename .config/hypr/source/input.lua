@@ -20,7 +20,7 @@ hl.config({
         accel_profile         = "adaptive", -- "adaptive", "flat", or "custom".
         force_no_accel        = false,   -- Bypass all acceleration; raw signal only.
         rotation              = 0,       -- Device rotation in degrees clockwise.
-        left_handed           = false,   -- Swap LMB and RMB.
+        left_handed = false,   -- Swap LMB and RMB.
 
         -- --- Scrolling ---
         scroll_points             = "",  -- Custom acceleration profile (only with accel_profile = "custom").
@@ -114,4 +114,3 @@ hl.config({
         warp_back_after_non_mouse_input = false, -- Warp cursor back after keyboard/tablet input.
     },
 })
-
