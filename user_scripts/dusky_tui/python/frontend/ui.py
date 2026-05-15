@@ -170,27 +170,53 @@ def load_matugen_json(file_path: Path) -> dict[str, str] | None:
 # MODALS & OVERLAYS
 # =============================================================================
 
-class TextInputOverlay(ModalScreen[str | None]):
-    def __init__(self, prompt: str, default: str) -> None:
+class HybridInputScreen(ModalScreen[str | None]):
+    BINDINGS = [
+        Binding("down,j", "focus_list", "Focus List"),
+        Binding("up,k", "focus_input", "Focus Input"),
+    ]
+
+    def __init__(self, prompt: str, default: str, options: list[Any] = None) -> None:
         super().__init__()
         self.prompt_text = prompt
         self.default_text = default
+        self.options = options or []
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal-dialog"):
             yield Label(self.prompt_text, id="modal-title")
             yield Input(value=self.default_text, id="modal-input")
-            yield Label("Press Enter to save • Esc to cancel", id="modal-hint")
+            if self.options:
+                yield Label(" Pre-configured Options:", id="modal-hint")
+                yield OptionList(id="hybrid-option-list")
+            else:
+                yield Label("Press Enter to save • Esc to cancel", id="modal-hint")
             with Horizontal(classes="modal-btn-container"):
                 yield Label(" Cancel ", classes="modal-close-btn")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
+        if self.options:
+            ol = self.query_one(OptionList)
+            for opt in self.options:
+                ol.add_option(Option(str(opt)))
 
     @on(Input.Submitted)
     def handle_submit(self, event: Input.Submitted) -> None:
         event.stop()
         self.dismiss(event.value)
+
+    @on(OptionList.OptionSelected)
+    def handle_option_selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        self.dismiss(str(event.option.prompt))
+
+    def action_focus_list(self) -> None:
+        if self.options:
+            self.query_one(OptionList).focus()
+
+    def action_focus_input(self) -> None:
+        self.query_one(Input).focus()
 
     @on(events.Click, ".modal-close-btn")
     def on_close_click(self) -> None:
@@ -683,6 +709,7 @@ class AppFooter(Vertical):
 
     def compose(self) -> ComposeResult:
         with FlowContainer(id="footer-shortcuts-container"):
+            # Removed Save Preset visual shortcut per request, core Ctrl+P functionality remains active.
             yield Shortcut("ctrl+s", "Batch Save", "save_batch", id="shortcut-ctrl-s")
             yield Shortcut("/", "Jump", "focus_local_search", id="shortcut-slash")
             yield Shortcut("ctrl+f", "Search", "search", id="shortcut-ctrl-f")
@@ -806,7 +833,7 @@ class DuskyTUI(App):
     #file-link { padding: 0 1; background: transparent; }
     #file-link:hover { text-style: bold; color: $foreground; background: $primary 25%; }
 
-    TextInputOverlay, PickerScreen, SearchScreen, DiffScreen, ShortcutsInfoScreen { align: center middle; background: rgba(0, 0, 0, 0.75); }
+    HybridInputScreen, PickerScreen, SearchScreen, DiffScreen, ShortcutsInfoScreen { align: center middle; background: rgba(0, 0, 0, 0.75); }
 
     #picker-dialog { width: 60; height: 70%; background: $background; border: solid $primary; padding: 1 2; }
     #search-dialog { width: 60; height: 80%; background: $background; border: solid $primary; padding: 1 2; }
@@ -818,6 +845,16 @@ class DuskyTUI(App):
     #search-list > .option-list--option { padding: 0 1; background: transparent; transition: background 100ms linear; }
     #search-list > .option-list--option-hover { background: $primary 10%; }
     #search-list > .option-list--option-highlighted { background: $primary 20%; color: $foreground; text-style: bold; }
+
+    #hybrid-option-list {
+        height: auto; max-height: 10;
+        border: solid $primary 50%;
+        margin-top: 1; scrollbar-size: 0 0;
+        background: transparent;
+    }
+    #hybrid-option-list > .option-list--option { padding: 0 1; background: transparent; transition: background 100ms linear; }
+    #hybrid-option-list > .option-list--option-hover { background: $primary 10%; }
+    #hybrid-option-list > .option-list--option-highlighted { background: $primary 20%; color: $foreground; text-style: bold; }
 
     #diff-list > .option-list--option { padding: 0 1; background: transparent; }
     #shortcuts-list > .option-list--option { padding: 0 1; background: transparent; }
@@ -848,7 +885,9 @@ class DuskyTUI(App):
         Binding("f1", "show_shortcuts", "Shortcuts", priority=True),
         Binding("ctrl+t", "toggle_save_mode", "Toggle Mode", priority=True),
         Binding("ctrl+s", "save_batch", "Save Batch", priority=True),
+        Binding("ctrl+p", "save_preset", "Save Preset", priority=True),
         Binding("d", "show_diff", "Diff", priority=True),
+        Binding("D", "delete_user_preset", "Delete Preset", priority=True),
         Binding("u", "undo", "Undo", priority=True),
         Binding("ctrl+r", "redo", "Redo", priority=True),
         Binding("?", "toggle_help", "Help", priority=True),
@@ -867,13 +906,29 @@ class DuskyTUI(App):
 
     auto_save = reactive(True)
 
-    def __init__(self, engine: BaseEngine, schema: dict[int, list[ConfigItem]], tabs: list[str], title="Dusky Editor", theme_path: str | None = None, default_mode: str = "auto", **kwargs):
+    def __init__(self, engine: BaseEngine, schema: dict[int, list[ConfigItem]], tabs: list[str], title="Dusky Editor", theme_path: str | None = None, default_mode: str = "auto", schema_name: str = "default", enable_user_presets: bool = True, user_presets_tab: str | None = None, **kwargs):
         super().__init__(**kwargs)
         self.engine = engine
         self.schema = schema
         self.tabs = tabs
         self.editor_title = title
+        self.schema_name = schema_name
         self.theme_path = Path(theme_path).expanduser().resolve() if theme_path else None
+        
+        self.enable_user_presets = enable_user_presets
+        self.user_presets_tab_name = user_presets_tab
+        self.user_presets_tab_idx = 0
+        
+        # Route User Presets to their proper schema tab assignment automatically
+        if self.user_presets_tab_name and self.user_presets_tab_name in self.tabs:
+            self.user_presets_tab_idx = self.tabs.index(self.user_presets_tab_name)
+        else:
+            for i, t in enumerate(self.tabs):
+                if t.lower() in ("presets", "theme", "themes", "appearance", "profiles"):
+                    self.user_presets_tab_idx = i
+                    break
+
+        self.user_presets_dir = Path(f"~/.config/dusky/tui/{self.schema_name}").expanduser().resolve()
 
         self.pending_commits: set[tuple[int, int]] = set()
         self.undo_stack: deque[list[tuple[int, int, Any, Any]]] = deque(maxlen=50)
@@ -946,29 +1001,31 @@ class DuskyTUI(App):
 
     def _get_preset_match_ratio(self, preset_item: ConfigItem) -> float:
         """Calculates how much of a preset's payload currently matches reality."""
-        if not preset_item.preset_payload:
+        if preset_item.preset_payload is None:
             return 0.0
 
-        if preset_item.preset_payload.get("__ALL_DEFAULTS__"):
-            total, matches = 0, 0
-            for t_idx, items in self.schema.items():
-                for target_item in items:
-                    if target_item.type_ not in ("action", "preset", "menu") and target_item.exists_in_target:
-                        total += 1
-                        if str(target_item.value) == str(target_item.default) or target_item.default is None:
-                            matches += 1
-            return matches / total if total > 0 else 0.0
-
         total, matches = 0, 0
-        for key_path, expected_val in preset_item.preset_payload.items():
-            if key_path not in self._key_map:
-                continue
-            total += 1
-            t_idx, i_idx = self._key_map[key_path]
-            target_item = self.schema[t_idx][i_idx]
-            if target_item.exists_in_target:
-                if str(target_item.value) == str(expected_val):
+        payload = preset_item.preset_payload
+        is_all_defaults = payload.get("__ALL_DEFAULTS__", False)
+
+        for t_idx, items in self.schema.items():
+            for target_item in items:
+                if target_item.type_ in ("action", "preset", "menu") or not target_item.exists_in_target:
+                    continue
+                
+                total += 1
+                key_path = self._get_item_uid(target_item)
+                
+                if is_all_defaults:
+                    expected_val = target_item.default
+                elif key_path in payload:
+                    expected_val = payload[key_path]
+                else:
+                    expected_val = target_item.default # Everything else must be default
+
+                if str(target_item.value) == str(expected_val) or (expected_val is None and target_item.default is None):
                     matches += 1
+
         return matches / total if total > 0 else 0.0
 
     def _is_preset_active(self, preset_item: ConfigItem) -> bool:
@@ -1101,6 +1158,61 @@ class DuskyTUI(App):
 
         return txt
 
+    def _rebuild_key_map(self) -> None:
+        self._key_map.clear()
+        for i in range(len(self.tabs)):
+            for idx, item in enumerate(self.schema.get(i, [])):
+                self._key_map[self._get_item_uid(item)] = (i, idx)
+
+    def _load_user_presets(self) -> None:
+        if not self.enable_user_presets:
+            return
+
+        self.user_presets_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 1. Remove dynamically added User Presets from previous loads
+        for t_idx, items in self.schema.items():
+            self.schema[t_idx] = [itm for itm in items if not (itm.group == "User Presets" and (itm.key.startswith("__user_preset_") or itm.key == "__save_new_preset"))]
+
+        # 2. Add Dynamic Save Button Node
+        save_btn = ConfigItem(
+            label="[+] Save Current State as New Preset",
+            key="__save_new_preset",
+            scope="DEFAULT",
+            type_="action",
+            default=None,
+            group="User Presets",
+            extended_help="Click here to save the current configuration state as a new reusable preset."
+        )
+        save_btn.exists_in_target = True
+        user_preset_items = [save_btn]
+
+        # 3. Read presets from disk
+        for file_path in self.user_presets_dir.glob("*.json"):
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+                name = file_path.stem
+                new_item = ConfigItem(
+                    label=f"User: {name}",
+                    key=f"__user_preset_{name}",
+                    scope="DEFAULT",
+                    type_="preset",
+                    default=None,
+                    group="User Presets",
+                    extended_help=f"**User-defined preset:** {name}\n\nPress `Shift+D` to delete this preset.\nPress `Ctrl+P` and use the same name to overwrite/update it.",
+                    preset_payload=payload
+                )
+                new_item.exists_in_target = True
+                user_preset_items.append(new_item)
+            except Exception: pass
+
+        # 4. Add to the intelligently targeted tab schema
+        if self.user_presets_tab_idx not in self.schema:
+            self.schema[self.user_presets_tab_idx] = []
+            
+        self.schema[self.user_presets_tab_idx].extend(user_preset_items)
+
     async def on_mount(self) -> None:
         self.query_one("#main-box").border_title = f" {self.editor_title} "
         self.apply_theme_to_engine()
@@ -1117,13 +1229,12 @@ class DuskyTUI(App):
 
         state = self.engine.load_state()
 
-        # PASS 1: Build robust _key_map and load memory state BEFORE rendering UI
+        self._load_user_presets()
+        self._rebuild_key_map()
+
+        # PASS 1: Set initial values and existence based on state BEFORE rendering UI
         for i in range(len(self.tabs)):
             for idx, item in enumerate(self.schema.get(i, [])):
-                
-                map_key = self._get_item_uid(item)
-                self._key_map[map_key] = (i, idx)
-
                 cache_key = f"{item.scope}/{item.key}" if item.scope else item.key
                 
                 if item.type_ in ("action", "preset", "menu"):
@@ -1909,6 +2020,55 @@ class DuskyTUI(App):
                 self.notify_status(f"No changes to reset in {self.tabs[tab_idx]}")
         except Exception: pass
 
+    def action_save_preset(self) -> None:
+        def check_reply(name: str | None) -> None:
+            if not name: return
+            # SECURITY PATCH: Sanitize input to prevent Path Traversal (CWE-22)
+            name = re.sub(r'[\\/*?:"<>|]', "", name.strip())
+            if not name: return
+
+            payload = {}
+            for t_idx, items in self.schema.items():
+                for item in items:
+                    if item.type_ in ("action", "preset", "menu"): continue
+                    # Save the entire state regardless of defaults so the preset is complete
+                    payload[self._get_item_uid(item)] = item.value
+
+            self.user_presets_dir.mkdir(parents=True, exist_ok=True)
+            file_path = self.user_presets_dir / f"{name}.json"
+
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, indent=4)
+                self.notify_status(f"Successfully saved preset: {name}")
+                self._load_user_presets()
+                self._rebuild_key_map()
+                self._refresh_all_ui()
+            except Exception as e:
+                self.notify_status(f"Error saving preset: {e}")
+
+        self.push_screen(HybridInputScreen("Save Current State as Preset (Name):", ""), check_reply)
+
+    def action_delete_user_preset(self) -> None:
+        ol = self.current_option_list
+        if not ol or not ol.last_highlighted_id: return
+        parsed = self._get_item_from_id(ol.last_highlighted_id)
+        if not parsed: return
+        _, _, item = parsed
+
+        if item.group == "User Presets" and item.type_ == "preset":
+            name = item.label.replace("User: ", "", 1)
+            file_path = self.user_presets_dir / f"{name}.json"
+            if file_path.exists():
+                try:
+                    file_path.unlink()
+                    self.notify_status(f"Deleted preset: {name}")
+                    self._load_user_presets()
+                    self._rebuild_key_map()
+                    self._refresh_all_ui()
+                except Exception as e:
+                    self.notify_status(f"Error deleting preset: {e}")
+
     def action_submit_current(self) -> None:
         ol = self.current_option_list
         if ol and ol.last_highlighted_id:
@@ -1940,6 +2100,9 @@ class DuskyTUI(App):
             
         if item.type_ in ("preset", "action") and click_x >= 44:
             instant_action = True
+            
+        if item.key == "__save_new_preset" and (1 <= click_x <= 15):
+            instant_action = True
 
         if not is_keyboard and not instant_action and not was_already_selected:
             return  # First click on text just highlights it
@@ -1968,6 +2131,10 @@ class DuskyTUI(App):
             case "menu": self.action_toggle_expand()
 
     def execute_action(self, item: ConfigItem) -> None:
+        if item.key == "__save_new_preset":
+            self.action_save_preset()
+            return
+
         command = str(item.default) if item.default else ""
         if not command:
             self.notify_status(f"No command defined for: {item.label}")
@@ -2009,38 +2176,35 @@ class DuskyTUI(App):
         asyncio.create_task(run_task())
 
     def apply_preset(self, preset_item: ConfigItem) -> None:
-        if not preset_item.preset_payload:
+        if preset_item.preset_payload is None:
             self.notify_status("Preset contains no payload.")
             return
             
         transaction = []
         skipped = 0
+        payload = preset_item.preset_payload
+        is_all_defaults = payload.get("__ALL_DEFAULTS__", False)
         
-        if preset_item.preset_payload.get("__ALL_DEFAULTS__"):
-            for t_idx, items in self.schema.items():
-                for i_idx, target_item in enumerate(items):
-                    if target_item.type_ not in ("action", "preset", "menu"):
-                        if not target_item.exists_in_target:
-                            skipped += 1
-                            continue
-                        if target_item.value != target_item.default and target_item.default is not None:
-                            transaction.append((t_idx, i_idx, target_item.value, target_item.default))
-        else:
-            for key_path, new_val in preset_item.preset_payload.items():
-                if key_path not in self._key_map:
-                    skipped += 1
+        for t_idx, items in self.schema.items():
+            for i_idx, target_item in enumerate(items):
+                if target_item.type_ in ("action", "preset", "menu"):
                     continue
-                    
-                t_idx, i_idx = self._key_map[key_path]
-                target_item = self.schema[t_idx][i_idx]
-                
                 if not target_item.exists_in_target:
                     skipped += 1
                     continue
-                    
-                if target_item.value != new_val:
-                    transaction.append((t_idx, i_idx, target_item.value, new_val))
-        
+                
+                key_path = self._get_item_uid(target_item)
+                
+                if is_all_defaults:
+                    target_val = target_item.default
+                elif key_path in payload:
+                    target_val = payload[key_path]
+                else:
+                    target_val = target_item.default # Forced Factory Reset for unmentioned properties
+                
+                if str(target_item.value) != str(target_val) and target_val is not None:
+                    transaction.append((t_idx, i_idx, target_item.value, target_val))
+
         if not transaction:
             if skipped > 0:
                 self.notify_status(f"Preset applied, but {skipped} items were missing/invalid.")
@@ -2059,7 +2223,12 @@ class DuskyTUI(App):
             if new_val is not None:
                 if item.type_ == "int":
                     try:
-                        parsed_val = int(new_val, 0)
+                        # SAFE DUAL-PASS PARSER: Prevents hex/octal regression while supporting decimals
+                        try:
+                            parsed_val = int(new_val, 0)
+                        except ValueError:
+                            parsed_val = int(float(new_val))
+                            
                         if item.min_val is not None: parsed_val = max(int(item.min_val), parsed_val)
                         if item.max_val is not None: parsed_val = min(int(item.max_val), parsed_val)
                         new_val = parsed_val
@@ -2077,7 +2246,9 @@ class DuskyTUI(App):
                         return
 
                 self._apply_value(tab_idx, item_idx, item, new_val)
-        self.push_screen(TextInputOverlay(f"Enter new {item.label}:", str(item.value)), check_reply)
+                
+        # Deploys HybridInputScreen to allow free text parsing and direct preset option list mapping
+        self.push_screen(HybridInputScreen(f"Enter new {item.label}:", str(item.value), item.options), check_reply)
 
     def prompt_picker(self, tab_idx: int, item_idx: int, item: ConfigItem) -> None:
         def check_reply(new_val: str | None) -> None:

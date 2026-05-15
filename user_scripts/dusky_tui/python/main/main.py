@@ -192,10 +192,12 @@ EXAMPLES:
         TABS = schema_module.TABS
         TARGET_FILE = Path(schema_module.TARGET_FILE).expanduser().resolve()
         
-        # Optional attributes
+        # Optional attributes / User Preset Hooks
         THEME_FILE = getattr(schema_module, "THEME_FILE", None)
         APP_TITLE = getattr(schema_module, "APP_TITLE", "Dusky Configurator")
         DEFAULT_MODE = getattr(schema_module, "DEFAULT_MODE", "auto")
+        ENABLE_USER_PRESETS = getattr(schema_module, "ENABLE_USER_PRESETS", True)
+        USER_PRESETS_TAB = getattr(schema_module, "USER_PRESETS_TAB", None)
         
         # STRICT REQUIREMENT: The schema MUST explicitly define ENGINE_TYPE.
         # We access it directly so it throws an AttributeError if it's missing.
@@ -376,7 +378,10 @@ EXAMPLES:
         tabs=TABS, 
         title=APP_TITLE,
         theme_path=THEME_FILE,
-        default_mode=DEFAULT_MODE
+        default_mode=DEFAULT_MODE,
+        schema_name=module_name,
+        enable_user_presets=ENABLE_USER_PRESETS,
+        user_presets_tab=USER_PRESETS_TAB
     )
     
     app.run()
