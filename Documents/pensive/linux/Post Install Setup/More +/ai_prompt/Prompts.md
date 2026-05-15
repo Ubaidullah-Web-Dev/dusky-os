@@ -355,7 +355,7 @@ Libadwaita GTK 4 Prompt
 ---
 ---
 
-> [!NOTE]- Schema Template
+> [!NOTE]- Template Schema
 > ```py
 > #!/usr/bin/env python3
 > """
@@ -364,24 +364,56 @@ Libadwaita GTK 4 Prompt
 > ===============================================================================
 > 
 > TARGET MAPPING VISUALIZATION:
-> How `scope` and `key` tell the engine exactly what to edit in the target file:
->     [theme.colors]               <-- scope="theme.colors" (Deep nesting supported)
->     active_border = #ff89b4fa    <-- key="active_border"
+> How `scope` and `key` tell the engine exactly what to edit in the target file.
+> The mapping behavior changes depending on your declared ENGINE_TYPE.
+> 
+> ===============================================================================
+> [ SCENARIO A: If ENGINE_TYPE = "ini" ]
+> ===============================================================================
+>   [theme.colors]                 <-- scope="theme.colors" (Deep nesting supported)
+>   active_border = #ff89b4fa      <-- key="active_border"
+> 
+> ===============================================================================
+> [ SCENARIO B: If ENGINE_TYPE = "lua" (Hyprland AST) ]
+> ===============================================================================
+>   1. STANDARD TABLES (hl.config)
+>      hl.config({
+>          decoration = {
+>              rounding = 10          <-- scope="decoration", key="rounding"
+>              blur = {
+>                  enabled = true     <-- scope="decoration/blur", key="enabled"
+>              }
+>          }
+>      })
+> 
+>   2. HYPRLAND WINDOW RULES (Mapped by 'name')
+>      hl.window_rule({ name = "my_rule", rounding = 0 }) 
+>          <-- scope="window_rule/my_rule", key="rounding"
+> 
+>   3. HYPRLAND WORKSPACE RULES (Mapped by 'workspace' string)
+>      hl.workspace_rule({ workspace = "w[tv1]", border_size = 2 }) 
+>          <-- scope="workspace_rule/w[tv1]", key="border_size"
 > 
 > STRICT RULES FOR SCHEMA GENERATION (CRITICAL - DO NOT VIOLATE):
-> 1. UID (Unique Identifier) Rule:
+> 
+> 4. UID (Unique Identifier) Rule:
 >    - If a variable sits at the root of the target file (no section), set scope="DEFAULT".
 >    - If scope is defined, the UID is `scope.key` (e.g., "theme.border_active").
 >    - If scope is "DEFAULT", the UID is just the `key` (e.g., "logging").
 >    - You MUST use the exact UID when using `parent_ref` or `preset_payload`.
 > 
-> 2. Contiguous Grouping Rule (Do NOT interleave):
+> 5. Hyprland AST Context Rules (CRITICAL FOR LUA ENGINE):
+>    - For `hl.window_rule`, the scope MUST strictly be `window_rule/<name>`. The target rule in the Lua file MUST have an explicit `name = "..."` attribute.
+>    - For `hl.workspace_rule`, the scope MUST strictly be `workspace_rule/<workspace_selector>` (e.g., `scope="workspace_rule/w[tv1]s[false]"`). 
+>    - NEVER inject artificial `name` keys into `hl.workspace_rule` target files, as the C++ compositor will reject them. The engine parses the workspace string natively.
+> 
+> 6. Contiguous Grouping Rule (Do NOT interleave):
 >    - Items with the same `group` string MUST be placed immediately next to 
 >      each other. The UI draws headers sequentially.
 >    - Items with a `parent_ref` MUST be placed immediately beneath their parent 
 >      in a single, unbroken block. Do not break the visual tree.
 > 
-> 3. Structural Restrictions & Hybrid Folders (CRITICAL):
+> 7. Structural Restrictions & Hybrid Folders (CRITICAL):
 >    - "preset" and "action" items are PURE UI constructs. They DO NOT write 
 >      to the target file. Their `key` is just an internal ID.
 >    - "menu": A PURE UI visual folder (default=None, type_="menu"). It writes nothing.
@@ -390,7 +422,7 @@ Libadwaita GTK 4 Prompt
 >      header itself to hold a changeable backend value (e.g., a Master Toggle Switch).
 >    - Folders can only be ONE level deep. DO NOT nest a folder inside another folder.
 > 
-> 4. Naming Conventions (ONE-WORD HEADERS ONLY):
+> 8. Naming Conventions (ONE-WORD HEADERS ONLY):
 >    - NO MULTI-WORD HEADERS: Every `group` name and `Tab` name MUST be strictly ONE WORD 
 >      and highly intuitive (e.g., use `Theme` instead of `Theming Subsystem`). This prevents 
 >      terminal UI clutter and wrapping issues.
@@ -398,7 +430,7 @@ Libadwaita GTK 4 Prompt
 >    - USE DESCRIPTIVE KEYS: Utilize descriptive, semantic identifiers for backend keys 
 >      (e.g., use `enable_dynamic_workspace_routing`).
 > 
-> 5. Available Types (`type_`) & Hybrid Menus:
+> 9. Available Types (`type_`) & Hybrid Menus:
 >    - "bool"   : Toggles instantly (True/False)
 >    - "int"    : Numeric integer (supports min_val, max_val, step. Use options=[] for hybrid dropdown)
 >    - "float"  : Numeric decimal (supports min_val, max_val, step. Use options=[] for hybrid dropdown)
@@ -410,7 +442,7 @@ Libadwaita GTK 4 Prompt
 >    - "action" : Triggers a shell command (put the exact shell command string in `default=`)
 >    - "preset" : Applies multiple values at once (requires `preset_payload`, `default=None`)
 > 
-> 6. Strict Type & Native Value Matching (CRITICAL FOR AST ENGINES):
+> 10. Strict Type & Native Value Matching (CRITICAL FOR AST ENGINES):
 >    - You MUST map the target configuration's native data type to the correct `type_`. 
 >    - The Python data type of the `default` argument MUST strictly match the declared `type_`:
 >      * "bool"   -> default=True (Python boolean, NOT string "true" or "True")
@@ -420,12 +452,12 @@ Libadwaita GTK 4 Prompt
 >    - For "action", `default` MUST be the exact shell command string to execute.
 >    - If using the `options` array, the array elements MUST match the native type.
 > 
-> 7. Preset Payload Strict Application (Nuclear Reset):
+> 11. Preset Payload Strict Application (Nuclear Reset):
 >    - Presets apply a STRICT state snapshot. If you omit a key from a `preset_payload`, 
 >      the application will forcibly revert that omitted key back to its `default` value 
 >      when the preset is applied. Define ALL necessary keys in the payload.
 > 
-> 8. Documentation & Help Text (extended_help):
+> 12. Documentation & Help Text (extended_help):
 >    - Every item MUST include clear, detailed `extended_help`.
 >    - Explain exactly what the item does and how the specific values affect the system.
 >    - Write it so users who have absolutely no idea what the setting does can easily configure it.
@@ -609,7 +641,7 @@ Libadwaita GTK 4 Prompt
 >             group="System",
 >             preset_payload={
 >                 "core.hardware_animations_enabled": False,      
->                 "layout.workspace_padding_inner": 0,           
+>                 "layout.workspace_padding_inner": 0,            
 >                 "theme.focused_window_border_color": "#ff0000"  
 >             },
 >             extended_help="**High-Performance Preset**\n\nInstantly overrides multiple current settings to maximize system responsiveness for gaming or heavy workloads. \n\nApplying this will:\n1. Disable all UI animations.\n2. Remove all window padding (gaps = 0).\n3. Set the active border to stark red for high visibility.\n\n*Note: Any omitted settings are forcibly reverted to default.*"
@@ -637,7 +669,7 @@ Libadwaita GTK 4 Prompt
 > # ConfigItem(
 > #     label          = "Display Name",
 > #     key            = "backend_key",
-> #     scope          = "DEFAULT",          # "backend_section" or "DEFAULT" for root level
+> #     scope          = "DEFAULT",          # "backend_section", "window_rule/<name>", "workspace_rule/<workspace>" or "DEFAULT"
 > #     type_          = "bool",             # STANDARD: bool | int | float | string | color
 > #                                          # MODALS: cycle | picker 
 > #                                          # PURE UI: action | preset | menu
@@ -655,5 +687,5 @@ Libadwaita GTK 4 Prompt
 > #     is_parent      = False,              # Set True to make this item an expandable folder (Works on ANY type!)
 > #     parent_ref     = None,               # Nested UI link. MUST exactly match parent's UID format: "scope.key" (or "key" if DEFAULT)
 > #     expanded       = False,              # Default UI state for parent folders (Starts open or closed)
-> # ) 
+> # )
 > ```

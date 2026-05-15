@@ -191,11 +191,11 @@ class HyprlandLuaEngine(BaseEngine):
                     local is_ident_key = false
                     
                     if type(v) == "table" and type(k) == "number" then
-                        local id = v.name or v.output or v._bind_key
+                        local id = v.name or v.output or v.workspace or v._bind_key
                         if id then str_k = tostring(id) end
                     end
 
-                    if type(k) == "string" and (k == "name" or k == "output" or k == "_bind_key") then
+                    if type(k) == "string" and (k == "name" or k == "output" or k == "workspace" or k == "_bind_key") then
                         is_ident_key = true
                     end
 
@@ -572,7 +572,7 @@ class HyprlandLuaEngine(BaseEngine):
                         if depth == 0 then break end
                         depth = depth - 1
                     elseif depth == 0 and t == "IDENT" then
-                        if (tokens[k].val == "name" or tokens[k].val == "output") 
+                        if (tokens[k].val == "name" or tokens[k].val == "output" or tokens[k].val == "workspace") 
                            and tokens[k+1] and tokens[k+1].type == "EQUALS" 
                            and tokens[k+2] and tokens[k+2].type == "STRING" then
                             return tokens[k+2].val:match("^['\"](.-)['\"]$")
@@ -727,7 +727,7 @@ class HyprlandLuaEngine(BaseEngine):
                 
                 debug_output += res.stderr
                 
-                # Parse Lua Telemetry to verify exactly which items succeeded
+               # Parse Lua Telemetry to verify exactly which items succeeded
                 for line in res.stderr.splitlines():
                     if line.startswith("[MATCHED] "):
                         try:
