@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #==============================================================================
-# Hyprland Visuals Controller (Blur, Shadow, Opacity)
-# Architecture: Zero-Corruption Atomic Writes, Symlink Safe, Regex Parsing,
-#               Modular UI Integration (Mako, Rofi, Waybar-ready)
+# Hyprland Visuals Controller - Ultra-Optimized (Bash 5.3+ / Arch Linux)
+# Architecture: Single-Pass IPC, Native Globbing, Zero-Copy Stream Processing,
+#               Pure Bash Regex Parsing, Lockless Atomic VFS Swaps.
 #==============================================================================
 
 # Strict mode: exit on error, undefined vars, and pipeline failures
@@ -10,8 +10,11 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
+# Enable advanced Bash 5 built-in file globbing
+shopt -s globstar nullglob
+
 # --- Configuration ---
-readonly CONFIG_FILE="${HOME}/.config/hypr/edit_here/source/appearance.conf"
+readonly CONFIG_FILE="${HOME}/.config/hypr/edit_here/source/appearance.lua"
 readonly STATE_FILE="${HOME}/.config/dusky/settings/opacity_blur"
 
 # Mako Targets
@@ -26,82 +29,75 @@ readonly ROFI_GENERATED="${HOME}/.config/matugen/generated/rofi-colors.rasi"
 readonly WAYBAR_DIR="${HOME}/.config/waybar"
 
 # Visual Constants
-readonly OP_ACTIVE_ON="0.8"
-readonly OP_INACTIVE_ON="0.6"
+readonly OP_ACTIVE_ON="0.85"
+readonly OP_INACTIVE_ON="0.85"
+readonly OP_MAXIMIZED_ON="0.45"
+
 readonly OP_ACTIVE_OFF="1.0"
 readonly OP_INACTIVE_OFF="1.0"
+readonly OP_MAXIMIZED_OFF="1.0"
 
-# UI Component Alpha Constants (Hex)
-# When Blur is ON, UI components drop to 66 (40% transparent, for maximum glass effect).
-# When Blur is OFF, UI components are ff (100% opaque).
 readonly UI_ALPHA_ON="66"
 readonly UI_ALPHA_OFF="ff"
 
 # --- Global State for Signal Trapping ---
-declare -a TEMP_FILES_TO_CLEAN=()
+declare -g CURRENT_TEMP_FILE=""
 
-# --- Helper Functions ---
-
+# --- Cascading Signal Interception ---
 cleanup_temps() {
-    for tmp in "${TEMP_FILES_TO_CLEAN[@]}"; do
-        [[ -f "$tmp" ]] && rm -f "$tmp"
-    done
+    # Check and remove only the currently active temp file if execution aborts
+    if [[ -n "${CURRENT_TEMP_FILE}" && -f "${CURRENT_TEMP_FILE}" ]]; then
+        rm -f "${CURRENT_TEMP_FILE}"
+    fi
 }
 
-# Cascading Signal Interception
 trap cleanup_temps EXIT
-trap 'cleanup_temps; exit 129' HUP
-trap 'cleanup_temps; exit 130' INT
-trap 'cleanup_temps; exit 143' TERM
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 die() {
     local message="$1"
     printf 'Error: %s\n' "$message" >&2
-    if command -v notify-send &>/dev/null; then
-        notify-send "Hyprland Error" "$message" 2>/dev/null || true
-    fi
+    command -v notify-send &>/dev/null && notify-send -u critical "Hyprland Error" "$message" 2>/dev/null || true
     exit 1
 }
 
 notify() {
-    local message="$1"
-    if command -v notify-send &>/dev/null; then
-        notify-send \
-            -h string:x-canonical-private-synchronous:hypr-visuals \
-            -t 1500 \
-            "Hyprland" "$message" 2>/dev/null || true
-    fi
+    command -v notify-send &>/dev/null && notify-send \
+        -h string:x-canonical-private-synchronous:hypr-visuals \
+        -t 1500 "Hyprland" "$1" 2>/dev/null || true
 }
 
-# --- The Architecture: Atomic, Symlink-Safe Text Processing ---
+# --- The Architecture: Stream-Optimized Atomic I/O ---
 atomic_sed() {
     local target_file="$1"
-    shift # Remaining arguments are sed parameters
+    shift 
 
     local actual_target="${target_file}"
-    if [[ -L "${target_file}" ]]; then
-        actual_target=$(realpath -m "${target_file}")
-    fi
-
-    [[ -w "${actual_target}" ]] || return 0
-
-    local target_dir="${actual_target%/*}"
-    local temp_file
-    temp_file=$(mktemp "${target_dir}/.hypr_toggle.XXXXXX") || die "Failed to allocate temp file."
+    [[ -L "${target_file}" ]] && actual_target=$(realpath -m "${target_file}")
     
-    TEMP_FILES_TO_CLEAN+=("${temp_file}")
+    # Pure Bash dirname emulation to ensure parent directory is writable
+    local parent_dir="."
+    [[ "${actual_target}" == */* ]] && parent_dir="${actual_target%/*}"
+    [[ -w "${actual_target}" && -w "${parent_dir}" ]] || return 0
 
-    command cp -pf "${actual_target}" "${temp_file}"
+    CURRENT_TEMP_FILE=$(mktemp "${parent_dir}/.hypr_toggle.XXXXXX") || die "Failed to allocate temp file."
 
-    if ! sed -i "$@" "${temp_file}" 2>&1; then
+    # Process stream directly to temp file
+    if ! sed "$@" "${actual_target}" > "${CURRENT_TEMP_FILE}"; then
         die "Failed to process sed commands on ${actual_target}"
     fi
 
-    sync "${temp_file}" || true
+    # Clone exact permissions instantly
+    chmod --reference="${actual_target}" "${CURRENT_TEMP_FILE}" 2>/dev/null || true
 
-    if ! command mv -f "${temp_file}" "${actual_target}"; then
+    # Atomic swap (instant, uninterruptible rename syscall)
+    if ! command mv -f "${CURRENT_TEMP_FILE}" "${actual_target}"; then
         die "Atomic swap failed for ${actual_target}"
     fi
+    
+    CURRENT_TEMP_FILE=""
 }
 
 atomic_awk() {
@@ -110,99 +106,86 @@ atomic_awk() {
     local target_state="$3"
 
     local actual_target="${target_file}"
-    if [[ -L "${target_file}" ]]; then
-        actual_target=$(realpath -m "${target_file}")
-    fi
-
-    [[ -w "${actual_target}" ]] || return 0
-
-    local target_dir="${actual_target%/*}"
-    local temp_file
-    temp_file=$(mktemp "${target_dir}/.hypr_toggle.XXXXXX") || die "Failed to allocate temp file."
+    [[ -L "${target_file}" ]] && actual_target=$(realpath -m "${target_file}")
     
-    TEMP_FILES_TO_CLEAN+=("${temp_file}")
+    local parent_dir="."
+    [[ "${actual_target}" == */* ]] && parent_dir="${actual_target%/*}"
+    [[ -w "${actual_target}" && -w "${parent_dir}" ]] || return 0
 
-    command cp -pf "${actual_target}" "${temp_file}"
+    CURRENT_TEMP_FILE=$(mktemp "${parent_dir}/.hypr_toggle.XXXXXX") || die "Failed to allocate temp file."
 
-    if ! awk -v state="$target_state" "$awk_script" "${actual_target}" > "${temp_file}"; then
+    if ! awk -v state="$target_state" "$awk_script" "${actual_target}" > "${CURRENT_TEMP_FILE}"; then
         die "Failed to process awk script on ${actual_target}"
     fi
 
-    sync "${temp_file}" || true
+    chmod --reference="${actual_target}" "${CURRENT_TEMP_FILE}" 2>/dev/null || true
 
-    if ! command mv -f "${temp_file}" "${actual_target}"; then
+    if ! command mv -f "${CURRENT_TEMP_FILE}" "${actual_target}"; then
         die "Atomic swap failed for ${actual_target}"
     fi
+    
+    CURRENT_TEMP_FILE=""
 }
 
-# Robustly detect current blur state from config file using awk
+# Pure Bash Regex Parser (0 external binaries spawned, maximum speed)
 get_current_blur_state() {
-    local state
-    local actual_config="${CONFIG_FILE}"
-    [[ -L "${CONFIG_FILE}" ]] && actual_config=$(realpath -m "${CONFIG_FILE}")
+    local state="off"
+    local in_block=0
+    local line
 
-    state=$(awk '
-        /^[[:space:]]*blur[[:space:]]*\{/ { in_block = 1; next }
-        in_block && /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*true/  { found = "on" }
-        in_block && /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*false/ { found = "off" }
-        in_block && /\}/  { in_block = 0 }
-        END { print (found ? found : "off") }
-    ' "$actual_config" 2>/dev/null) || state="off"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Trim leading whitespace natively
+        line="${line#"${line%%[![:space:]]*}"}"
+        
+        # Fast comment bypass
+        [[ "$line" == --* ]] && continue
+
+        if (( in_block == 0 )); then
+            # Bash regex match for block entry
+            [[ "$line" =~ ^blur[[:space:]]*=[[:space:]]*\{ ]] && in_block=1
+        else
+            if [[ "$line" =~ ^enabled[[:space:]]*=[[:space:]]*true ]]; then
+                state="on"
+                break
+            elif [[ "$line" =~ ^enabled[[:space:]]*=[[:space:]]*false ]]; then
+                state="off"
+                break
+            elif [[ "$line" == *\}* ]]; then
+                break
+            fi
+        fi
+    done < "$CONFIG_FILE" 2>/dev/null || true
+
     printf '%s' "$state"
 }
 
-show_help() {
-    cat <<EOF
-Usage: ${0##*/} [OPTION]
-
-Control Hyprland visual effects (blur, shadow, opacity).
-Includes atomic, symlink-safe configuration writes for UI targets.
-
-Options:
-  on, enable, 1, true     Enable blur, shadow, and transparency
-  off, disable, 0, false  Disable blur/shadow, set opacity to 1.0
-  toggle                  Toggle based on current state (default)
-  -h, --help              Show help
-EOF
-}
-
 # --- Pre-flight Checks ---
-
 [[ -e "$CONFIG_FILE" ]] || die "Config file not found: $CONFIG_FILE"
-command -v hyprctl &>/dev/null || die "hyprctl not found in PATH."
 
 # --- Parse Arguments ---
-
 TARGET_STATE=""
 case "${1:-toggle}" in
     on|ON|enable|1|true|yes) TARGET_STATE="on" ;;
     off|OFF|disable|0|false|no) TARGET_STATE="off" ;;
     toggle|"")
-        if [[ "$(get_current_blur_state)" == "on" ]]; then
-            TARGET_STATE="off"
-        else
-            TARGET_STATE="on"
-        fi
+        [[ "$(get_current_blur_state)" == "on" ]] && TARGET_STATE="off" || TARGET_STATE="on"
         ;;
     -h|--help|help)
-        show_help
+        printf "Usage: %s [on|off|toggle]\n" "${0##*/}"
         exit 0
         ;;
     *)
-        printf 'Unknown argument: %s\n\n' "$1" >&2
-        show_help >&2
+        printf 'Unknown argument: %s\n' "$1" >&2
         exit 1
         ;;
 esac
 
-# --- Define Values Based on Target State ---
-
-declare NEW_ENABLED NEW_ACTIVE NEW_INACTIVE NEW_UI_ALPHA NOTIFY_MSG STATE_STRING
-
+# --- Define Values ---
 if [[ "$TARGET_STATE" == "on" ]]; then
     NEW_ENABLED="true"
     NEW_ACTIVE="$OP_ACTIVE_ON"
     NEW_INACTIVE="$OP_INACTIVE_ON"
+    NEW_MAXIMIZED="$OP_MAXIMIZED_ON"
     NEW_UI_ALPHA="$UI_ALPHA_ON"
     NOTIFY_MSG="Visuals: Max (Blur/Shadow ON)"
     STATE_STRING="True"
@@ -210,47 +193,35 @@ else
     NEW_ENABLED="false"
     NEW_ACTIVE="$OP_ACTIVE_OFF"
     NEW_INACTIVE="$OP_INACTIVE_OFF"
+    NEW_MAXIMIZED="$OP_MAXIMIZED_OFF"
     NEW_UI_ALPHA="$UI_ALPHA_OFF"
     NOTIFY_MSG="Visuals: Performance (Blur/Shadow OFF)"
     STATE_STRING="False"
 fi
 
 # --- Update State File ---
-
-mkdir -p "$(dirname "$STATE_FILE")"
+mkdir -p "${STATE_FILE%/*}"
 printf '%s' "$STATE_STRING" > "$STATE_FILE"
 
-# --- Update Config Files (Using Atomic Pipeline) ---
+# --- Update Config Files ---
 
-# 1. Update Hyprland Config
+# 1. Hyprland Lua Config (Engineered to perfectly span inner tables and target values)
 atomic_sed "$CONFIG_FILE" \
-    -e "/^[[:space:]]*blur[[:space:]]*{/,/}/ s/\(enabled[[:space:]]*=[[:space:]]*\)[a-z][a-z]*/\1${NEW_ENABLED}/" \
-    -e "/^[[:space:]]*shadow[[:space:]]*{/,/}/ s/\(enabled[[:space:]]*=[[:space:]]*\)[a-z][a-z]*/\1${NEW_ENABLED}/" \
+    -e "/^[[:space:]]*blur[[:space:]]*=[[:space:]]*{/,/^[[:space:]]*}/ s/^\([[:space:]]*enabled[[:space:]]*=[[:space:]]*\)[a-z][a-z]*/\1${NEW_ENABLED}/" \
+    -e "/^[[:space:]]*shadow[[:space:]]*=[[:space:]]*{/,/^[[:space:]]*}/ s/^\([[:space:]]*enabled[[:space:]]*=[[:space:]]*\)[a-z][a-z]*/\1${NEW_ENABLED}/" \
     -e "s/^\([[:space:]]*active_opacity[[:space:]]*=[[:space:]]*\)[0-9][0-9.]*/\1${NEW_ACTIVE}/" \
-    -e "s/^\([[:space:]]*inactive_opacity[[:space:]]*=[[:space:]]*\)[0-9][0-9.]*/\1${NEW_INACTIVE}/"
+    -e "s/^\([[:space:]]*inactive_opacity[[:space:]]*=[[:space:]]*\)[0-9][0-9.]*/\1${NEW_INACTIVE}/" \
+    -e "/name[[:space:]]*=[[:space:]]*\"single_window_style\"/,/^[[:space:]]*})/ s/^\([[:space:]]*opacity[[:space:]]*=[[:space:]]*\)[0-9.]*/\1${NEW_ACTIVE}/" \
+    -e "/name[[:space:]]*=[[:space:]]*\"maximized_window_style\"/,/^[[:space:]]*})/ s/^\([[:space:]]*opacity[[:space:]]*=[[:space:]]*\)[0-9.]*/\1${NEW_MAXIMIZED}/"
 
-
-# 2. Update Dynamic UI Targets
-
-# --- Mako ---
-if [[ -w "$MAKO_TEMPLATE" ]]; then
-    atomic_sed "$MAKO_TEMPLATE" "s/^\([[:space:]]*background-color={{[^}]*}}\)[0-9a-fA-F]\{2\}/\1${NEW_UI_ALPHA}/"
-fi
-if [[ -w "$MAKO_GENERATED" ]]; then
-    atomic_sed "$MAKO_GENERATED" "s/^\([[:space:]]*background-color=#[0-9a-fA-F]\{6\}\)[0-9a-fA-F]\{2\}/\1${NEW_UI_ALPHA}/"
-fi
-
-# --- Rofi ---
-if [[ -w "$ROFI_TEMPLATE" ]]; then
-    atomic_sed "$ROFI_TEMPLATE" "s/^\([[:space:]]*surface[[:space:]]*:[[:space:]]*{{[^}]*}}\)[0-9a-fA-F]\{2\};/\1${NEW_UI_ALPHA};/"
-fi
-if [[ -w "$ROFI_GENERATED" ]]; then
-    atomic_sed "$ROFI_GENERATED" "s/^\([[:space:]]*surface[[:space:]]*:[[:space:]]*#[0-9a-fA-F]\{6\}\)[0-9a-fA-F]\{2\};/\1${NEW_UI_ALPHA};/"
-fi
+# 2. Dynamic UI Targets
+[[ -w "$MAKO_TEMPLATE" ]] && atomic_sed "$MAKO_TEMPLATE" "s/^\([[:space:]]*background-color={{[^}]*}}\)[0-9a-fA-F]\{2\}/\1${NEW_UI_ALPHA}/"
+[[ -w "$MAKO_GENERATED" ]] && atomic_sed "$MAKO_GENERATED" "s/^\([[:space:]]*background-color=#[0-9a-fA-F]\{6\}\)[0-9a-fA-F]\{2\}/\1${NEW_UI_ALPHA}/"
+[[ -w "$ROFI_TEMPLATE" ]] && atomic_sed "$ROFI_TEMPLATE" "s/^\([[:space:]]*surface[[:space:]]*:[[:space:]]*{{[^}]*}}\)[0-9a-fA-F]\{2\};/\1${NEW_UI_ALPHA};/"
+[[ -w "$ROFI_GENERATED" ]] && atomic_sed "$ROFI_GENERATED" "s/^\([[:space:]]*surface[[:space:]]*:[[:space:]]*#[0-9a-fA-F]\{6\}\)[0-9a-fA-F]\{2\};/\1${NEW_UI_ALPHA};/"
 
 # --- Waybar Recursive Engine ---
 if [[ -d "$WAYBAR_DIR" ]]; then
-    # Awk state-machine to auto-migrate legacy strings to structural markers and toggle cleanly.
     read -r -d '' AWK_WAYBAR_SCRIPT << 'EOF' || true
         /Remove this line to flip the master switch to OPAQUE/ {
             count++
@@ -272,46 +243,28 @@ if [[ -d "$WAYBAR_DIR" ]]; then
         { print }
 EOF
 
-    # find -type f avoids processing root symlinks twice by isolating the actual structural files
-    while IFS= read -r -d '' style_file; do
+    # Leverages Bash 5 '**' globstar, entirely eliminating the external 'find' binary
+    for style_file in "$WAYBAR_DIR"/**/style.css; do
+        # Evaluates strictly for regular files but correctly resolves symlinks for users using GNU Stow
+        [[ -f "$style_file" ]] || continue
         atomic_awk "$style_file" "$AWK_WAYBAR_SCRIPT" "$TARGET_STATE"
-    done < <(find "$WAYBAR_DIR" -type f -name "style.css" -print0 2>/dev/null)
+    done
 fi
 
-
-# --- Apply Changes at Runtime ---
-
-declare -a HYPR_CMDS=(
-    "decoration:blur:enabled ${NEW_ENABLED}"
-    "decoration:shadow:enabled ${NEW_ENABLED}"
-    "decoration:active_opacity ${NEW_ACTIVE}"
-    "decoration:inactive_opacity ${NEW_INACTIVE}"
-)
-
-hypr_errors=0
-for cmd in "${HYPR_CMDS[@]}"; do
-    # shellcheck disable=SC2086
-    if ! hyprctl keyword $cmd &>/dev/null; then
-        ((hypr_errors++)) || true
+# --- Apply Changes at Runtime (Single Batch IPC) ---
+if command -v hyprctl &>/dev/null; then
+    HYPR_BATCH_CMD="keyword decoration:blur:enabled ${NEW_ENABLED}; keyword decoration:shadow:enabled ${NEW_ENABLED}; keyword decoration:active_opacity ${NEW_ACTIVE}; keyword decoration:inactive_opacity ${NEW_INACTIVE}"
+    
+    if ! hyprctl --batch "$HYPR_BATCH_CMD" &>/dev/null; then
+        printf 'Warning: hyprctl batch command failed. Is Hyprland running?\n' >&2
     fi
-done
-
-if ((hypr_errors > 0)); then
-    printf 'Warning: %d hyprctl command(s) failed. Is Hyprland running?\n' "$hypr_errors" >&2
 fi
 
 # Reload dynamic daemons
-if command -v makoctl &>/dev/null; then
-    makoctl reload &>/dev/null || printf 'Warning: makoctl reload failed.\n' >&2
-fi
-
-# Trigger Waybar hot-reload to apply CSS changes instantaneously
-if command -v pkill &>/dev/null; then
-    pkill -SIGUSR2 waybar || true
-fi
+command -v makoctl &>/dev/null && { makoctl reload &>/dev/null || true; }
+command -v pkill &>/dev/null && { pkill -SIGUSR2 waybar || true; }
 
 # --- User Feedback ---
-
 notify "$NOTIFY_MSG"
 
 exit 0

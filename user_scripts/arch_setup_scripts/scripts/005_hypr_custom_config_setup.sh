@@ -798,7 +798,8 @@ hl.window_rule({
     -- "override" makes it absolute instead of multiplicative with other rules
     -- your global active_opacity and inactive_opacity are both 0.85
     -- using override here so it doesn't compound with the global value
-    opacity       = "0.85 override 0.85 override 1.0 override",
+    -- opacity       = "0.85 override 0.85 override 1.0 override",
+    opacity       = 0.85,
 
     -- BLUR
     -- false = keep blur enabled (matches your global blur.enabled = true)
