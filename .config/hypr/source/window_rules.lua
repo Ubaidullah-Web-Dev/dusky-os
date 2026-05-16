@@ -760,10 +760,10 @@ hl.window_rule({
     center = true
 })
 
---- wizard dusky_monitor.sh script ---
+--- monitor_wizard.py script ---
 hl.window_rule({
-    name = "dusky_monitor.sh",
-    match = { class = "^(dusky_monitor.sh)$" },
+    name = "monitor_wizard.py",
+    match = { class = "^(monitor_wizard.py)$" },
     float = true,
     size = {802, 469},
     center = true
