@@ -305,7 +305,7 @@ declare -ra UPDATE_SEQUENCE=(
 #    "U | 440_config_bat_notify.sh --default"
 #    "U | 450_generate_colorfiles_for_current_wallpaer.sh"
     "U | 455_hyprctl_reload.sh"
-    "U | 460_switch_clipboard.sh --terminal --force"
+#    "U | 460_switch_clipboard.sh --terminal --force" no longer required!
 #    "S | 465_sddm_setup.sh"
 #    "U | 470_vesktop_matugen.sh"
     "S | 473_add_user_to_group.sh --auto"

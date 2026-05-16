@@ -138,7 +138,7 @@ INSTALL_SEQUENCE=(
 #    "U | 435_key_sound_wayclick_setup.sh --setup"
     "U | 440_config_bat_notify.sh --default"
     "U | 455_hyprctl_reload.sh"
-    "U | 460_switch_clipboard.sh --terminal"
+#    "U | 460_switch_clipboard.sh --terminal --force" no longer required!
 #    "S | 465_sddm_setup.sh --auto"
 #    "U | 470_vesktop_matugen.sh --auto"
     "S | 473_add_user_to_group.sh --auto"

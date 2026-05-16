@@ -1417,27 +1417,6 @@ pages:
           type: exec
           command: kitty --class 390_clipboard_persistance.sh --hold sh -c "$HOME/user_scripts/arch_setup_scripts/scripts/390_clipboard_persistance.sh --disk"
           terminal: false
-          
-    - type: selection
-      properties:
-        title: Clipboard Style
-        icon: edit-paste-symbolic
-        key: clipboard_state
-        options:
-        - Terminal
-        - Rofi
-        options_map:
-          "False": "Rofi"
-          "True": "Terminal"
-      on_change:
-        Terminal:
-          type: exec
-          command: $HOME/user_scripts/arch_setup_scripts/scripts/460_switch_clipboard.sh --terminal
-          terminal: false
-        Rofi:
-          type: exec
-          command: $HOME/user_scripts/arch_setup_scripts/scripts/460_switch_clipboard.sh --rofi
-          terminal: false
   - type: section
     properties:
       title: Memory & Optimization
