@@ -1096,12 +1096,12 @@ pages:
             button_text: "-"
             on_press:
               type: exec
-              command: $HOME/user_scripts/hypr/adjust_scale.py -
+              command: $HOME/user_scripts/hypr/monitor/adjust_scale.py -
           - icon: list-add-symbolic
             button_text: "+"
             on_press:
               type: exec
-              command: $HOME/user_scripts/hypr/adjust_scale.py +
+              command: $HOME/user_scripts/hypr/monitor/adjust_scale.py +
 
 - id: audio
   title: Audio

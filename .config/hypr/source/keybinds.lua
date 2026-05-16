@@ -263,13 +263,13 @@ hl.bind(
 
 hl.bind(
     "SUPER + F",
-    hl.dsp.exec_cmd(dusky_scripts .. "hypr/adjust_scale.py +"),
+    hl.dsp.exec_cmd(dusky_scripts .. "hypr/monitor/adjust_scale.py +"),
     { description = "Scale Up", locked = true, repeating = true }
 )
 
 hl.bind(
     "SUPER + SHIFT + F",
-    hl.dsp.exec_cmd(dusky_scripts .. "hypr/adjust_scale.py -"),
+    hl.dsp.exec_cmd(dusky_scripts .. "hypr/monitor/adjust_scale.py -"),
     { description = "Scale Down", locked = true, repeating = true }
 )
 
