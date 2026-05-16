@@ -1083,8 +1083,8 @@ pages:
         button_text: "Open"
       on_press:
         type: exec
-        command: kitty --class dusky_monitor.sh --hold
-          sh -c "$HOME/user_scripts/hypr/dusky_monitor.sh"
+        command: kitty  --app-id=monitor_wizard.py --hold
+          sh -c "$HOME/user_scripts/hypr/monitor/monitor_wizard.py"
         terminal: false
     - type: button
       properties:
@@ -1811,7 +1811,7 @@ pages:
                     style: suggested
                     on_press:
                       type: exec
-                      command: kitty --class dusky_monitor.sh --hold sh -c "$HOME/user_scripts/hypr/dusky_monitor.sh"
+                      command: kitty --app-id=monitor_wizard.py --hold sh -c "$HOME/user_scripts/hypr/monitor/monitor_wizard.py"
             - type: button
               properties:
                 title: Window Rules
