@@ -989,10 +989,25 @@ main() {
                 log "RUN" "[${current_index}/${total_scripts}] Executing: ${display_name} (${mode})"
             fi
 
+            local -a interpreter_cmd=()
+            local first_line=""
+            local shebang_regex='^#![[:space:]]*(.+)'
+
+
+            read -r first_line < "$script_path" || true
+
+            if [[ "$first_line" =~ $shebang_regex ]]; then
+                read -r -a interpreter_cmd <<< "${BASH_REMATCH[1]}"
+            elif [[ "$script_path" == *.py ]]; then
+                interpreter_cmd=("python3")
+            else
+                interpreter_cmd=("bash")
+            fi
+
             if [[ "$mode" == "S" ]]; then
-                ( exec 9>&-; cd "$(dirname "$script_path")" && sudo bash "$(basename "$script_path")" "${args[@]}" ) || result=$?
+                ( exec 9>&-; cd "$(dirname "$script_path")" && sudo "${interpreter_cmd[@]}" "$(basename "$script_path")" "${args[@]}" ) || result=$?
             elif [[ "$mode" == "U" ]]; then
-                ( exec 9>&-; cd "$(dirname "$script_path")" && bash "$(basename "$script_path")" "${args[@]}" ) || result=$?
+                ( exec 9>&-; cd "$(dirname "$script_path")" && "${interpreter_cmd[@]}" "$(basename "$script_path")" "${args[@]}" ) || result=$?
             else
                 log "ERROR" "Invalid mode '$mode' in config. Use 'S' or 'U'."
                 exit 1
