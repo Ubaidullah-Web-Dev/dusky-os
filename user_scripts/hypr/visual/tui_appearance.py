@@ -1400,10 +1400,13 @@ SCHEMA = {
             label="Single Opacity Override",
             key="opacity",
             scope="window_rule/single_window_style",
-            type_="string",
+            type_="float",
             default=0.85,
+            min_val=0.0,
+            max_val=1.0,
+            step=0.05,
             group="Single",
-            extended_help="**Single Opacity Override**\n\nAbsolute opacity rules applied to a single window. Format: '[active] override [inactive] override [fullscreen] override'."
+            extended_help="**Single Opacity Override**\n\nAbsolute opacity rules applied to a single window."
         ),
         ConfigItem(
             label="Single Disable Blur",
