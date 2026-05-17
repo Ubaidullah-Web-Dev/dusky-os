@@ -1,150 +1,89 @@
 #!/usr/bin/env bash
+
 # ==============================================================================
-#  ARCH LINUX / HYPRLAND / UWSM — SURGICAL ROTATION UTILITY (v4)
-#  Description: Context-aware rotation utilizing Hybrid State-Config parsing.
-#  Guarantees zero-drift for complex modelines (VRR, bitdepth, custom Hz).
+#  HYPRLAND V0.55+ UNIVERSAL DISPLAY & TOUCH ROTATION UTILITY
+#  Description: Context-aware rotation utilizing Hyprland's native Lua evaluator.
+#               Automatically maps global touch inputs to the focused monitor.
 # ==============================================================================
 
-# 1. Strict Mode & Safety
+# 1. Strict Mode & Environment Setup
 # ------------------------------------------------------------------------------
 set -euo pipefail
-IFS=$'\n\t'
 
-readonly C_RED=$'\e[31m'
-readonly C_GREEN=$'\e[32m'
-readonly C_YELLOW=$'\e[33m'
-readonly C_BLUE=$'\e[34m'
-readonly C_BOLD=$'\e[1m'
-readonly C_RESET=$'\e[0m'
+# Ensure XDG_RUNTIME_DIR is set for safe, user-specific lockfiles
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/hypr_rotate_$(id -u)}"
+mkdir -p "$RUNTIME_DIR"
+LOCKFILE="$RUNTIME_DIR/hypr_rotate.lock"
 
-# 2. Config Paths (Strictly ordered by priority for modular setups)
+# 2. Dependency Checks
 # ------------------------------------------------------------------------------
-readonly CONFIG_FILES=(
-    "${XDG_CONFIG_HOME:-$HOME/.config}/hypr/edit_here/source/monitors.conf"
-    "${XDG_CONFIG_HOME:-$HOME/.config}/hypr/source/monitors.conf"
-)
+command -v jq >/dev/null 2>&1 || { echo "Error: 'jq' is required but not installed."; exit 1; }
+command -v hyprctl >/dev/null 2>&1 || { echo "Error: 'hyprctl' is required but not installed."; exit 1; }
 
-# 3. Exit Handling
+# 3. Usage & Argument Parsing
 # ------------------------------------------------------------------------------
-cleanup_trap() {
-    local exit_code=$?
-    if [[ $exit_code -ne 0 ]]; then
-        printf '%s[ERROR]%s Script aborted unexpectedly (Exit Code: %d).\n' \
-            "$C_RED" "$C_RESET" "$exit_code" >&2
-    fi
-}
-trap cleanup_trap EXIT
-
-die() {
-    trap - EXIT
-    printf '%s[ERROR]%s %s\n' "$C_RED" "$C_RESET" "$1" >&2
+print_usage() {
+    echo "Usage: ${0##*/} [+90|-90]"
+    echo "  +90 : Rotate 90 degrees clockwise"
+    echo "  -90 : Rotate 90 degrees counter-clockwise"
     exit 1
 }
 
-# 4. Privilege & Dependency Checks
-# ------------------------------------------------------------------------------
-command -v jq &> /dev/null || die "'jq' is missing. Install: sudo pacman -S jq"
-command -v hyprctl &> /dev/null || die "'hyprctl' is missing."
-[[ $EUID -ne 0 ]] || die "Root detected. Run as standard user for socket access."
-
-# 5. Argument Parsing
-# ------------------------------------------------------------------------------
 if [[ $# -ne 1 ]]; then
-    trap - EXIT
-    printf '%s[INFO]%s Usage: %s [+90|-90]\n' "$C_YELLOW" "$C_RESET" "${0##*/}" >&2
-    exit 1
+    print_usage
 fi
 
 DIRECTION=0
 case "$1" in
-    '+90') DIRECTION=1 ;;
-    '-90') DIRECTION=-1 ;;
-    *) die "Invalid argument '$1'. Use +90 or -90." ;;
+    "+90") DIRECTION=1 ;;
+    "-90") DIRECTION=-1 ;;
+    *) print_usage ;;
 esac
 
-# 6. IPC State Extraction (Source of Truth for Current State)
+# 4. Debounce (Prevent 180-degree jumps on rapid/held keybinds)
 # ------------------------------------------------------------------------------
-MON_STATE=$(hyprctl monitors -j) || die "Failed to query Hyprland IPC."
+NOW=$(date +%s%3N)
+LAST_RUN=$(cat "$LOCKFILE" 2>/dev/null || echo "0")
 
-# Extract focused monitor's Name, Transform, and core fallback geometry.
-# Override IFS locally — the global IFS=$'\n\t' excludes spaces from splitting.
-IFS=' ' read -r NAME CURRENT_TRANSFORM FALLBACK_WIDTH FALLBACK_HEIGHT FALLBACK_REFRESH FALLBACK_X FALLBACK_Y FALLBACK_SCALE < <(
-    jq -r '([.[] | select(.focused)][0] // .[0]) | "\(.name) \(.transform) \(.width) \(.height) \(.refreshRate) \(.x) \(.y) \(.scale)"' <<< "$MON_STATE"
-) || die "Failed to parse monitor state."
+if (( NOW - LAST_RUN < 500 )); then
+    exit 0 # Exit silently if triggered within 500ms
+fi
+echo "$NOW" > "$LOCKFILE"
 
-[[ -n $NAME && $NAME != 'null' ]] || die "No active monitors detected."
-[[ $CURRENT_TRANSFORM =~ ^[0-3]$ ]] || die "Unsupported transform: '${CURRENT_TRANSFORM}'. Only standard (0-3) supported."
+# 5. IPC State Extraction (Source of Truth)
+# ------------------------------------------------------------------------------
+MON_STATE=$(hyprctl monitors -j 2>/dev/null) || { echo "Error: Failed to query Hyprland IPC."; exit 1; }
 
-# Calculate new transform safely
+# Grab focused monitor, fallback to the first monitor if none are focused
+MONITOR_JSON=$(echo "$MON_STATE" | jq -c '.[] | select(.focused==true)')
+if [[ -z "$MONITOR_JSON" ]]; then
+    MONITOR_JSON=$(echo "$MON_STATE" | jq -c '.[0]')
+fi
+
+[[ -z "$MONITOR_JSON" || "$MONITOR_JSON" == "null" ]] && { echo "Error: No monitors detected."; exit 1; }
+
+# Extract core hardware values
+MONITOR=$(echo "$MONITOR_JSON" | jq -r '.name')
+SCALE=$(echo "$MONITOR_JSON" | jq -r '.scale')
+X=$(echo "$MONITOR_JSON" | jq -r '.x')
+Y=$(echo "$MONITOR_JSON" | jq -r '.y')
+CURRENT_TRANSFORM=$(echo "$MONITOR_JSON" | jq -r '.transform')
+
+# Calculate new transform safely (0-3 range)
 NEW_TRANSFORM=$(( (CURRENT_TRANSFORM + DIRECTION + 4) % 4 ))
 
-# 7. Surgical Config Parsing (Source of Truth for Parameters)
+# 6. Execution via Lua Evaluator (v0.55+ Native)
 # ------------------------------------------------------------------------------
-BASE_RULE=""
-RULE_SOURCE="IPC Fallback"
+# We use 'preferred' resolution to prevent swapped-axis bugs on non-standard aspect ratios
+hyprctl eval "hl.monitor({ output = \"$MONITOR\", mode = \"preferred\", position = \"${X}x${Y}\", scale = $SCALE, transform = $NEW_TRANSFORM })" >/dev/null
 
-for conf in "${CONFIG_FILES[@]}"; do
-    if [[ -f "$conf" ]]; then
-        # Use awk to find the last line defining this monitor (last-definition-wins,
-        # matching Hyprland's own config semantics)
-        matched_line=$(awk -v mon="$NAME" '
-            $0 ~ "^[[:space:]]*monitor[[:space:]]*=[[:space:]]*" mon "[[:space:]]*," {
-                line = $0
-            }
-            END { if (line != "") print line }
-        ' "$conf")
+# Apply transform globally to all touch devices and map them to the active monitor
+hyprctl eval "hl.config({ input = { touchdevice = { transform = $NEW_TRANSFORM, output = \"$MONITOR\" } } })" >/dev/null
 
-        if [[ -n "$matched_line" ]]; then
-            # Strip inline comments
-            matched_line="${matched_line%%#*}"
-
-            # Bash native regex to extract everything after the equals sign
-            if [[ "$matched_line" =~ ^[[:space:]]*monitor[[:space:]]*=[[:space:]]*(.*)$ ]]; then
-                BASE_RULE="${BASH_REMATCH[1]}"
-                # Strip any resulting trailing whitespace efficiently
-                BASE_RULE="${BASE_RULE%"${BASE_RULE##*[![:space:]]}"}"
-                RULE_SOURCE="$conf"
-                break
-            fi
-        fi
-    fi
-done
-
-# 8. Payload Assembly
+# 7. Notification (Optional, fails gracefully if notify-send is missing)
 # ------------------------------------------------------------------------------
-if [[ -n "$BASE_RULE" ]]; then
-    # STRATEGY A: Config Injection
-    # Strip any existing 'transform, X' pairs surgically using sed to prevent duplicates
-    CLEAN_RULE=$(sed -E 's/,[[:space:]]*transform[[:space:]]*,[[:space:]]*[0-7]//g' <<< "$BASE_RULE")
-
-    # Append the new transform to the pristine config string
-    FINAL_PAYLOAD="${CLEAN_RULE}, transform, ${NEW_TRANSFORM}"
-else
-    # STRATEGY B: IPC Reconstruction (Failsafe for transient/hot-plugged displays)
-    # Rebuild the string using exact values, avoiding 'preferred, auto' completely
-    FINAL_PAYLOAD="${NAME}, ${FALLBACK_WIDTH}x${FALLBACK_HEIGHT}@${FALLBACK_REFRESH}, ${FALLBACK_X}x${FALLBACK_Y}, ${FALLBACK_SCALE}, transform, ${NEW_TRANSFORM}"
+if command -v notify-send >/dev/null 2>&1; then
+    notify-send -a "Hyprland" -t 1500 "Display Rotated" "Monitor: $MONITOR\nTransform: $NEW_TRANSFORM" -h string:x-canonical-private-synchronous:display-rotate
 fi
 
-# 9. Execution
-# ------------------------------------------------------------------------------
-printf '%s[INFO]%s Target: %s%s%s\n' "$C_BLUE" "$C_RESET" "$C_BOLD" "$NAME" "$C_RESET"
-printf '%s[INFO]%s Source: %s\n' "$C_BLUE" "$C_RESET" "$RULE_SOURCE"
-printf '%s[INFO]%s Payload: %s\n' "$C_YELLOW" "$C_RESET" "$FINAL_PAYLOAD"
-
-if hyprctl keyword monitor "$FINAL_PAYLOAD" > /dev/null; then
-# for touchscreen
-    hyprctl keyword input:touchdevice:transform "$NEW_TRANSFORM" > /dev/null
-    
-    printf '%s[SUCCESS]%s Rotation applied: %d -> %d\n' "$C_GREEN" "$C_RESET" "$CURRENT_TRANSFORM" "$NEW_TRANSFORM"
-
-    if command -v notify-send &> /dev/null; then
-        notify-send -a 'System' 'Display Rotated' \
-            "$(printf 'Monitor: %s\nTransform: %d\nSource: %s' "$NAME" "$NEW_TRANSFORM" "${RULE_SOURCE##*/}")" \
-            -h string:x-canonical-private-synchronous:display-rotate
-    fi
-else
-    die "Hyprland rejected the monitor payload."
-fi
-
-trap - EXIT
 exit 0
