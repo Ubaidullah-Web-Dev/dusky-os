@@ -6,6 +6,7 @@
 #              - Safely modifies dotfiles (resolves symlinks before atomic write)
 #              - Surgical AST deletion (no global string replacement bugs)
 #              - Native hl.unbind() generation to prevent zombie source keys
+#              - Smart UI Deduplication (Hides backend unbind shields)
 #              - Complete submap awareness
 #              - True concurrency locking (no race conditions)
 #              - XDG Base Directory Specification compliant
@@ -409,6 +410,7 @@ def filter_out_bind_from_text(text: str, norm_mods: str, norm_key: str, submap: 
     binds = parse_lua_file_content(text, "CUST")
     to_remove = []
     
+    # Identify both binds and unbinds that match the target key profile
     for b in binds:
         if b.norm_mods == norm_mods and b.norm_key == norm_key and b.submap == submap:
             blk_start = _preceding_comment_start(text, b.char_start)
@@ -419,6 +421,7 @@ def filter_out_bind_from_text(text: str, norm_mods: str, norm_key: str, submap: 
 
     if not to_remove: return text
     
+    # Delete from bottom to top to prevent index shifting
     to_remove.sort(reverse=True)
     for start, end in to_remove:
         text = text[:start] + text[end:]
@@ -443,13 +446,21 @@ def format_display(b: Bind) -> str:
     return f'{tag}  {submap_pfx}{BOLD}{ui_key}{RESET} {GREY}│{RESET} {ui_desc}'
 
 def generate_bind_rows(source_binds: list[Bind], custom_binds: list[Bind]) -> tuple[list[str], list[Bind]]:
+    # Track custom overrides, separating active binds from explicit unbinds
+    custom_active = {(b.norm_mods, b.norm_key, b.submap) for b in custom_binds if not b.is_unbind}
     custom_ovr = {(b.norm_mods, b.norm_key, b.submap) for b in custom_binds}
+    
     displayed = []
     
     for b in sorted(custom_binds, key=lambda x: f'{x.submap}|{x.norm_mods}|{x.norm_key}'):
+        # UI Polish: If an [UNB] exists strictly to shield an active [CUST] bind, 
+        # hide the [UNB] from the frontend to prevent confusing the user with duplicates.
+        if b.is_unbind and (b.norm_mods, b.norm_key, b.submap) in custom_active:
+            continue
         displayed.append(b)
         
     for b in sorted(source_binds, key=lambda x: f'{x.submap}|{x.norm_mods}|{x.norm_key}'):
+        # Hide any source bind that is intercepted by the custom file (either overridden or unbound)
         if (b.norm_mods, b.norm_key, b.submap) not in custom_ovr:
             displayed.append(b)
 
@@ -556,7 +567,6 @@ def edit_loop(bind: Optional[Bind], source_binds: list[Bind], custom_binds: list
         elif conflict_src:
             print(f'{YELLOW}CONFLICT (Source){RESET}\n  {conflict_src.raw_call.replace(chr(10)," ")[:80]}')
             print(f'  {DIM}Your custom bind will take precedence.{RESET}')
-            # We don't unset conflict_cust here, we let it proceed to override logic
         else:
             print(f'{GREEN}None{RESET}')
 
@@ -604,8 +614,8 @@ def edit_loop(bind: Optional[Bind], source_binds: list[Bind], custom_binds: list
 
         comment = f'-- [{timestamp}] {origin}'
         
-        # --- [FIX]: Inject exact-case hl.unbind() for source conflicts ---
-        # Hyprland 0.55+ Lua stacks binds. We must explicitly unbind the source 
+        # --- Native hl.unbind() injection for source conflicts ---
+        # Hyprland 0.55+ Lua stacks binds. We explicitly unbind the source 
         # key to prevent both the default and custom actions from firing.
         unbind_prefix = ""
         if conflict_src:
@@ -669,6 +679,7 @@ def delete_flow(bind: Bind) -> bool:
         atomic_write(text, CUSTOM_LUA)
         print(f'\n{GREEN}[SUCCESS]{RESET} Source bind disabled.')
     else:
+        # Deleting a [CUST] bind also intelligently deletes its hidden backend unbind shield, flawlessly restoring defaults.
         new_text = filter_out_bind_from_text(text, bind.norm_mods, bind.norm_key, bind.submap)
         atomic_write(new_text, CUSTOM_LUA)
         if bind.is_unbind:
