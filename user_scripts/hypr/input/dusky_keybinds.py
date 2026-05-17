@@ -4,24 +4,22 @@
 #              - Clean UI: Hides raw Lua syntax on the front page for readability
 #              - Lexically perfect parser (supports [=[ Lua long brackets ]=])
 #              - Safely modifies dotfiles (resolves symlinks before atomic write)
-#              - Surgical AST deletion (no global string replacement bugs)
 #              - Native hl.unbind() generation to prevent zombie source keys
 #              - Smart UI Deduplication (Hides backend unbind shields)
 #              - Complete submap awareness
-#              - True concurrency locking (no race conditions)
 #              - XDG Base Directory Specification compliant
 # ==============================================================================
 
 from __future__ import annotations
 
 import atexit
-import fcntl
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -33,7 +31,7 @@ except ImportError:
     pass
 
 # ──────────────────────────────────────────────────────────────────────────────
-# ANSI Colours
+# ANSI Colours & Formatting
 # ──────────────────────────────────────────────────────────────────────────────
 BLUE         = '\033[0;34m'
 GREEN        = '\033[0;32m'
@@ -54,13 +52,11 @@ XDG_CONFIG_HOME = Path(os.environ.get('XDG_CONFIG_HOME', HOME / '.config'))
 
 SOURCE_LUA = XDG_CONFIG_HOME / 'hypr/source/keybinds.lua'
 CUSTOM_LUA = XDG_CONFIG_HOME / 'hypr/edit_here/source/keybinds.lua'
-LOCK_FILE  = CUSTOM_LUA.parent / '.keybinds.lock'
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Runtime globals & Templates
 # ──────────────────────────────────────────────────────────────────────────────
 VIEW_ONLY = False
-_lock_fh  = None
 _in_alt   = False
 
 EMPTY_TEMPLATE = 'hl.bind("SUPER + ", hl.dsp.exec_cmd(""), { description = "" })'
@@ -72,21 +68,21 @@ EMPTY_TEMPLATE = 'hl.bind("SUPER + ", hl.dsp.exec_cmd(""), { description = "" })
 @dataclass
 class Bind:
     """Represents one parsed hl.bind() or hl.unbind() call."""
-    key_str:     str   # Verbatim key string (resolved)
-    norm_mods:   str   # Sorted, lowercase modifier string
-    norm_key:    str   # Lowercase key name
-    dispatcher:  str   # Second arg (hl.dsp.* or function body)
-    options:     str   # Third arg table or ""
-    description: str   # Extracted description string or ""
-    submap:      str   # Containing submap name or ""
-    raw_call:    str   # Full hl.bind(...) text as found in the file
-    origin:      str   # "SRC" or "CUST"
-    char_start:  int   # Character offset in file text
-    char_end:    int   # Character offset (exclusive) after closing ')'
-    is_unbind:   bool = False # True if this is an explicit hl.unbind() call
+    key_str:     str   
+    norm_mods:   str   
+    norm_key:    str   
+    dispatcher:  str   
+    options:     str   
+    description: str   
+    submap:      str   
+    raw_call:    str   
+    origin:      str   
+    char_start:  int   
+    char_end:    int   
+    is_unbind:   bool = False
 
 # ==============================================================================
-# System & Locking Utilities
+# System Utilities
 # ==============================================================================
 
 def enter_alt_screen() -> None:
@@ -102,14 +98,6 @@ def leave_alt_screen() -> None:
 
 def cleanup() -> None:
     leave_alt_screen()
-    global _lock_fh
-    if _lock_fh is not None:
-        try:
-            fcntl.flock(_lock_fh, fcntl.LOCK_UN)
-            _lock_fh.close()
-        except Exception:
-            pass
-        _lock_fh = None
 
 def die(msg: str) -> None:
     print(f'{RED}[FATAL]{RESET} {msg}', file=sys.stderr)
@@ -117,18 +105,6 @@ def die(msg: str) -> None:
     sys.exit(1)
 
 atexit.register(cleanup)
-
-def acquire_lock() -> None:
-    global _lock_fh
-    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o600)
-        _lock_fh = open(fd, 'a')
-        fcntl.flock(_lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        die(f'Another instance is already running (lock: {LOCK_FILE})')
-    except PermissionError:
-        die(f'Permission denied accessing lock file. Was it previously created by root? ({LOCK_FILE})')
 
 def atomic_write(content: str, path: Path) -> None:
     real = path.resolve()
@@ -410,7 +386,6 @@ def filter_out_bind_from_text(text: str, norm_mods: str, norm_key: str, submap: 
     binds = parse_lua_file_content(text, "CUST")
     to_remove = []
     
-    # Identify both binds and unbinds that match the target key profile
     for b in binds:
         if b.norm_mods == norm_mods and b.norm_key == norm_key and b.submap == submap:
             blk_start = _preceding_comment_start(text, b.char_start)
@@ -421,19 +396,77 @@ def filter_out_bind_from_text(text: str, norm_mods: str, norm_key: str, submap: 
 
     if not to_remove: return text
     
-    # Delete from bottom to top to prevent index shifting
     to_remove.sort(reverse=True)
     for start, end in to_remove:
         text = text[:start] + text[end:]
     return text
 
 # ==============================================================================
-# UI Formatting & Display
+# Dynamic UI Drawing System (Bulletproof Text Wrapping)
 # ==============================================================================
+
+def visible_len(text: str) -> int:
+    """Returns the visual length of a string, ignoring ANSI color codes."""
+    return len(re.sub(r'\x1b\[[0-9;]*m', '', text))
+
+def print_main_header(subtitle: str, width: int = 80) -> None:
+    """Draws the main unified branding header (Dusky Binds)."""
+    brand = " Dusky Binds "
+    left_len = (width - 2 - len(brand)) // 2
+    right_len = width - 2 - len(brand) - left_len
+    
+    print(f'{PURPLE}╭{"─" * left_len}{RESET}{BOLD}{YELLOW}{brand}{RESET}{PURPLE}{"─" * right_len}╮{RESET}')
+    
+    pad_left = (width - 2 - visible_len(subtitle)) // 2
+    pad_right = width - 2 - visible_len(subtitle) - pad_left
+    print(f'{PURPLE}│{RESET}{" " * pad_left}{subtitle}{" " * pad_right}{PURPLE}│{RESET}')
+    print(f'{PURPLE}╰{"─" * (width - 2)}╯{RESET}')
+
+def draw_box_row(label: str, text: str, label_color: str, text_color: str, width: int = 80, border_color: str = BLUE) -> list[str]:
+    """Dynamically wraps text inside a perfectly aligned bounding box."""
+    # 1(bord) + 2(spc) + 10(lbl) + 3( : ) + 1(bord) = 17 physical characters reserved
+    max_text_len = width - 17
+    
+    lines = textwrap.wrap(text, width=max_text_len)
+    if not lines:
+        lines = [""]
+        
+    rows = []
+    for i, line in enumerate(lines):
+        lbl_text = label if i == 0 else ""
+        lbl = f"{label_color}{lbl_text:<10}{RESET}"
+        val = f"{text_color}{line}{RESET}"
+        pad = max_text_len - len(line)
+        separator = " : " if i == 0 else "   "
+        
+        rows.append(f"{border_color}│{RESET}  {lbl}{separator}{val}{' ' * pad}{border_color}│{RESET}")
+    return rows
+
+def print_binding_info_box(bind: Bind, raw_text: str, width: int = 80) -> None:
+    print(f'{BLUE}╭─ [ CURRENT BINDING INFO ] {"─" * (width - 29)}╮{RESET}')
+    
+    for row in draw_box_row("Key Comb", bind.key_str, BOLD, GREEN, width, BLUE): print(row)
+    if bind.submap:
+        for row in draw_box_row("Submap", bind.submap, BOLD, PURPLE, width, BLUE): print(row)
+        
+    for row in draw_box_row("Action", bind.dispatcher, BOLD, CYAN, width, BLUE): print(row)
+    
+    # Empty separator line for semantic spacing
+    print(f'{BLUE}│{RESET}{" " * (width - 2)}{BLUE}│{RESET}')
+    
+    for row in draw_box_row("Raw Lua", raw_text, BOLD, DIM, width, BLUE): print(row)
+    
+    print(f'{BLUE}╰{"─" * (width - 2)}╯{RESET}')
+
+def draw_help_box(width: int = 80) -> None:
+    print(f'{YELLOW}╭─ [ QUICK INSTRUCTIONS ] {"─" * (width - 27)}╮{RESET}')
+    for row in draw_box_row("Syntax", 'hl.bind("MODS + KEY", DISPATCHER[, OPTIONS])', GREY, GREEN, width, YELLOW): print(row)
+    for row in draw_box_row("Example", 'hl.bind("SUPER + Q", hl.dsp.exec_cmd("kitty"))', GREY, DIM, width, YELLOW): print(row)
+    print(f'{YELLOW}╰{"─" * (width - 2)}╯{RESET}')
 
 def format_display(b: Bind) -> str:
     submap_pfx = f'{PURPLE}[{b.submap}]{RESET} ' if b.submap else ''
-    ui_key = b.key_str[:32].ljust(32).replace('\n', ' ')
+    ui_key = b.key_str[:32].ljust(32).replace('\n', ' ').replace('\t', ' ')
 
     if b.is_unbind:
         tag = f'{RED}[UNB]{RESET}'
@@ -441,50 +474,39 @@ def format_display(b: Bind) -> str:
         return f'{tag}  {submap_pfx}{RED}{ui_key}{RESET} {GREY}│{RESET} {ui_desc}'
 
     tag = f'{GREEN}[CUST]{RESET}' if b.origin == 'CUST' else f'{BLUE}[SRC] {RESET}'
-    ui_desc = (b.description if b.description else "No Description").replace('\n', ' ')
+    ui_desc = (b.description if b.description else "No Description").replace('\n', ' ').replace('\t', ' ')
     
     return f'{tag}  {submap_pfx}{BOLD}{ui_key}{RESET} {GREY}│{RESET} {ui_desc}'
 
 def generate_bind_rows(source_binds: list[Bind], custom_binds: list[Bind]) -> tuple[list[str], list[Bind]]:
-    # Track custom overrides, separating active binds from explicit unbinds
     custom_active = {(b.norm_mods, b.norm_key, b.submap) for b in custom_binds if not b.is_unbind}
     custom_ovr = {(b.norm_mods, b.norm_key, b.submap) for b in custom_binds}
     
     displayed = []
     
     for b in sorted(custom_binds, key=lambda x: f'{x.submap}|{x.norm_mods}|{x.norm_key}'):
-        # UI Polish: If an [UNB] exists strictly to shield an active [CUST] bind, 
-        # hide the [UNB] from the frontend to prevent confusing the user with duplicates.
         if b.is_unbind and (b.norm_mods, b.norm_key, b.submap) in custom_active:
             continue
         displayed.append(b)
         
     for b in sorted(source_binds, key=lambda x: f'{x.submap}|{x.norm_mods}|{x.norm_key}'):
-        # Hide any source bind that is intercepted by the custom file (either overridden or unbound)
         if (b.norm_mods, b.norm_key, b.submap) not in custom_ovr:
             displayed.append(b)
 
     rows = [f'{format_display(b)}\t{idx}' for idx, b in enumerate(displayed)]
     return rows, displayed
 
-def show_help() -> None:
-    print(f'{CYAN}INSTRUCTIONS:{RESET}')
-    print(f'  Type a complete hl.bind(...) Lua call.')
-    print(f'  Syntax: {GREEN}hl.bind("MODS + KEY", DISPATCHER[, OPTIONS]){RESET}')
-    print(f'\n {BOLD}EXAMPLES{RESET}')
-    print(f'   hl.bind("SUPER + Q", hl.dsp.exec_cmd(terminal))')
-    print(f'   hl.bind("SUPER + W", hl.dsp.exec_cmd(browser), {{description = "Browser"}})')
-
 def rlinput(prompt: str, prefill: str = '') -> str:
+    """Prompt for input with prefill support safely avoiding readline segfaults."""
     if 'readline' in sys.modules:
-        def _hook() -> None:
+        safe_prompt = re.sub(r'(\033\[[0-9;]*m)', '\x01\\1\x02', prompt)
+        def _hook():
             readline.insert_text(prefill)
-            readline.redisplay()
-        readline.set_pre_input_hook(_hook)
+        readline.set_startup_hook(_hook)
         try:
-            return input(prompt)
+            return input(safe_prompt)
         finally:
-            readline.set_pre_input_hook(None)
+            readline.set_startup_hook(None)
     else:
         print(f"{DIM}(Prefill not supported on this terminal. Original: {prefill}){RESET}")
         return input(prompt)
@@ -495,35 +517,37 @@ def rlinput(prompt: str, prefill: str = '') -> str:
 
 def edit_loop(bind: Optional[Bind], source_binds: list[Bind], custom_binds: list[Bind]) -> bool:
     origin = bind.origin if bind else 'NEW'
-    raw_old = bind.raw_call.replace('\n', ' ').strip() if bind else EMPTY_TEMPLATE
+    raw_old = bind.raw_call.replace('\n', ' ').replace('\t', '  ').strip() if bind else EMPTY_TEMPLATE
     bind_submap = bind.submap if bind else ''
     orig_mods = bind.norm_mods if bind else ''
     orig_key = bind.norm_key if bind else ''
 
     current_input = raw_old
-    show_help_flag = True
+    BW = 80 # Box Width
+
+    mode_title = f"[ {origin} EDIT ]" if origin != 'NEW' else "[ CREATE NEW KEYBIND ]"
 
     while True:
         enter_alt_screen()
         os.system('tput clear 2>/dev/null || clear')
-        print(f'{BLUE}┌──────────────────────────────────────────────┐{RESET}')
-        print(f'{YELLOW}│   MODE: {origin + " EDIT":<37}│{RESET}')
-        print(f'{BLUE}└──────────────────────────────────────────────┘{RESET}')
+        
+        # ─── BRANDING HEADER ───
+        print_main_header(f"{BOLD}{mode_title}{RESET}", BW)
+        print()
 
+        # ─── TARGET INFO BOX ───
         if bind and origin != 'NEW':
-            print(f' {GREY}Target:{RESET} {raw_old[:80]}')
-            if bind_submap: print(f' {PURPLE}Submap:{RESET} {bind_submap}')
+            print_binding_info_box(bind, raw_old, BW)
             print()
 
-        if show_help_flag:
-            show_help()
-            print(f'\n {DIM}(Press ? to hide help){RESET}')
-        else:
-            print(f' {DIM}(Press ? to show help){RESET}')
+        # ─── HELP BOX ───
+        draw_help_box(BW)
+        print()
 
-        print(f'\n{BOLD}Enter hl.bind() call  ("b" = back · "q" = quit):{RESET}')
+        # ─── INPUT PROMPT ───
+        print(f'{BOLD}Update hl.bind() call  {DIM}("b" = back · "q" = quit){RESET}:')
         try:
-            user_line = rlinput(f'{PURPLE}> {RESET}', current_input).strip()
+            user_line = rlinput(f'{PURPLE}❯ {RESET}', current_input).strip()
         except (EOFError, KeyboardInterrupt):
             leave_alt_screen()
             return False
@@ -533,9 +557,6 @@ def edit_loop(bind: Optional[Bind], source_binds: list[Bind], custom_binds: list
             return False
         if user_line.lower() in ('q', 'quit'):
             die("Exiting...")
-        if user_line == '?':
-            show_help_flag = not show_help_flag
-            continue
         if not user_line or user_line == EMPTY_TEMPLATE:
             continue
 
@@ -570,14 +591,19 @@ def edit_loop(bind: Optional[Bind], source_binds: list[Bind], custom_binds: list
         else:
             print(f'{GREEN}None{RESET}')
 
-        print(f'\n{CYAN}┌──────────────────────────────────────────────┐{RESET}')
-        print(f'{CYAN}│              CONFIRM CHANGES                 │{RESET}')
-        print(f'{CYAN}└──────────────────────────────────────────────┘{RESET}')
-        if bind_submap: print(f'  {PURPLE}Submap:{RESET} {bind_submap}')
-        print(f'\n  {BOLD}Action:{RESET}  SAVE')
+        # ─── CONFIRMATION BOX ───
+        print(f'\n{CYAN}┌─ [ CONFIRM CHANGES ] {"─" * (BW - 24)}┐{RESET}')
+        for row in draw_box_row("Action", "SAVE", BOLD, RESET, BW, CYAN): print(row)
+        
+        if bind_submap:
+            for row in draw_box_row("Submap", bind_submap, BOLD, PURPLE, BW, CYAN): print(row)
+            
         if raw_old and raw_old != EMPTY_TEMPLATE and origin != 'NEW':
-            print(f'  {RED}OLD:{RESET} {DIM}{raw_old[:80]}{RESET}')
-        print(f'  {GREEN}NEW:{RESET} {user_line}')
+            for row in draw_box_row("OLD", raw_old, RED, DIM, BW, CYAN): print(row)
+            
+        new_clean = user_line.replace('\n', ' ').replace('\t', '  ')
+        for row in draw_box_row("NEW", new_clean, GREEN, RESET, BW, CYAN): print(row)
+        print(f'{CYAN}└{"─" * (BW - 2)}┘{RESET}')
 
         print(f'\n{YELLOW}[y] Confirm  [n] Go Back{RESET}')
         if not input('Select > ').strip().lower().startswith('y'):
@@ -590,12 +616,9 @@ def edit_loop(bind: Optional[Bind], source_binds: list[Bind], custom_binds: list
         except FileNotFoundError:
             text = ''
 
-        # Scrub the old custom bind if we are overwriting it
         if orig_mods or orig_key:
             text = filter_out_bind_from_text(text, orig_mods, orig_key, bind_submap)
 
-        # GHOST PREVENTION: If the key changed, we MUST check if we exposed a source bind.
-        # If we did, we must leave an hl.unbind() behind so it doesn't resurrect.
         key_changed = (orig_mods != new_mods) or (orig_key != new_key)
         
         if key_changed and bind:
@@ -614,9 +637,6 @@ def edit_loop(bind: Optional[Bind], source_binds: list[Bind], custom_binds: list
 
         comment = f'-- [{timestamp}] {origin}'
         
-        # --- Native hl.unbind() injection for source conflicts ---
-        # Hyprland 0.55+ Lua stacks binds. We explicitly unbind the source 
-        # key to prevent both the default and custom actions from firing.
         unbind_prefix = ""
         if conflict_src:
             if bind_submap:
@@ -637,23 +657,28 @@ def edit_loop(bind: Optional[Bind], source_binds: list[Bind], custom_binds: list
         return True
 
 def delete_flow(bind: Bind) -> bool:
-    raw_preview = bind.raw_call.replace('\n', ' ')[:80]
-    print(f'\n{CYAN}┌──────────────────────────────────────────────┐{RESET}')
-    print(f'{CYAN}│              CONFIRM CHANGES                 │{RESET}')
-    print(f'{CYAN}└──────────────────────────────────────────────┘{RESET}')
-    if bind.submap: print(f'  {PURPLE}Submap:{RESET} {bind.submap}')
+    BW = 80
+    raw_preview = bind.raw_call.replace('\n', ' ').replace('\t', '  ')
+    
+    os.system('tput clear 2>/dev/null || clear')
+    print_main_header(f"{BOLD}[ DELETE KEYBIND ]{RESET}", BW)
+    print()
+    
+    print(f'{CYAN}┌─ [ CONFIRM DELETION ] {"─" * (BW - 25)}┐{RESET}')
+    
+    if bind.submap: 
+        for row in draw_box_row("Submap", bind.submap, BOLD, PURPLE, BW, CYAN): print(row)
     
     if bind.origin == 'SRC':
-        print(f'\n  {BOLD}Action:{RESET}  DISABLE SOURCE BIND')
-        print(f'  {RED}Target:{RESET}  {raw_preview}')
-        print(f'  {DIM}(This will dynamically append hl.unbind() to your custom config){RESET}')
+        for row in draw_box_row("Action", "DISABLE SOURCE BIND", BOLD, RESET, BW, CYAN): print(row)
+        for row in draw_box_row("Target", raw_preview, RED, RESET, BW, CYAN): print(row)
+        for row in draw_box_row("Info", "(This dynamically appends hl.unbind() to custom config)", DIM, DIM, BW, CYAN): print(row)
     else:
-        if bind.is_unbind:
-            print(f'\n  {BOLD}Action:{RESET}  RESTORE SOURCE BIND')
-            print(f'  {RED}Target:{RESET}  {raw_preview}')
-        else:
-            print(f'\n  {BOLD}Action:{RESET}  DELETE FROM CUSTOM FILE')
-            print(f'  {RED}Target:{RESET}  {raw_preview}')
+        act_text = "RESTORE SOURCE BIND" if bind.is_unbind else "DELETE FROM CUSTOM FILE"
+        for row in draw_box_row("Action", act_text, BOLD, RESET, BW, CYAN): print(row)
+        for row in draw_box_row("Target", raw_preview, RED, RESET, BW, CYAN): print(row)
+
+    print(f'{CYAN}└{"─" * (BW - 2)}┘{RESET}')
     
     print(f'\n{YELLOW}[y] Confirm  [n] Go Back{RESET}')
     if not input('Select > ').strip().lower().startswith('y'): return False
@@ -666,7 +691,6 @@ def delete_flow(bind: Bind) -> bool:
     if bind.origin == 'SRC':
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
         
-        # Ensure we clear out any existing CUST binds on this exact key first to prevent conflicts
         text = filter_out_bind_from_text(text, bind.norm_mods, bind.norm_key, bind.submap)
         
         comment = f'-- [{timestamp}] UNBIND SRC'
@@ -679,7 +703,6 @@ def delete_flow(bind: Bind) -> bool:
         atomic_write(text, CUSTOM_LUA)
         print(f'\n{GREEN}[SUCCESS]{RESET} Source bind disabled.')
     else:
-        # Deleting a [CUST] bind also intelligently deletes its hidden backend unbind shield, flawlessly restoring defaults.
         new_text = filter_out_bind_from_text(text, bind.norm_mods, bind.norm_key, bind.submap)
         atomic_write(new_text, CUSTOM_LUA)
         if bind.is_unbind:
@@ -703,8 +726,6 @@ def main() -> None:
     if not CUSTOM_LUA.exists():
         CUSTOM_LUA.write_text('-- Custom Hyprland Keybinds Override File\n\n', encoding='utf-8')
 
-    if not VIEW_ONLY: acquire_lock()
-
     while True:
         leave_alt_screen()
         
@@ -722,10 +743,17 @@ def main() -> None:
         custom_binds = parse_lua_file_content(cust_text, 'CUST')
 
         rows, displayed = generate_bind_rows(source_binds, custom_binds)
-        fzf_header = '  SELECT KEYBIND  │  SRC = Default  │  CUST = Your Override  │  [UNB] = Disabled Source Bind\n  Type to search · Enter = select · Esc = quit'
+        
+        # Build the FZF Branded Header
+        brand = " Dusky Binds "
+        bl = (80 - len(brand)) // 2
+        br = 80 - len(brand) - bl
+        fzf_brand = f"\033[0;35m{'─' * bl}\033[0m\033[1m\033[0;33m{brand}\033[0m\033[0;35m{'─' * br}\033[0m"
+        
+        fzf_header = f'{fzf_brand}\n  SELECT KEYBIND  │  SRC = Default  │  CUST = Your Override  │  [UNB] = Disabled Source Bind\n  Type to search · Enter = select · Esc = quit'
 
         if VIEW_ONLY:
-            res = subprocess.run(['fzf', '--ansi', '--delimiter=\t', '--with-nth=1', f'--header=[VIEW MODE] {fzf_header}', '--info=inline', '--layout=reverse', '--border', '--prompt=Search > '], input='\n'.join(rows), capture_output=True, text=True)
+            res = subprocess.run(['fzf', '--ansi', '--delimiter=\t', '--with-nth=1', f'--header=[VIEW MODE]\n{fzf_header}', '--info=inline', '--layout=reverse', '--border', '--prompt=Search > '], input='\n'.join(rows), capture_output=True, text=True)
             if res.returncode != 0: sys.exit(0)
             
             try:
@@ -758,9 +786,11 @@ def main() -> None:
 
         if 0 <= idx < len(displayed):
             selected_bind = displayed[idx]
-            preview = selected_bind.raw_call.replace('\n', ' ')[:80]
-            print(f'\n{BOLD}Selected:{RESET} {preview}')
-            if selected_bind.submap: print(f'{PURPLE}Submap:{RESET} {selected_bind.submap}')
+            raw_clean = selected_bind.raw_call.replace('\n', ' ').replace('\t', '  ')
+            
+            print() # Visual Spacer
+            print_binding_info_box(selected_bind, raw_clean, 80)
+            
             print(f'\n{YELLOW}[e] Edit  [d] Delete  [b] Back  [q] Quit{RESET}')
             ch = input('Select > ').strip().lower()
 
