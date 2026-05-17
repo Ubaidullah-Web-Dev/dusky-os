@@ -92,8 +92,17 @@ def check_environment() -> None:
 
 def parse_direction() -> int:
     prog = os.path.basename(sys.argv[0])
+    
+    # Graceful help handler
+    if len(sys.argv) == 2 and sys.argv[1] in ("-h", "--help"):
+        print(f"Usage: {prog} [+90|-90]")
+        print("Rotates the focused monitor 90° clockwise (+90) or counter-clockwise (-90).")
+        sys.exit(0)
+
+    # Strict arg checking for actual usage
     if len(sys.argv) != 2 or sys.argv[1] not in ("+90", "-90"):
-        die(f"Usage: {prog} [+90|-90]")
+        die(f"Invalid argument.\nUsage: {prog} [+90|-90]")
+        
     return 1 if sys.argv[1] == "+90" else -1
 
 
@@ -162,7 +171,7 @@ def resolve_active_mode(monitor: dict[str, Any]) -> str:
     Return the best-matching physical mode string for `hl.monitor()`
     (WITHOUT the Hz suffix, e.g. "1920x1080@144.00").
     """
-    # FIX: Hyprland IPC `width` and `height` ALWAYS represent the physical 
+    # Hyprland IPC `width` and `height` ALWAYS represent the physical 
     # native resolution. They do not swap when rotated.
     native_w: int    = int(monitor["width"])
     native_h: int    = int(monitor["height"])
