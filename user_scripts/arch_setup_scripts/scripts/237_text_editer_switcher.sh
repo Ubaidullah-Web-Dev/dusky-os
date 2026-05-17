@@ -251,14 +251,33 @@ switch_text_editor() {
     
     atomic_write "$CONF_VARS" "$new_vars" || { log_action 1 "Failed to write $CONF_VARS"; release_lock "$lock_fd"; return 1; }
 
+    # UPDATE: Re-detect environment to ensure CURRENT_TERMINAL is captured before generating binds
+    detect_environment
+
     # 4. Mutate Keybinds
     if [[ ! -f "$CONF_BINDS" ]]; then
         log_action 1 "Keybinds not found: $CONF_BINDS"
         release_lock "$lock_fd"; return 1
     fi
 
-    if [[ "$t_type" == "1" ]]; then exec_cmd='terminal .. " " .. textEditor'
-    else exec_cmd='textEditor'; fi
+    # DYNAMIC TERMINAL FLAG INJECTION
+    if [[ "$t_type" == "1" ]]; then
+        local term_lower="${CURRENT_TERMINAL,,}"
+        if [[ "$term_lower" == *"kitty"* ]]; then
+            exec_cmd='terminal .. " --class " .. textEditor .. " " .. textEditor'
+        elif [[ "$term_lower" == *"foot"* ]]; then
+            exec_cmd='terminal .. " --app-id=" .. textEditor .. " " .. textEditor'
+        elif [[ "$term_lower" == *"alacritty"* ]]; then
+            exec_cmd='terminal .. " --class " .. textEditor .. " -e " .. textEditor'
+        elif [[ "$term_lower" == *"wezterm"* ]]; then
+            exec_cmd='terminal .. " start --class " .. textEditor .. " -- " .. textEditor'
+        else
+            # Fallback for unknown terminals
+            exec_cmd='terminal .. " " .. textEditor'
+        fi
+    else 
+        exec_cmd='textEditor'
+    fi
 
     new_binds=$(awk -v new_cmd="$exec_cmd" '
         { lines[NR] = $0 }
