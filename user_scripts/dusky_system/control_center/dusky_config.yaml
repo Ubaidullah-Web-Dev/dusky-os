@@ -1563,8 +1563,7 @@ pages:
         button_text: "Open"
       on_press:
         type: exec
-        command: kitty --class dusky_service_toggle.sh --hold
-          sh -c "$HOME/user_scripts/services/dusky_service_toggle.sh"
+        command: foot --app-id=dusky_tui ~/user_scripts/dusky_tui/python/main/main.py ~/user_scripts/services/tui_service_toggle.py
         terminal: false
     - type: button
       properties:
