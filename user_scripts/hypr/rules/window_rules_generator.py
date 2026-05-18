@@ -124,32 +124,97 @@ hl.window_rule({{
     match = {{
         class = "^({safe_class})$",
         -- title = "^({safe_title})$",
+        -- xwayland = true,          -- match only XWayland windows
+        -- floating = true,          -- match only floating windows
+        -- fullscreen = false,       -- match only non-fullscreen windows
+        -- pinned = false,           -- match only non-pinned windows
     }},
     float = true,
-    -- pin = true,
+    -- pin = true,                   -- pin window (always on top, all workspaces)
+    -- tile = true,                  -- force tiled (not floating)
+    -- stayfocused = true,           -- window cannot lose focus
 
     size = {{{client.w}, {client.h}}},
     -- size = {{"monitor_w * {r_w_str}", "monitor_h * {r_h_str}"}},
+    -- minsize = {{200, 100}},       -- clamp minimum size
+    -- maxsize = {{1920, 1080}},     -- clamp maximum size
+    -- keep_aspect_ratio = true,     -- preserve aspect ratio when resizing
 
     move = {{{local_x}, {local_y}}},
     -- move = {{"monitor_w * {r_x_str}", "monitor_h * {r_y_str}"}},
     -- move = {{"monitor_w - window_w - 20", "monitor_h - window_h - 20"}},
-    -- center = true,
+    -- center = true,                -- center on the monitor (ignores move)
+    -- center = {{1}},               -- center including reserved areas (e.g. waybar)
+
+    -- --- Animation ---
+    -- Pick ONE style. Remove the "--" from the line you want.
+    --
+    -- animation = "popin",          -- scale from centre, auto start %
+    -- animation = "popin 60%",      -- scale in starting from 60% size
+    -- animation = "popin 70%",      -- scale in starting from 70% size
+    -- animation = "popin 80%",      -- scale in starting from 80% size
+    -- animation = "popin 87%",      -- Hyprland official default start %
+    -- animation = "popin 90%",      -- subtle pop, close to full size
+    -- animation = "popin 95%",      -- very subtle, barely perceptible
+    --
+    -- animation = "slide",          -- slide from nearest monitor edge (auto)
+    -- animation = "slide top",      -- always slide in from the top
+    -- animation = "slide bottom",   -- always slide in from the bottom
+    -- animation = "slide left",     -- always slide in from the left
+    -- animation = "slide right",    -- always slide in from the right
+    --
+    -- animation = "gnomed",         -- GNOME-style (scale + fade combo)
+    -- animation = "fade",           -- opacity fade only, no motion
+    --
+    -- no_anim = true,               -- disable ALL animation for this window
 
     -- --- Visuals & Effects ---
-    -- opacity = "0.9 override 0.9 override",
-    -- animation = "popin",
-    -- rounding = 10,
-    -- border_color = "rgb(ff0000)",
-    -- no_blur = true,
-    -- no_shadow = true,
-    -- no_dim = true,
-    -- opaque = true,
-    -- dim_around = true,
+    -- opacity = "0.9 override 0.9 override",    -- active opacity, inactive opacity
+    -- opacity = "1.0 override 0.85 override",   -- fully opaque active, dimmed inactive
+    -- opacity = "0.95",                          -- both states same value
+    -- opaque = true,                             -- force fully opaque (ignores opacity rule)
+    --
+    -- rounding = 10,                -- corner radius in px (overrides global)
+    -- rounding = 0,                 -- sharp corners for this window only
+    -- rounding_power = 2,           -- rounding curve power (2 = standard, higher = squircle)
+    --
+    -- border_size = 2,              -- border thickness in px (overrides global)
+    -- border_size = 0,              -- no border for this window
+    -- border_color = "rgb(ff0000)",             -- solid red border
+    -- border_color = "rgba(33ccffee)",          -- RGBA hex border colour
+    -- border_color = {{colors = {{"rgba(33ccffee)", "rgba(00ff99ee)"}}, angle = 45}},  -- gradient border
+    --
+    -- no_blur = true,               -- disable blur behind this window
+    -- xray = true,                  -- see through to wallpaper (xray blur)
+    -- no_shadow = true,             -- disable drop shadow
+    -- no_dim = true,                -- never dim when inactive
+    -- dim_around = true,            -- dim everything except this window
+    -- no_focus = true,              -- window cannot receive focus
+    -- no_maximize = true,           -- prevent the window from being maximized
+
+    -- --- Fullscreen / Layout ---
+    -- fullscreen = true,                -- open in fullscreen (client-side)
+    -- fullscreen_mode = "real",         -- "real" = true fullscreen
+    -- fullscreen_mode = "maximize",     -- fills workspace but keeps gaps/borders
+    -- immediate = true,                 -- bypass Wayland sync protocol (tearing opt-in)
+    -- group = "set",                    -- add to a window group
+    -- group = "lock",                   -- lock group membership (no auto-grouping)
+    -- group = "barred",                 -- hide this window's tab in the group bar
+    -- group = "deny",                   -- deny grouping entirely
+
+    -- --- Focus & Raise ---
+    -- noraise = true,                   -- clicking window does not raise it to top
+    -- noinitialfocus = true,            -- do not focus when first opened
+
+    -- --- Suppress / Lifecycle ---
+    -- suppress_event = "maximize",      -- eat maximize requests from the app
+    -- suppress_event = "fullscreen",    -- eat fullscreen requests from the app
 
     -- --- Placement ---
-    -- workspace = "{client.workspace_name}",
-    -- monitor = "{monitor.name}",
+    -- workspace = "{client.workspace_name}",    -- force to a specific workspace
+    -- workspace = "special:magic",              -- open on special/scratch workspace
+    -- workspace = "name:gaming",                -- force to named workspace
+    -- monitor = "{monitor.name}",               -- force to a specific monitor
 }})"""
 
     return GeneratedRule(
