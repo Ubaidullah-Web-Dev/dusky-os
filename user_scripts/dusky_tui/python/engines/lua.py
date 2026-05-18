@@ -109,12 +109,21 @@ class HyprlandLuaEngine(BaseEngine):
                     return function(tbl) if type(tbl) == "table" then deep_merge(config_root, tbl) end end
                 elseif key == "bind" or key == "unbind" then
                     return function(bind_key, dispatcher, flags)
-                        if type(flags) == "table" then
-                            flags._bind_key = bind_key
-                            if not config_root[key] then config_root[key] = {} end
-                            table.insert(config_root[key], flags)
+                        local entry = flags
+                        if type(entry) ~= "table" then entry = {} end
+                        entry._bind_key = bind_key
+                        if not config_root[key] then config_root[key] = {} end
+                        table.insert(config_root[key], entry)
+                    end
+                elseif key == "env" then
+                    return function(env_key, env_val)
+                        if type(env_key) == "string" then
+                            if not config_root["env"] then config_root["env"] = {} end
+                            table.insert(config_root["env"], { key = env_key, value = env_val })
                         end
                     end
+                elseif key == "layout" then
+                    return inert_proxy
                 else
                     return function(tbl) append_list(key, tbl) end
                 end
@@ -639,12 +648,23 @@ class HyprlandLuaEngine(BaseEngine):
                     if method == "config" then
                         parse_table(target_tokens, target_text, arg_idx, {}, matches)
                     elseif method == "bind" or method == "unbind" then
-                        local comma_count, k, arg_idx_runner, depth = 0, arg_idx, 0, 0
+                        local comma_count, k, depth, block_depth = 0, arg_idx, 0, 0
                         while k <= #target_tokens do
                             local t = target_tokens[k].type
+                            local val = target_tokens[k].val
+                            local prev_tp = k > 1 and target_tokens[k-1].type or nil
+                            
+                            if t == "IDENT" and prev_tp ~= "DOT" then
+                                if (val == "function" or val == "if" or val == "do" or val == "repeat") then
+                                    block_depth = block_depth + 1
+                                elseif (val == "end" or val == "until") and block_depth > 0 then
+                                    block_depth = block_depth - 1
+                                end
+                            end
+
                             if t == "LPAREN" or t == "LBRACE" or t == "LBRACK" then depth = depth + 1
                             elseif t == "RPAREN" or t == "RBRACE" or t == "RBRACK" then depth = depth - 1
-                            elseif depth == 0 and t == "COMMA" then
+                            elseif depth == 0 and block_depth == 0 and t == "COMMA" then
                                 comma_count = comma_count + 1
                                 if comma_count == 2 and target_tokens[k+1] and target_tokens[k+1].type == "LBRACE" then
                                     local bind_key = target_tokens[arg_idx].val:match("^['\"](.-)['\"]$") or "unknown"
