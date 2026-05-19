@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ==============================================================================
-#  DUSKY UPDATER (v9.4) — BLEEDING EDGE ARCH / PYTHON 3.14 TUI
+#  DUSKY UPDATER (v9.4.1) — BLEEDING EDGE ARCH / PYTHON 3.14 TUI
 # ==============================================================================
 import asyncio
 import json
@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import sys
 import importlib.util
+import importlib
+import site
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -37,7 +39,9 @@ def bootstrap_dependencies() -> bool:
         if not verify_sudo(): sys.exit(1)
         try:
             subprocess.run(['sudo', 'pacman', '-S', '--noconfirm'] + missing, check=True)
-            importlib.invalidate_caches()  # Direct python import engine to refresh physical file mappings
+            # Reconstruct module paths forcefully to accommodate identical runtime continuity
+            importlib.invalidate_caches()
+            importlib.reload(site)
         except subprocess.CalledProcessError:
             sys.stdout.write("\033[1;31m[FATAL]\033[0m Dependency resolution failed.\n")
             sys.exit(1)
@@ -55,7 +59,7 @@ try:
     from textual.widgets import RichLog, Static, ProgressBar, ListView, ListItem, Label, ContentSwitcher
     from textual.reactive import reactive
 except ImportError:
-    sys.stdout.write("\033[1;31m[FATAL]\033[0m UI library import failed post-resolution.\n")
+    sys.stdout.write("\033[1;31m[FATAL]\033[0m UI library import failed post-resolution. Ensure Arch mirrors are synced.\n")
     sys.exit(1)
 
 # ==============================================================================
@@ -86,12 +90,11 @@ def get_rgb_color(hex_str: str, default: tuple[int, int, int] = (255, 181, 155))
             return int(clean_hex[0:2], 16), int(clean_hex[2:4], 16), int(clean_hex[4:6], 16)
         elif len(clean_hex) == 3:
             return int(clean_hex[0]*2, 16), int(clean_hex[1]*2, 16), int(clean_hex[2]*2, 16)
-    except Exception:
+    except (ValueError, IndexError, Exception):
         pass
     return default
 
 # --- ULTRA-MODERN MINIMAL CSS ARCHITECTURE ---
-# Note: Textual scrollbar configurations and opaque colors are compiled here conforming perfectly to CSS specifications.
 DUSKY_CSS = f"""
 Screen {{ background: {THEME['bg']}; color: {THEME['fg']}; }}
 #sidebar {{
@@ -546,7 +549,12 @@ class GitEngine:
                         if src.exists() or src.is_symlink():
                             dest = snap_dir / file
                             dest.parent.mkdir(parents=True, exist_ok=True)
-                            await asyncio.create_subprocess_exec('cp', '-a', '--reflink=auto', str(src), str(dest))
+                            
+                            # CRITICAL FIX: Explicit process await prevents catastrophic race condition
+                            # against the 'git reset --hard' mechanism that executes next.
+                            proc = await asyncio.create_subprocess_exec('cp', '-a', '--reflink=auto', str(src), str(dest))
+                            await proc.wait()
+                            
                             self.app.log_task(f"[dim]CoW Snapshot: {escape(file)}[/dim]", idx) # type: ignore
                             copied += 1
                     msg = f"[bold {THEME['success']}]Atomic BTRFS CoW Snapshot secured ({copied} items).[/]"
@@ -657,12 +665,11 @@ class DuskyApp(App):
         super().__init__()
         self.tasks = tasks
         self.has_sudo = has_sudo
-        self.sudo_task: Optional[asyncio.Task] = None
         self.abort_flag = False
         self.git_diff_text = ""
 
     def compose(self) -> ComposeResult:
-        yield Static(" 🦅 DUSKY PIPELINE ENGINE (v9.4 — Elegance Edition)", classes="header-panel")
+        yield Static(" 🦅 DUSKY PIPELINE ENGINE (v9.4.1 — Elegance Edition)", classes="header-panel")
         
         with Horizontal():
             with Vertical(id="sidebar"):
@@ -688,8 +695,10 @@ class DuskyApp(App):
         self.log_main(f"[bold {THEME['fg']}] ARCHITECTURE INITIALIZATION — {datetime.now().strftime('%H:%M:%S')}[/]")
         self.log_main(f"[bold {THEME['accent']}]======================================================[/]")
         
+        # RELIABILITY FIX: Native Textual Timer binds sudo keepalive strictly to App lifecycle
+        # preventing resource leak out-of-bounds.
         if self.has_sudo:
-            self.sudo_task = asyncio.create_task(self.sudo_keepalive())
+            self.set_interval(60.0, self.ping_sudo)
         
         self.run_worker(self.execute_pipeline(), exclusive=True, thread=False)
 
@@ -729,15 +738,14 @@ class DuskyApp(App):
         elif isinstance(item, TaskItem):
             switcher.current = f"log-task-{item.task_index}"
 
-    async def sudo_keepalive(self) -> None:
+    async def ping_sudo(self) -> None:
+        """Lightweight background keep-alive tied inherently to the app runtime lifecycle."""
         try:
-            while not self.abort_flag:
-                proc = await asyncio.create_subprocess_exec(
-                    'sudo', '-n', '-v', stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
-                )
-                await proc.wait()
-                await asyncio.sleep(60)
-        except asyncio.CancelledError:
+            proc = await asyncio.create_subprocess_exec(
+                'sudo', '-n', '-v', stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+            )
+            await proc.wait()
+        except Exception:
             pass
 
     async def execute_pipeline(self) -> None:
@@ -849,7 +857,6 @@ class DuskyApp(App):
             self.log_main(f"\n[bold {THEME['success']}]ARCHITECTURE DEPLOYMENT COMPLETED.[/]")
 
         self.log_main("\n[dim]Press 'Ctrl+C' or 'Q' to terminate abstraction shell.[/dim]")
-        if self.sudo_task: self.sudo_task.cancel()
 
     def action_quit(self) -> None:
         self.abort_flag = True
