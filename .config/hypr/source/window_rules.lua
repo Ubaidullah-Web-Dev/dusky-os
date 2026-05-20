@@ -1644,34 +1644,6 @@ hl.layer_rule({
     ignore_alpha = 0.54
 })
 
--- -----------------------------------------------------------------------------
--- SPECIAL WORKSPACES
--- -----------------------------------------------------------------------------
--- Purpose: Workspace-specific styling (gaps, border colors). The workspace line
--- sets layout/gap defaults while windowrules target windows in those workspaces.
-
-
-
---- Special Workspace: Magic ---
--- Sets specific borders and gaps for the special workspace "magic"
-hl.workspace_rule({
-    workspace = "special:magic",
-    gaps_out = 20,
-    gaps_in = 6
-})
-
---- Special Workspace: Magic Styling ---
--- NOTE: Border color must be set via windowrule, not the workspace line.
--- Since hyprlang variables ($primary) are deprecated, use a standard Lua variable
--- Make sure to replace this hex/rgb value with your actual desired primary color!
-local primary_color = "rgb(E2971F)" 
-
-hl.window_rule({
-    name = "style-magic-workspace",
-    match = { workspace = "special:magic" },
-    border_color = primary_color,
-    border_size = 1
-})
 
 
 -- SMART GAPS (Disabled / Examples)
