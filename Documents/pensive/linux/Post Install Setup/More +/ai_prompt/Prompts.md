@@ -355,7 +355,7 @@ Libadwaita GTK 4 Prompt
 ---
 ---
 
-> [!NOTE]- Template Schema
+> [!NOTE]- Template Schema LUA
 > ```py
 > #!/usr/bin/env python3
 > """
@@ -687,5 +687,273 @@ Libadwaita GTK 4 Prompt
 > #     is_parent      = False,              # Set True to make this item an expandable folder (Works on ANY type!)
 > #     parent_ref     = None,               # Nested UI link. MUST exactly match parent's UID format: "scope.key" (or "key" if DEFAULT)
 > #     expanded       = False,              # Default UI state for parent folders (Starts open or closed)
+> # )
+> ```
+
+
+> [!NOTE]- Template Schema INI
+> ```python
+> #!/usr/bin/env python3
+> """
+> ===============================================================================
+> DUSKY TUI: MASTER CONFIGURATION SCHEMA (INI PARADIGM)
+> ===============================================================================
+> 
+> TARGET MAPPING VISUALIZATION:
+> This pedagogical apparatus delineates the ontological mapping required to 
+> subjugate standard INI-style and Arch Linux configuration architectures 
+> (e.g., pacman.conf, makepkg.conf, mako/config).
+> 
+> ===============================================================================
+> [ INI SYNTACTIC HEGEMONY ]
+> ===============================================================================
+>   1. SECTIONAL DELINEATION
+>      [telemetry.subsystem]           <-- scope="telemetry.subsystem"
+>      transmission_rate = 5           <-- key="transmission_rate"
+> 
+>   2. ROOT/GLOBAL DEFINITIONS
+>      log_level = debug               <-- scope="DEFAULT", key="log_level"
+> 
+>   3. VALUELESS FLAGS (Arch Linux pacman.conf style)
+>      Color                           <-- scope="DEFAULT", key="Color", type_="bool", default=True
+>      ILoveCandy                      <-- scope="options", key="ILoveCandy", type_="bool", default=False
+> 
+> STRICT ORTHODOXY FOR SCHEMA GENERATION (CRITICAL - DO NOT VIOLATE):
+> 
+> 4. UID (Unique Identifier) Nomenclature:
+>    - Variables domiciled in the primordial root (devoid of sectional brackets) 
+>      necessitate `scope="DEFAULT"`. The UID resolves merely to the `key`.
+>    - Variables subjugated within a section construct a UID of `scope.key` 
+>      (e.g., "telemetry.subsystem.transmission_rate").
+>    - You MUST deploy this precise UID when architecting `parent_ref` hierarchies 
+>      or orchestrating `preset_payload` matrix injections.
+> 
+> 5. Contiguous Grouping Imperative (Eschew Interleaving):
+>    - ConfigItems sharing an identical `group` string MUST be instantiated in immediate, 
+>      unbroken succession. The UI interpolates headers sequentially; fragmentation 
+>      provokes catastrophic visual dissonance.
+>    - Subordinate elements leveraging a `parent_ref` MUST reside instantaneously 
+>      beneath their sovereign parent. Do not rupture the visual taxonomy.
+> 
+> 6. Structural Restrictions & Hybrid Folders (CRITICAL):
+>    - "preset" and "action" paradigms exist as PURE UI ephemera. They exert zero 
+>      direct mutation upon the target file. Their `key` is an internal lexical anchor.
+>    - "menu": A phantom categorical folder (default=None, type_="menu"). It writes nothing.
+>    - HYBRID FOLDERS: You may transmute ANY functional integer, boolean, or string into 
+>      an expandable drop-down menu by asserting `is_parent=True`. This orchestrates a 
+>      scenario wherein the parent header retains substantive backend agency whilst 
+>      concealing subordinate parameters.
+>    - Folders tolerate singular depth exclusively. Labyrinthine nesting is strictly forbidden.
+> 
+> 7. Lexical Parsimony (ONE-WORD HEADERS ONLY):
+>    - NO MULTI-WORD HEADERS: Every `group` moniker and `Tab` designation MUST comprise 
+>      a solitary, highly descriptive lexeme (e.g., prioritize `Cryptography` over 
+>      `Encryption Security Subsystem`). This mitigates terminal interface asphyxiation.
+>    - USE DESCRIPTIVE KEYS: Employ rigorous, semantically unassailable identifiers 
+>      for backend keys.
+> 
+> 8. The Ontological Categories (`type_`):
+>    - "bool"   : Binary toggle (True/False). Translates to `key=true/false` or uncommented valueless flags.
+>    - "int"    : Integer mathematics (min_val, max_val, step).
+>    - "float"  : Decimal mathematics (min_val, max_val, step).
+>    - "string" : Alphanumeric character strings.
+>    - "cycle"  : Instantaneous horizontal iteration via predefined `options` array.
+>    - "picker" : Fullscreen modal search query derived from `options`.
+>    - "color"  : Hexadecimal, RGB, or Matugen integration variable.
+>    - "menu"   : Pure structural abstraction (requires `is_parent=True`, `default=None`).
+>    - "action" : Triggers asynchronous POSIX shell execution (command string resides in `default`).
+>    - "preset" : Orchestrates multi-variable state synchronization (requires `preset_payload`).
+> 
+> 9. Strict Type & Native Value Congruence:
+>    - The Python literal assigned to `default` MUST mirror the epistemological reality 
+>      of the `type_` declaration:
+>      * "bool"   -> default=True (Native Python boolean)
+>      * "int"    -> default=10   (Native Python integer)
+>      * "string" -> default="Text" (Native Python string)
+> 
+> 10. Preset Payload Rigidity (The Nuclear Override):
+>    - Presets constitute an uncompromising totalitarian state replacement. If a schema 
+>      variable is omitted from the `preset_payload`, the engine will coercively 
+>      revert that abandoned variable to its programmed `default`. Enumerate all 
+>      mandatory states within the payload dictation.
+> 
+> 11. Pedagogy & Hermeneutics (`extended_help`):
+>    - Every entity MUST incorporate exhaustively detailed `extended_help`.
+>    - Elucidate the precise systemic ramifications of mutating the variable. 
+>    - Construct the prose such that an uninitiated interlocutor may effortlessly 
+>      decipher the operational consequences.
+> 
+> ===============================================================================
+> """
+> 
+> from python.frontend.core_types import ConfigItem
+> 
+> # =============================================================================
+> # 1. MACROSCOPIC SYSTEM ROUTING (REQUIRED)
+> # =============================================================================
+> ENGINE_TYPE = "ini"                        # STRICTLY ENFORCED: "ini"
+> TARGET_FILE = "~/.config/hegemony/daemon.conf" # The physical locus of state modification
+> APP_TITLE = "Dusky Subsystem Control"      # The authoritative nomenclature atop the UI
+> 
+> # =============================================================================
+> # 2. ENVIRONMENTAL PARAMETRIZATION
+> # =============================================================================
+> DEFAULT_MODE = "auto"                      # "auto" (instantaneous IO) | "batch" (deferred transactional commit via Ctrl+S)
+> THEME_FILE = "~/.config/matugen/generated/dusky_tui.json" # Chromatic variable mapping
+> ENABLE_USER_PRESETS = True                 # Authorize localized profile synthesization
+> USER_PRESETS_TAB = "Configurations"        # Must identically reflect a ONE-WORD tab designation below
+> 
+> # =============================================================================
+> # 3. MACRO-TAXONOMY (TABS DEFINITION)
+> # =============================================================================
+> 
+> TABS = [
+>     "Infrastructure",
+>     "Cryptography",
+>     "Configurations"
+> ]
+> 
+> # =============================================================================
+> # 4. THE SCHEMATIC ARCHITECTURE
+> # =============================================================================
+> 
+> SCHEMA = {
+>     # -------------------------------------------------------------------------
+>     # TAB 0: SYSTEMIC INFRASTRUCTURE
+>     # -------------------------------------------------------------------------
+>     0: [
+>         ConfigItem(
+>             label="Enforce Sovereign Telemetry",
+>             key="telemetry_active",
+>             scope="DEFAULT",       # UID = "telemetry_active" (Resides in the root of the INI)
+>             type_="bool",
+>             default=False,
+>             group="Surveillance",  # STRICT: ONE WORD ONLY
+>             extended_help="**Sovereign Telemetry Override**\n\nWhen instantiated, this parameter authorizes the daemon to perpetually exfiltrate operational diagnostics to the centralized hegemony. While ostensibly utilized for systemic optimization, the interlocutor should recognize the inherent privacy degradation precipitated by enabling this conduit."
+>         ),
+>         ConfigItem(
+>             label="Maximum Concurrent Vectors",
+>             key="max_connections",
+>             scope="network",       # UID = "network.max_connections" (Resides under [network])
+>             type_="int",
+>             default=1024,
+>             min_val=1,
+>             max_val=65535,
+>             step=64,
+>             group="Network",
+>             extended_help="**Socket Allocation Maximum**\n\nDelineates the absolute upper boundary of concurrent asynchronous socket connections permitted by the internal hypervisor. Elevating this threshold augments systemic throughput at the proportional expense of volatile memory allocation."
+>         ),
+>         ConfigItem(
+>             label="Primary Routing Protocol",
+>             key="routing_heuristic",
+>             scope="network",       # UID = "network.routing_heuristic"
+>             type_="cycle",
+>             default="bbr",
+>             options=["bbr", "cubic", "reno", "illinois"], 
+>             group="Network",
+>             extended_help="**Congestion Control Algorithm**\n\nDictates the algorithmic paradigm employed to govern packet transmission rates across the digital ether. `bbr` maximizes bandwidth utilization, whilst legacy protocols like `reno` provide predictable, albeit antiquated, bottleneck arbitration."
+>         ),
+>     ],
+> 
+>     # -------------------------------------------------------------------------
+>     # TAB 1: CRYPTOGRAPHIC SUBSYSTEMS & HYBRID ABSTRACTIONS
+>     # -------------------------------------------------------------------------
+>     1: [
+>         # --- HYBRID FOLDER IMPLEMENTATION ---
+>         # 1. The Sovereign Parent (Possesses authentic backend agency whilst masquerading as a structural folder)
+>         ConfigItem(
+>             label="Enable Quantum Resistance",
+>             key="quantum_hardening_enabled", 
+>             scope="security",         # UID = "security.quantum_hardening_enabled"
+>             type_="bool",             # Valid data type, subjected to backend I/O
+>             default=False,
+>             is_parent=True,           # Manifests the expandable menu morphology
+>             expanded=False,           # Defaults to obfuscation
+>             group="Encryption",
+>             extended_help="**Quantum Hardening Master Switch**\n\nThis Boolean orchestrates a macroscopic pivot toward post-quantum cryptographic primitives. \n\n- **ON**: Enforces draconian lattice-based cryptography, neutralizing Shor's algorithm threat vectors.\n- **OFF**: Retains reliance on standard elliptic curve vulnerabilities."
+>         ),
+>         # 2. Subordinate Entity A (Must sequentially succeed its Sovereign)
+>         ConfigItem(
+>             label="Lattice Generation Algorithm",
+>             key="lattice_primitive",
+>             scope="security",         # UID = "security.lattice_primitive"
+>             type_="picker",        
+>             default="Kyber768",
+>             options=["Kyber512", "Kyber768", "Kyber1024", "Dilithium"],
+>             hints=["Low Security", "Standard Hegemony", "Paranoid", "Signature Scheme"], 
+>             parent_ref="security.quantum_hardening_enabled",  # Syntactic linkage to the Sovereign's UID
+>             extended_help="**Post-Quantum Primitive Selection**\n\nSelects the specific mathematical architecture utilized to obfuscate symmetrical key exchanges. Elevating the matrix dimensions (e.g., Kyber1024) increases decryption resistance exponentially but severely degrades handshake velocity."
+>         ),
+>         # 3. Subordinate Entity B
+>         ConfigItem(
+>             label="Entropy Pool Rotation Interval",
+>             key="entropy_rotation_seconds",
+>             scope="security",         # UID = "security.entropy_rotation_seconds"
+>             type_="int",        
+>             default=3600,
+>             min_val=60,
+>             max_val=86400,
+>             step=60,
+>             parent_ref="security.quantum_hardening_enabled",
+>             extended_help="**Entropy Regeneration Matrix**\n\nQuantifies the chronological span (in seconds) preceding the forceful invalidation and reconstitution of the cryptographic entropy pool. Hyper-frequent rotations safeguard against prolonged state compromises."
+>         ),
+>     ],
+> 
+>     # -------------------------------------------------------------------------
+>     # TAB 2: ORCHESTRATION & STATE SYNCHRONIZATION
+>     # -------------------------------------------------------------------------
+>     2: [
+>         ConfigItem(
+>             label="Purge Cryptographic Ephemera",
+>             key="action_purge_keys", 
+>             scope="DEFAULT",          # UID = "action_purge_keys"
+>             type_="action",
+>             default="rm -rf ~/.config/hegemony/keys/* && echo 'Keyring Obliterated'",
+>             group="Maintenance",
+>             extended_help="**Destructive State Purge**\n\nExecuting this command line stratagem immediately decimates all volatile session keys via the POSIX subsystem. Utilize this mechanism exclusively during confirmed digital incursions to sever adversarial persistence."
+>         ),
+>         ConfigItem(
+>             label="Instantiate Lockdown Paradigm",
+>             key="preset_lockdown_mode",     
+>             scope="DEFAULT",          # UID = "preset_lockdown_mode"
+>             type_="preset",
+>             default=None,
+>             group="Orchestration",
+>             preset_payload={
+>                 "telemetry_active": False,      
+>                 "network.max_connections": 1,            
+>                 "security.quantum_hardening_enabled": True,
+>                 "security.lattice_primitive": "Kyber1024"
+>             },
+>             extended_help="**Totalitarian Security Preset**\n\nInstantly overwrites the operational matrix to enforce maximal defensive posturing. \n\nImplementation guarantees:\n1. Severance of all non-essential telemetry.\n2. Strangulation of concurrent connections to absolute singularity.\n3. Mandatory implementation of paramount post-quantum cryptography.\n\n*Note: Any configuration unaddressed within this payload shall be ruthlessly regressed to its primordial default.*"
+>         ),
+>     ]
+> }
+> 
+> # =============================================================================
+> # QUICK-REFERENCE CODEX (THE INI HEGEMONY)
+> # =============================================================================
+> #
+> # ConfigItem(
+> #     label          = "Display Nomenclature",
+> #     key            = "backend_identifier",
+> #     scope          = "section_name",     # "section_name" (e.g., [core]) or "DEFAULT" for root keys
+> #     type_          = "bool",             # STANDARD: bool | int | float | string | color
+> #                                          # MODALS: cycle | picker 
+> #                                          # ABSTRACTIONS: action | preset | menu
+> #     default        = None,               # Native Python type MUST reflect type_ (e.g., True, 10, "text"). 
+> #                                          # -> For 'action', default is the POSIX execution string. 
+> #                                          # -> For 'menu' & 'preset', default MUST resolve to None.
+> #     options        = [],                 # Imperative for 'cycle'/'picker'. Triggers Hybrid Dropdowns for standard scalars.
+> #     hints          = [],                 # Explanatory subtitles for 'picker' modals.
+> #     preset_payload = {},                 # Dict mapping "scope.key" to target_value. Omissions trigger factory reset.
+> #     min_val        = None,               # Mathematical nadir (int/float)
+> #     max_val        = None,               # Mathematical zenith (int/float)
+> #     step           = None,               # Iterative adjustment coefficient
+> #     group          = "OneWord",          # STRICT: Visual header MUST be a solitary lexeme.
+> #     extended_help  = "Markdown Prose",   # Rigorous documentation for the interlocutor's perusal.
+> #     is_parent      = False,              # Dictates whether this entity encapsulates subordinate logic.
+> #     parent_ref     = None,               # Syntactic linkage to a Sovereign parent. Must mirror parent's UID ("scope.key").
+> #     expanded       = False,              # Default UI expansion state.
 > # )
 > ```
