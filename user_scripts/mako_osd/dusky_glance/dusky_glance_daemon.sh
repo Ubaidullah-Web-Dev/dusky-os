@@ -285,9 +285,13 @@ case "$MODE" in
 
     --disk)
         while true; do
-            usage=$(df -h / | awk 'NR==2 {print $5}')
-            send_osd "Disk: ${usage}"
-            sleep 10
+            {
+                read -r _ # Discard the header row
+                read -r used size pcent
+            } < <(df -h --output=used,size,pcent /)
+
+            send_osd "${used}/${size} ${pcent}"
+            sleep 1
         done
         ;;
 
