@@ -247,9 +247,6 @@ if (( ${#NEEDED_DEPS[@]} > 0 )); then
 fi
 
 # --- 5. PIPEWIRE SERVICE ACTIVATION ---
-# On fresh installs, PipeWire services may be installed but not started.
-# If we just installed audio packages, PipeWire needs a restart to discover
-# the new ALSA SPA plugins and create audio device nodes.
 if $AUDIO_PKGS_INSTALLED || ! systemctl --user is-active pipewire.service >/dev/null 2>&1; then
     printf "%b[AUDIO]%b Activating PipeWire audio services...\n" "${C_BLUE}" "${C_RESET}"
     systemctl --user enable pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null || true
@@ -306,13 +303,26 @@ fi
 
 mkdir -p "$BASE_DIR" 2>/dev/null || true
 
+# Silence cross-filesystem hardlink warnings (common on Arch with BTRFS subvolumes or tmpfs)
+export UV_LINK_MODE=copy
+
+# [AUTO-HEAL]: Arch Linux Python updates notoriously break symlinked venvs.
+# This strictly checks if the venv exists BUT the python binary is dead.
+# If dead, it silently nukes the environment to force a pristine rebuild.
+if [[ -x "$PYTHON_BIN" ]] && ! "$PYTHON_BIN" -c "pass" >/dev/null 2>&1; then
+    printf "%b[REPAIR]%b System Python upgrade detected (broken venv). Auto-healing...\n" "${C_YELLOW}" "${C_RESET}"
+    rm -rf "$VENV_DIR" "$BASE_DIR"/.build_marker_*
+fi
+
 if [[ ! -d "$VENV_DIR" ]]; then
     if ! $INTERACTIVE; then
         notify_user "Environment not built! Run in terminal once to initialize."
         exit 1
     fi
     printf "%b[BUILD]%b Initializing UV environment...\n" "${C_BLUE}" "${C_RESET}"
-    uv venv "$VENV_DIR" --python 3.14 --quiet
+    # Explicitly asking for >=3.14 ensures uv seeks the absolute cutting edge 
+    # rolling release present on your system while never falling back to older versions.
+    uv venv "$VENV_DIR" --python ">=3.14" --quiet
 fi
 
 MARKER_FILE="$BASE_DIR/.build_marker_v10"
@@ -330,10 +340,6 @@ if [[ ! -f "$MARKER_FILE" ]]; then
     export CXXFLAGS="$CFLAGS"
     export LDFLAGS="-Wl,-O2,--sort-common,--as-needed,-z,now,--relax -flto=auto"
 
-    # --no-binary targets ONLY our runtime libraries (evdev, pygame-ce).
-    # Build tools (cmake, ninja, scikit-build-core) use pre-built wheels.
-    # This avoids needing 'make' on fresh installs while still compiling
-    # the hot-path C extensions with native CPU flags.
     uv pip install --python "$PYTHON_BIN" \
         --no-binary evdev --no-binary pygame-ce \
         --no-cache \
@@ -421,6 +427,7 @@ print(f"{C_BLUE}[AUDIO]{C_RESET} Buffer={BUFFER_SIZE} samples (~{latency_ms:.1f}
       f"Rate={SAMPLE_RATE}Hz | Channels={MIX_CHANNELS}")
 
 # === DISABLE GARBAGE COLLECTOR ===
+# (100% safe here as our runloop generates zero cyclic references. Prevents latency spikes).
 gc.disable()
 
 # === CONFIG LOADING ===
@@ -468,7 +475,6 @@ for code, filename in RAW_KEY_MAP.items():
 # === HOT PATH PRE-BINDING ===
 _random_choice = random.choice
 _sound_cache   = SOUND_CACHE
-_max_keycode   = MAX_KEYCODE
 _defaults      = DEFAULT_SOUND_OBJS
 _has_defaults  = bool(DEFAULT_SOUND_OBJS)
 
@@ -479,31 +485,39 @@ if DEBUG:
 
     def play_sound(code):
         t0 = _perf()
-        sound = _sound_cache[code] if code < _max_keycode else None
-        if sound is not None:
-            sound.play()
-        elif _has_defaults:
-            _random_choice(_defaults).play()
+        try:
+            sound = _sound_cache[code]
+            if sound is not None:
+                sound.play()
+            elif _has_defaults:
+                _random_choice(_defaults).play()
+        except IndexError:
+            pass # Silently drop absurd out-of-bounds keycodes
+            
         elapsed_us = (_perf() - t0) / 1000
         print(f"  \u23f1 {elapsed_us:.1f}\u00b5s [code={code}]")
 else:
     def play_sound(code):
-        sound = _sound_cache[code] if code < _max_keycode else None
-        if sound is not None:
-            sound.play()
-        elif _has_defaults:
-            _random_choice(_defaults).play()
+        try:
+            # EAFP (Easier to Ask for Forgiveness) - Try block executes faster 
+            # than evaluating an `if code < MAX` branch check in Python.
+            sound = _sound_cache[code]
+            if sound is not None:
+                sound.play()
+            elif _has_defaults:
+                _random_choice(_defaults).play()
+        except IndexError:
+            pass
 
 # === DEVICE READER ===
-async def read_device(dev, stop_event):
+async def read_device(dev):
     _play = play_sound
-    _is_stopped = stop_event.is_set
 
     print(f"{C_GREEN}[+] Connected:{C_RESET} {dev.name} {C_DIM}({dev.path}){C_RESET}")
     try:
         async for event in dev.async_read_loop():
-            if _is_stopped():
-                break
+            # Stripped the manual stop check here for micro-optimization. 
+            # Task cancellation handles the shutdown sequence natively.
             if event.type == 1 and event.value == 1:
                 _play(event.code)
     except (OSError, IOError):
@@ -518,6 +532,7 @@ async def read_device(dev, stop_event):
 
 # === MAIN LOOP ===
 async def main():
+    loop = asyncio.get_running_loop()
     loop_type = "uvloop (native)" if _UVLOOP else "asyncio (standard)"
     print(f"{C_BLUE}[CORE]{C_RESET}  Engine started | Event loop: {loop_type}")
 
@@ -529,11 +544,9 @@ async def main():
 
     stop = asyncio.Event()
 
-    def _request_shutdown(signum, frame):
-        stop.set()
-
-    signal.signal(signal.SIGINT, _request_shutdown)
-    signal.signal(signal.SIGTERM, _request_shutdown)
+    # Thread-safe asyncio signal handling
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
 
     monitored_tasks = {}
     skipped_paths = set()
@@ -577,7 +590,7 @@ async def main():
                                 continue
 
                     if 1 in caps:
-                        task = asyncio.create_task(read_device(dev, stop))
+                        task = asyncio.create_task(read_device(dev))
                         monitored_tasks[path] = task
                     else:
                         dev.close()
@@ -607,9 +620,8 @@ async def main():
 if __name__ == "__main__":
     try:
         if _UVLOOP:
-            uvloop.run(main())
-        else:
-            asyncio.run(main())
+            uvloop.install()
+        asyncio.run(main())
     except KeyboardInterrupt:
         pass
 PYTHON_EOF
