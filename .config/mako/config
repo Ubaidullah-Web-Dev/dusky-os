@@ -49,10 +49,10 @@ on-notify=exec pkill -RTMIN+8 waybar
 # ==============================================================================
 # TUI NOTE: To hardcode a color, replace the matugen variable with a hex code.
 # NOTE ON MATUGEN SYNTAX: Material Design 3 roles MUST use snake_case!
-background-color=#1b101766
-text-color=#f2dde7
-border-color=#ffade1ee
-progress-color=#87006e
+background-color=#11131c66
+text-color=#e1e1ef
+border-color=#b7c4ffee
+progress-color=#0038b8
 
 # ==============================================================================
 # 5. STATE MODES (Cascading Overrides)
@@ -70,9 +70,9 @@ on-notify=none
 [urgency=low]
 default-timeout=2000
 # OVERRIDES
-# background-color=#1b1017e6
-# text-color=#f2dde7
-# border-color=#51434b
+# background-color=#11131ce6
+# text-color=#e1e1ef
+# border-color=#454651
 
 [urgency=normal]
 default-timeout=3000
@@ -83,7 +83,7 @@ default-timeout=0
 ignore-timeout=1
 on-notify=exec pkill -RTMIN+8 waybar
 # OVERRIDES
-background-color=#93000a66
+background-color=#93000ae6
 text-color=#ffdad6
 border-color=#ffb4ab
 
@@ -141,9 +141,9 @@ font=monospace 14
 format=%s
 default-timeout=1500
 # OVERRIDES
-background-color=#51434b66
-text-color=#d5c1cb
-border-color=#9e8c95
+background-color=#454651ff
+text-color=#c5c5d3
+border-color=#8f909c
 
 [app-name=dusky-cava]
 anchor=bottom-center
@@ -159,9 +159,9 @@ font=monospace 22
 format=%s
 default-timeout=0
 # OVERRIDES
-# background-color=#281c23ff
-# text-color=#ffade1
-# border-color=#87006e
+# background-color=#1d1f29ff
+# text-color=#b7c4ff
+# border-color=#0038b8
 
 [app-name=dusky-cava-alert]
 anchor=bottom-center
@@ -174,8 +174,8 @@ text-alignment=center
 font=monospace 12
 default-timeout=3000
 # OVERRIDES
-# background-color=#6e3540ff
-# text-color=#ffd9de
+# background-color=#513e6dff
+# text-color=#eddcff
 
 [app-name=dusky-glance]
 anchor=bottom-right
@@ -192,8 +192,8 @@ on-button-left=exec bash -c "pkill rofi; uwsm-app -- $HOME/user_scripts/rofi/dus
 default-timeout=0
 # OVERRIDES
 background-color=#00000000
-# text-color=#ffade1
-# border-color=#9e8c95
+# text-color=#b7c4ff
+# border-color=#8f909c
 
 [app-name=dusky-glance-alert]
 anchor=top-center
@@ -208,6 +208,6 @@ text-alignment=center
 ignore-timeout=1
 on-button-left=dismiss
 # OVERRIDES
-background-color=#623b4b66
-text-color=#ffd9e5
-border-color=#eeb8cb
+background-color=#464364ee
+text-color=#e4dfff
+border-color=#c7c2ea

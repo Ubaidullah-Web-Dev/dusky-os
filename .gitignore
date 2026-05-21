@@ -9,3 +9,4 @@ user_scripts/theme_matugen/firefox/config.json
 .config/uwsm/env.d/gpu
 .config/zellij/themes/matugen.kdl
 .config/foot/foot-colors.ini
+.config/mako/config
