@@ -1365,7 +1365,8 @@ class DuskyTUI(App):
                     r, g, b = color_to_rgb(resolved_color)
                     hex_color = f"#{r:02x}{g:02x}{b:02x}"
                     
-                    txt.append(" ⬤ ", style=hex_color if exists else self.theme_colors["muted"])
+                    if not is_theme_variable(val_str):
+                        txt.append(" ⬤ ", style=hex_color if exists else self.theme_colors["muted"])
                     
                     if is_theme_variable(val_str):
                         # Global variable tracker across the TUI
@@ -1414,6 +1415,9 @@ class DuskyTUI(App):
                                 prefix_match = re.search(r"[@$]([a-zA-Z0-9_-]+)", norm_val)
                                 if prefix_match:
                                     extracted_name = prefix_match.group(1)
+                                # 4. Bare Lexical Aliases: primary, inverse_on_surface (Hyprland structural constants)
+                                elif re.match(r"^[a-zA-Z0-9_-]+$", norm_val):
+                                    extracted_name = norm_val
                                     
                             if extracted_name:
                                 # Clean formatting (e.g., 'window_bg_color' -> 'Window Bg Color')
