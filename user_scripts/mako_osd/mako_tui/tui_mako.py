@@ -310,7 +310,7 @@ SCHEMA = {
             key="progress-color",
             scope="DEFAULT",       
             type_="color",
-            default="{{colors.primary_container.default.hex}}4d",
+            default="{{colors.primary_container.default.hex}}59",
             options=COLOR_OPTIONS,
             hints=COLOR_HINTS,
             group="Colors",
@@ -556,6 +556,7 @@ SCHEMA = {
             label="Updater", key="menu_updater", scope="DEFAULT", type_="menu", default=None, is_parent=True, group="Apps",
             extended_help="**Dusky Updater**\n\nHandles update alerts spawned by the system dotfile synchronization scripts."
         ),
+        ConfigItem(label="Layer", key="layer", scope='summary="Dusky Dotfiles"', type_="cycle", default="overlay", options=["background", "bottom", "top", "overlay"], parent_ref="menu_updater", extended_help="**Updater Layer**\n\nArranges the update notification at a specific Wayland surface layer."),
         ConfigItem(label="OnClick", key="on-button-left", scope='summary="Dusky Dotfiles"', type_="string", default="exec kitty --class update_dusky.sh --hold ~/user_scripts/update_dusky/update_dusky.sh", parent_ref="menu_updater", extended_help="**Trigger Update**\n\nShell script executed on interaction to launch the update terminal."),
 
         # =====================================================================
@@ -566,6 +567,7 @@ SCHEMA = {
             extended_help="**On-Screen Display**\n\nControls the popup aesthetic for hardware changes like Volume or Brightness. These specifically target notifications pushed with `app-name=OSD`."
         ),
         ConfigItem(label="Anchor", key="anchor", scope="app-name=OSD", type_="cycle", default="bottom-center", options=["top-right", "top-center", "top-left", "bottom-right", "bottom-center", "bottom-left", "center-right", "center-left", "center"], parent_ref="menu_osd", extended_help="**OSD Position**\n\nWhere the Volume/Brightness overlay anchors on the display."),
+        ConfigItem(label="Layer", key="layer", scope="app-name=OSD", type_="cycle", default="overlay", options=["background", "bottom", "top", "overlay"], parent_ref="menu_osd", extended_help="**OSD Layer**\n\nArranges the hardware popup at a specific Wayland surface layer."),
         ConfigItem(label="Width", key="width", scope="app-name=OSD", type_="int", default=242, min_val=50, max_val=800, step=2, parent_ref="menu_osd", extended_help="**OSD Pixel Width**\n\nTotal width allocated for the progress bar and icon."),
         ConfigItem(label="Height", key="height", scope="app-name=OSD", type_="int", default=48, min_val=10, max_val=200, step=2, parent_ref="menu_osd", extended_help="**OSD Pixel Height**\n\nTotal thickness of the hardware overlay."),
         ConfigItem(label="Outer", key="outer-margin", scope="app-name=OSD", type_="string", default="0,0,0,0", parent_ref="menu_osd", extended_help="**OSD Offset Margin**\n\nPushes the OSD inward from the screen edge."),
@@ -589,6 +591,7 @@ SCHEMA = {
             extended_help="**Keyboard Layout Display**\n\nThe quick popup indicating language or keyboard layout swaps. Targets notifications pushed with `app-name=dusky-keys`."
         ),
         ConfigItem(label="Anchor", key="anchor", scope="app-name=dusky-keys", type_="cycle", default="bottom-center", options=["top-right", "top-center", "top-left", "bottom-right", "bottom-center", "bottom-left", "center-right", "center-left", "center"], parent_ref="menu_keys", extended_help="**Keys Position**\n\nScreen anchor for the layout notification."),
+        ConfigItem(label="Layer", key="layer", scope="app-name=dusky-keys", type_="cycle", default="overlay", options=["background", "bottom", "top", "overlay"], parent_ref="menu_keys", extended_help="**Keys Layer**\n\nArranges the layout indicator at a specific Wayland surface layer."),
         ConfigItem(label="Width", key="width", scope="app-name=dusky-keys", type_="int", default=200, min_val=50, max_val=800, step=10, parent_ref="menu_keys", extended_help="**Keys Width**\n\nWidth of the layout text box."),
         ConfigItem(label="Height", key="height", scope="app-name=dusky-keys", type_="int", default=40, min_val=10, max_val=200, step=2, parent_ref="menu_keys", extended_help="**Keys Height**\n\nHeight of the layout text box."),
         ConfigItem(label="Margin", key="margin", scope="app-name=dusky-keys", type_="string", default="0,0,0,0", parent_ref="menu_keys", extended_help="**Keys Margin**\n\nMargin parameters controlling placement offset."),
@@ -612,6 +615,7 @@ SCHEMA = {
             extended_help="**Audio Visualizer Block**\n\nThe primary animated audio visualizer popup block. Configures notifications pushed with `app-name=dusky-cava`."
         ),
         ConfigItem(label="Anchor", key="anchor", scope="app-name=dusky-cava", type_="cycle", default="bottom-center", options=["top-right", "top-center", "top-left", "bottom-right", "bottom-center", "bottom-left", "center-right", "center-left", "center"], parent_ref="menu_cava", extended_help="**Cava Position**\n\nAnchoring target for the visualizer block."),
+        ConfigItem(label="Layer", key="layer", scope="app-name=dusky-cava", type_="cycle", default="overlay", options=["background", "bottom", "top", "overlay"], parent_ref="menu_cava", extended_help="**Cava Layer**\n\nArranges the visualizer block at a specific Wayland surface layer."),
         ConfigItem(label="Width", key="width", scope="app-name=dusky-cava", type_="int", default=380, min_val=100, max_val=800, step=10, parent_ref="menu_cava", extended_help="**Cava Box Width**\n\nHorizontal size of the visualizer spectrum box."),
         ConfigItem(label="Height", key="height", scope="app-name=dusky-cava", type_="int", default=40, min_val=10, max_val=200, step=2, parent_ref="menu_cava", extended_help="**Cava Box Height**\n\nVertical limit for the audio spectrum output."),
         ConfigItem(label="Margin", key="margin", scope="app-name=dusky-cava", type_="string", default="0,0,20,0", parent_ref="menu_cava", extended_help="**Cava Offset Margin**\n\nSpacing pushing the visualizer away from the screen boundaries."),
@@ -632,6 +636,7 @@ SCHEMA = {
             extended_help="**Cava System Prompts**\n\nNotification alerts originating directly from the visualizer scripts (e.g. Script errors or toggle confirmations)."
         ),
         ConfigItem(label="Anchor", key="anchor", scope="app-name=dusky-cava-alert", type_="cycle", default="bottom-center", options=["top-right", "top-center", "top-left", "bottom-right", "bottom-center", "bottom-left", "center-right", "center-left", "center"], parent_ref="menu_cava_alert", extended_help="**Cava Alert Position**\n\nWhere visualizer error/info popups display."),
+        ConfigItem(label="Layer", key="layer", scope="app-name=dusky-cava-alert", type_="cycle", default="overlay", options=["background", "bottom", "top", "overlay"], parent_ref="menu_cava_alert", extended_help="**Cava Alert Layer**\n\nArranges the system prompt at a specific Wayland surface layer."),
         ConfigItem(label="Width", key="width", scope="app-name=dusky-cava-alert", type_="int", default=300, min_val=50, max_val=800, step=10, parent_ref="menu_cava_alert", extended_help="**Cava Alert Width**\n\nWidth of the alert text box."),
         ConfigItem(label="Height", key="height", scope="app-name=dusky-cava-alert", type_="int", default=40, min_val=10, max_val=200, step=2, parent_ref="menu_cava_alert", extended_help="**Cava Alert Height**\n\nVertical limit for the alert box."),
         ConfigItem(label="Margin", key="margin", scope="app-name=dusky-cava-alert", type_="string", default="0,0,20,0", parent_ref="menu_cava_alert", extended_help="**Cava Alert Margin**\n\nScreen offset parameters."),
@@ -651,6 +656,7 @@ SCHEMA = {
             extended_help="**Dusky Glance Panel**\n\nThe floating corner dashboard widget displaying active system metrics (RAM, CPU, Net). Configures `app-name=dusky-glance`."
         ),
         ConfigItem(label="Anchor", key="anchor", scope="app-name=dusky-glance", type_="cycle", default="bottom-right", options=["top-right", "top-center", "top-left", "bottom-right", "bottom-center", "bottom-left", "center-right", "center-left", "center"], parent_ref="menu_glance", extended_help="**Glance Position**\n\nThe screen corner the dashboard widget anchors into."),
+        ConfigItem(label="Layer", key="layer", scope="app-name=dusky-glance", type_="cycle", default="top", options=["background", "bottom", "top", "overlay"], parent_ref="menu_glance", extended_help="**Glance Layer**\n\nArranges the dashboard widget at a specific Wayland surface layer. 'top' allows fullscreen apps to cover it."),
         ConfigItem(label="Width", key="width", scope="app-name=dusky-glance", type_="int", default=240, min_val=50, max_val=500, step=10, parent_ref="menu_glance", extended_help="**Glance Dimensions**\n\nWidth of the dashboard widget."),
         ConfigItem(label="Height", key="height", scope="app-name=dusky-glance", type_="int", default=40, min_val=20, max_val=200, step=2, parent_ref="menu_glance", extended_help="**Glance Height**\n\nHeight of the dashboard widget."),
         ConfigItem(label="Margin", key="margin", scope="app-name=dusky-glance", type_="string", default="0,0,0,0", parent_ref="menu_glance", extended_help="**Glance Offset**\n\nSpatiotemporal margins dictating distance from the screen edge."),
@@ -671,6 +677,7 @@ SCHEMA = {
             extended_help="**Glance System Alerts**\n\nPopup alerts sent from the Glance background daemon (e.g., Critical Battery Warnings, Hardware detachments)."
         ),
         ConfigItem(label="Anchor", key="anchor", scope="app-name=dusky-glance-alert", type_="cycle", default="top-center", options=["top-right", "top-center", "top-left", "bottom-right", "bottom-center", "bottom-left", "center-right", "center-left", "center"], parent_ref="menu_glance_alert", extended_help="**Alert Display Target**\n\nWhere major hardware warnings drop from on screen."),
+        ConfigItem(label="Layer", key="layer", scope="app-name=dusky-glance-alert", type_="cycle", default="overlay", options=["background", "bottom", "top", "overlay"], parent_ref="menu_glance_alert", extended_help="**Alert Layer**\n\nArranges hardware warnings at a specific Wayland surface layer. 'overlay' forces them above fullscreen windows."),
         ConfigItem(label="Width", key="width", scope="app-name=dusky-glance-alert", type_="int", default=300, min_val=100, max_val=800, step=10, parent_ref="menu_glance_alert", extended_help="**Alert Breadth**\n\nTotal allocated width for hardware warning popups."),
         ConfigItem(label="Height", key="height", scope="app-name=dusky-glance-alert", type_="int", default=80, min_val=20, max_val=200, step=4, parent_ref="menu_glance_alert", extended_help="**Alert Elevation**\n\nTotal allocated height for hardware warning popups."),
         ConfigItem(label="Margin", key="margin", scope="app-name=dusky-glance-alert", type_="string", default="20,0,0,0", parent_ref="menu_glance_alert", extended_help="**Alert Offset**\n\nCSS string isolating the popup from edges."),
