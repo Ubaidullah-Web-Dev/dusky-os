@@ -66,6 +66,7 @@ class ConfigItem:
     # Validation, Prompts, & Multi-Engine Targeting Overrides
     warning_msg: str | None = None
     popup_message: str | None = None
+    confirm_message: str | None = None  # Requires explicit dialog confirmation before mutation
     target_file_override: str | None = None
     engine_type_override: str | None = None
 

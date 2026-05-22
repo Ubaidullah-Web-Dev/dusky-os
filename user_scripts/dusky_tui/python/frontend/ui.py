@@ -167,8 +167,56 @@ def load_matugen_json(file_path: Path) -> dict[str, str] | None:
     except (OSError, json.JSONDecodeError): return None
 
 # =============================================================================
+# NOTICES & DISCLAIMERS
+# =============================================================================
+
+class NoticeBox(Vertical):
+    def __init__(self, message: str, level: str = "info", **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.message = message
+        self.level = level
+        self.add_class(f"-{level}")
+
+    def compose(self) -> ComposeResult:
+        yield Markdown(self.message)
+
+# =============================================================================
 # MODALS & OVERLAYS
 # =============================================================================
+
+class ConfirmDialog(ModalScreen[bool]):
+    BINDINGS = [
+        Binding("escape", "dismiss_false", "Cancel"),
+        Binding("enter", "dismiss_true", "Confirm"),
+    ]
+
+    def __init__(self, message: str, title: str = "CONFIRM", level: str = "warning") -> None:
+        super().__init__()
+        self.message = message
+        self.title_text = title
+        self.level = level
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="confirm-dialog", classes=f"-{self.level}"):
+            yield Label(self.title_text, id="modal-title")
+            yield Markdown(self.message, id="confirm-message")
+            with Horizontal(classes="modal-btn-container"):
+                yield Label(" Cancel ", classes="modal-cancel-btn", id="btn-cancel")
+                yield Label(" Confirm ", classes="modal-close-btn", id="btn-confirm")
+
+    def action_dismiss_false(self) -> None: self.dismiss(False)
+    def action_dismiss_true(self) -> None: self.dismiss(True)
+
+    @on(events.Click, "#btn-cancel")
+    def on_cancel_click(self) -> None: self.dismiss(False)
+
+    @on(events.Click, "#btn-confirm")
+    def on_confirm_click(self) -> None: self.dismiss(True)
+
+    @on(events.Click)
+    def on_background_click(self, event: events.Click) -> None:
+        if event.control is self:
+            self.dismiss(False)
 
 class AlertDialog(ModalScreen[None]):
     BINDINGS = [
@@ -176,17 +224,19 @@ class AlertDialog(ModalScreen[None]):
         Binding("enter", "dismiss_modal", "Dismiss"),
     ]
 
-    def __init__(self, message: str, title: str = "NOTICE") -> None:
+    def __init__(self, message: str, title: str = "NOTICE", level: str = "warning", btn_text: str = " OK ") -> None:
         super().__init__()
         self.message = message
         self.title_text = title
+        self.level = level
+        self.btn_text = btn_text
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="alert-dialog"):
+        with Vertical(id="alert-dialog", classes=f"-{self.level}"):
             yield Label(self.title_text, id="modal-title")
             yield Markdown(self.message, id="alert-message")
             with Horizontal(classes="modal-btn-container"):
-                yield Label(" OK ", classes="modal-close-btn")
+                yield Label(f" {self.btn_text} ", classes="modal-close-btn")
 
     def action_dismiss_modal(self) -> None:
         self.dismiss(None)
@@ -903,6 +953,16 @@ class DuskyTUI(App):
     Tab:hover { color: $foreground; background: $primary 25%; }
     Tab.-active { color: $background; background: $primary; text-style: bold; border: none; }
 
+    /* Schema Driven Notice Boxes */
+    NoticeBox {
+        width: 100%; height: auto; padding: 0 1; margin: 1 1 0 1; background: transparent;
+    }
+    NoticeBox > Markdown { background: transparent; color: $foreground; }
+    NoticeBox.-info { border-left: solid $primary; background: $primary 10%; }
+    NoticeBox.-warning { border-left: solid $warning; background: $warning 10%; }
+    NoticeBox.-danger { border-left: solid $error; background: $error 10%; }
+    NoticeBox.-success { border-left: solid $success; background: $success 10%; }
+
     .list-wrapper { height: 1fr; }
     ConfigOptionList { min-width: 20; width: 1fr; height: 1fr; scrollbar-size: 0 0; background: transparent; border: none; }
     ConfigOptionList > .option-list--option { padding: 0 1; background: transparent; transition: background 150ms linear; }
@@ -937,7 +997,7 @@ class DuskyTUI(App):
     #file-link { padding: 0 1; background: transparent; }
     #file-link:hover { text-style: bold; color: $foreground; background: $primary 25%; }
 
-    HybridInputScreen, PickerScreen, SearchScreen, DiffScreen, ShortcutsInfoScreen, AlertDialog { align: center middle; background: rgba(0, 0, 0, 0.75); }
+    HybridInputScreen, PickerScreen, SearchScreen, DiffScreen, ShortcutsInfoScreen, ConfirmDialog, AlertDialog { align: center middle; background: rgba(0, 0, 0, 0.75); }
 
     #picker-dialog { width: 60; height: 70%; background: $background; border: solid $primary; padding: 1 2; }
     #search-dialog { width: 60; height: 80%; background: $background; border: solid $primary; padding: 1 2; }
@@ -945,8 +1005,20 @@ class DuskyTUI(App):
     #shortcuts-dialog { width: 70; height: 80%; background: $background; border: solid $primary; padding: 1 2; }
     #modal-dialog { width: 50; height: auto; background: $background; border: solid $primary; padding: 1 2; }
 
-    #alert-dialog { width: 50; height: auto; max-height: 80%; background: $background; border: solid $warning; padding: 1 2; }
-    #alert-message { color: $foreground; margin-bottom: 1; }
+    /* Modals with Dynamic Severities */
+    #alert-dialog { width: 50; height: auto; max-height: 80%; background: $background; padding: 1 2; }
+    #alert-dialog.-info { border: solid $primary; }
+    #alert-dialog.-warning { border: solid $warning; }
+    #alert-dialog.-danger { border: solid $error; }
+    #alert-dialog.-success { border: solid $success; }
+
+    #confirm-dialog { width: 50; height: auto; max-height: 80%; background: $background; padding: 1 2; }
+    #confirm-dialog.-info { border: solid $primary; }
+    #confirm-dialog.-warning { border: solid $warning; }
+    #confirm-dialog.-danger { border: solid $error; }
+    #confirm-dialog.-success { border: solid $success; }
+
+    #alert-message, #confirm-message { color: $foreground; margin-bottom: 1; }
 
     #picker-list, #search-list, #diff-list, #shortcuts-list { height: 1fr; scrollbar-size: 0 0; background: transparent; border: none; }
     #search-list > .option-list--option { padding: 0 1; background: transparent; transition: background 100ms linear; }
@@ -972,12 +1044,12 @@ class DuskyTUI(App):
         margin-top: 1; background: transparent;
     }
 
-    .modal-close-btn {
-        background: $primary; color: $background; text-style: bold;
-        padding: 0 2; width: auto; height: 1;
-    }
-
+    /* Universal Modal Buttons */
+    .modal-close-btn { background: $primary; color: $background; text-style: bold; padding: 0 2; width: auto; height: 1; margin: 0 1;}
     .modal-close-btn:hover { background: $foreground; color: $background; }
+
+    .modal-cancel-btn { background: $surface-variant; color: $foreground; text-style: bold; padding: 0 2; width: auto; height: 1; margin: 0 1;}
+    .modal-cancel-btn:hover { background: $primary; color: $background; }
 
     #modal-title, #picker-title { color: $primary; margin-bottom: 1; text-style: bold; border-bottom: solid $secondary; }
     #modal-hint { color: $secondary; text-style: italic; content-align: center middle; width: 100%; margin-top: 1; }
@@ -1021,11 +1093,12 @@ class DuskyTUI(App):
 
     auto_save = reactive(True)
 
-    def __init__(self, engine_pool: dict[tuple[str, str], BaseEngine], default_engine_key: tuple[str, str], schema: dict[int, list[ConfigItem]], tabs: list[str], title="Dusky Editor", theme_path: str | None = None, default_mode: str = "auto", schema_name: str = "default", enable_user_presets: bool = True, user_presets_tab: str | None = None, global_popup: str | None = None, **kwargs):
+    def __init__(self, engine_pool: dict[tuple[str, str], BaseEngine], default_engine_key: tuple[str, str], schema: dict[int, list[ConfigItem]], tabs: list[str], title="Dusky Editor", theme_path: str | None = None, default_mode: str = "auto", schema_name: str = "default", enable_user_presets: bool = True, user_presets_tab: str | None = None, global_popup: Any | None = None, tab_notices: dict[int, dict] | None = None, **kwargs):
         super().__init__(**kwargs)
         self.engine_pool = engine_pool
         self.default_engine_key = default_engine_key
         self.global_popup = global_popup
+        self.tab_notices = tab_notices or {}
         self.schema = schema
         self.tabs = tabs
         self.editor_title = title
@@ -1035,10 +1108,6 @@ class DuskyTUI(App):
         self.enable_user_presets = enable_user_presets
         self.user_presets_tab_name = user_presets_tab
         self.user_presets_tab_idx = 0
-        
-        # Track external configuration file modifications dynamically across multiple engines
-        self.last_target_mtimes: dict[tuple[str, str], float] = {}
-        self._initial_target_mtimes_set: bool = False
         
         # Route User Presets to their proper schema tab assignment automatically
         if self.user_presets_tab_name and self.user_presets_tab_name in self.tabs:
@@ -1084,6 +1153,9 @@ class DuskyTUI(App):
         self._cached_tab_right: Label | None = None
 
         self.auto_save = (default_mode.lower() == "auto")
+        # Track external configuration file modifications dynamically across multiple engines
+        self.last_target_mtimes: dict[tuple[str, str], float] = {}
+        self._initial_target_mtimes_set: bool = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="main-box"):
@@ -1105,6 +1177,14 @@ class DuskyTUI(App):
                 with ContentSwitcher(initial="tab-0", id="content-switcher"):
                     for i, name in enumerate(self.tabs):
                         with Vertical(id=f"tab-{i}"):
+                            
+                            # Render Schema-Driven Tab Structural Notices
+                            tab_notice = self.tab_notices.get(i)
+                            if tab_notice:
+                                level = tab_notice.get("level", "info")
+                                message = tab_notice.get("message", "")
+                                yield NoticeBox(message, level=level, id=f"notice-{i}")
+
                             with Horizontal(classes="list-wrapper"):
                                 yield ConfigOptionList(id=f"list-{i}")
                                 with Vertical(classes="indicator-column"):
@@ -1449,7 +1529,24 @@ class DuskyTUI(App):
 
         # Trigger Global Notice Hook if defined in the schema
         if self.global_popup:
-            self.call_after_refresh(lambda: self.push_screen(AlertDialog(self.global_popup, title="System Notice")))
+            def show_popup():
+                if isinstance(self.global_popup, dict):
+                    msg = self.global_popup.get("message", "")
+                    title = self.global_popup.get("title", "System Notice")
+                    level = self.global_popup.get("level", "info")
+                    btn_text = self.global_popup.get("btn_text", " I Understand ")
+                    
+                    if self.global_popup.get("require_confirm", False):
+                        def on_confirm(confirmed: bool):
+                            if not confirmed and self.global_popup.get("cancel_quits", False):
+                                self.action_quit()
+                        self.push_screen(ConfirmDialog(msg, title=title, level=level), on_confirm)
+                    else:
+                        self.push_screen(AlertDialog(msg, title=title, level=level, btn_text=btn_text))
+                else:
+                    self.push_screen(AlertDialog(str(self.global_popup), title="System Notice", level="warning"))
+            
+            self.call_after_refresh(show_popup)
 
     def _populate_option_list(self, tab_idx: int, maintain_highlight_id: str | None = None) -> None:
         """
@@ -1889,6 +1986,16 @@ class DuskyTUI(App):
             self._preset_refresh_timer = None
         self._refresh_presets_ui()
 
+    def _safe_apply_value(self, tab_idx: int, item_idx: int, item: ConfigItem, new_val: Any, is_undo: bool = False, batch_mode: bool = False, record_undo: bool = True) -> None:
+        """Life-cycle interceptor managing confirmation dialog hooks before committing actual data mutation to RAM."""
+        if item.confirm_message and not is_undo and not batch_mode:
+            def on_confirm(confirmed: bool) -> None:
+                if confirmed:
+                    self._apply_value(tab_idx, item_idx, item, new_val, is_undo, batch_mode, record_undo)
+            self.push_screen(ConfirmDialog(item.confirm_message, title=f"Confirm Change: {item.label}", level="warning"), on_confirm)
+        else:
+            self._apply_value(tab_idx, item_idx, item, new_val, is_undo, batch_mode, record_undo)
+
     def _apply_value(self, tab_idx: int, item_idx: int, item: ConfigItem, new_val: Any, is_undo: bool = False, batch_mode: bool = False, record_undo: bool = True) -> bool:
         old_val = item.value
 
@@ -1922,7 +2029,7 @@ class DuskyTUI(App):
 
         # Trigger schema-driven feedback popup
         if item.popup_message and not is_undo and not batch_mode:
-            self.push_screen(AlertDialog(item.popup_message, title=f"Notice: {item.label}"))
+            self.push_screen(AlertDialog(item.popup_message, title=f"Notice: {item.label}", level="info"))
 
         return True
 
@@ -2219,13 +2326,20 @@ class DuskyTUI(App):
     def action_switch_tab(self, index: int) -> None:
         if 0 <= index < len(self.tabs): self.query_one(Tabs).active = f"tab-id-{index}"
 
-    def action_adjust(self, direction: int) -> None:
+    def action_adjust(self, direction: int, bypass_lock: bool = False) -> None:
         ol = self.current_option_list
         if not ol or not ol.last_highlighted_id: return
 
         parsed = self._get_item_from_id(ol.last_highlighted_id)
         if not parsed: return
         tab_idx, item_idx, item = parsed
+
+        # SECURITY FIX FOR POINT 2 & 7: strictly block silent continuous keyboard mutation
+        # via arrow keys, BUT allow the explicit bypass flag to permit Enter/Clicks to succeed 
+        # and correctly route to the confirmation popup.
+        if item.confirm_message and not bypass_lock:
+            self.notify_status(f"Protected value: Press Enter to explicitly modify '{item.label}'.")
+            return
 
         new_val = item.value
 
@@ -2237,7 +2351,7 @@ class DuskyTUI(App):
             new_val = item.options[(idx + direction) % len(item.options)]
             
             if new_val != item.value:
-                self._apply_value(tab_idx, item_idx, item, new_val)
+                self._safe_apply_value(tab_idx, item_idx, item, new_val)
             return
 
         match item.type_:
@@ -2260,7 +2374,7 @@ class DuskyTUI(App):
             case _: return
 
         if new_val != item.value:
-            self._apply_value(tab_idx, item_idx, item, new_val)
+            self._safe_apply_value(tab_idx, item_idx, item, new_val)
 
     def action_reset_item(self) -> None:
         self.trigger_shortcut_blink("r")
@@ -2268,7 +2382,7 @@ class DuskyTUI(App):
         if not ol or not ol.last_highlighted_id: return
         parsed = self._get_item_from_id(ol.last_highlighted_id)
         if parsed and str(parsed[2].value) != str(parsed[2].default):
-            self._apply_value(parsed[0], parsed[1], parsed[2], parsed[2].default)
+            self._safe_apply_value(parsed[0], parsed[1], parsed[2], parsed[2].default)
 
     def action_reset_all(self) -> None:
         self.trigger_shortcut_blink("R")
@@ -2278,15 +2392,30 @@ class DuskyTUI(App):
             tab_idx = int(switcher.current.split("-")[1])
             items = self.schema.get(tab_idx, [])
             
-            transaction = []
-            for item_idx, item in enumerate(items):
-                if str(item.value) != str(item.default):
-                    transaction.append((tab_idx, item_idx, item.value, item.default))
+            # Fast-fail Pre-flight Check
+            has_changes = any(str(item.value) != str(item.default) for item in items)
             
-            if transaction:
-                verb = "Reset" if self.auto_save else "Queued reset of"
-                msg = f"{verb} {len(transaction)} items in {self.tabs[tab_idx]}"
-                self._apply_transaction(transaction, action_type="new", success_msg=msg)
+            if has_changes:
+                def on_confirm(confirmed: bool) -> None:
+                    if confirmed:
+                        # SECURITY FIX FOR POINT 6: Modal Timing Drift
+                        # Re-calculate the transaction array strictly INSIDE the callback.
+                        # This guarantees that if a background process alters an external file
+                        # while the user was staring at the dialog box, we capture reality.
+                        transaction = []
+                        for item_idx, item in enumerate(items):
+                            if str(item.value) != str(item.default):
+                                transaction.append((tab_idx, item_idx, item.value, item.default))
+                        
+                        if transaction:
+                            verb = "Reset" if self.auto_save else "Queued reset of"
+                            msg = f"{verb} {len(transaction)} items in {self.tabs[tab_idx]}"
+                            self._apply_transaction(transaction, action_type="new", success_msg=msg)
+
+                self.push_screen(ConfirmDialog(
+                    "Are you sure you want to reset all modified items on this page to their factory defaults?", 
+                    title="Reset Page", level="danger"
+                ), on_confirm)
             else:
                 self.notify_status(f"No changes to reset in {self.tabs[tab_idx]}")
         except Exception: pass
@@ -2331,14 +2460,17 @@ class DuskyTUI(App):
             name = item.label.replace("User: ", "", 1)
             file_path = self.user_presets_dir / f"{name}.json"
             if file_path.exists():
-                try:
-                    file_path.unlink()
-                    self.notify_status(f"Deleted preset: {name}")
-                    self._load_user_presets()
-                    self._rebuild_key_map()
-                    self._refresh_all_ui()
-                except Exception as e:
-                    self.notify_status(f"Error deleting preset: {e}")
+                def do_delete(confirmed: bool):
+                    if confirmed:
+                        try:
+                            file_path.unlink()
+                            self.notify_status(f"Deleted preset: {name}")
+                            self._load_user_presets()
+                            self._rebuild_key_map()
+                            self._refresh_all_ui()
+                        except Exception as e:
+                            self.notify_status(f"Error deleting preset: {e}")
+                self.push_screen(ConfirmDialog(f"Are you sure you want to permanently delete the preset **{name}**?", title="Delete Preset", level="danger"), do_delete)
 
     def action_submit_current(self) -> None:
         ol = self.current_option_list
@@ -2410,7 +2542,7 @@ class DuskyTUI(App):
                 return
 
         match item.type_:
-            case "bool" | "cycle": self.action_adjust(1)
+            case "bool" | "cycle": self.action_adjust(1, bypass_lock=True)
             case "int" | "float" | "string" | "color": self.prompt_string(tab_idx, item_idx, item)
             case "action": self.execute_action(item)
             case "preset": self.apply_preset(item)
@@ -2427,83 +2559,98 @@ class DuskyTUI(App):
             self.notify_status(f"No command defined for: {item.label}")
             return
             
-        self.notify_status(f"Executing: {item.label}...")
-        
-        async def run_task():
-            try:
-                proc = await asyncio.create_subprocess_shell(
-                    command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
+        def do_execute():
+            self.notify_status(f"Executing: {item.label}...")
+            
+            async def run_task():
                 try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10.0)
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    self.notify_status(f"Action timed out after 10 seconds.")
-                    return
-                
-                if proc.returncode == 0:
-                    out = stdout.decode('utf-8').strip()
-                    if out:
-                        # Only take first line or truncate to fit neatly in the UI status bar
-                        out_single = out.split('\n')[0]
-                        self.notify_status(f"Success: {out_single[:60]}")
+                    proc = await asyncio.create_subprocess_shell(
+                        command,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    try:
+                        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+                    except asyncio.TimeoutError:
+                        proc.kill()
+                        self.notify_status(f"Action timed out after 10 seconds.")
+                        return
+                    
+                    if proc.returncode == 0:
+                        out = stdout.decode('utf-8').strip()
+                        if out:
+                            # Only take first line or truncate to fit neatly in the UI status bar
+                            out_single = out.split('\n')[0]
+                            self.notify_status(f"Success: {out_single[:60]}")
+                        else:
+                            self.notify_status(f"Action '{item.label}' completed.")
                     else:
-                        self.notify_status(f"Action '{item.label}' completed.")
-                else:
-                    err = stderr.decode('utf-8').strip().split('\n')[0]
-                    if not err:
-                        err = "Unknown execution error"
-                    self.notify_status(f"Action failed: {err[:60]}")
-            except Exception as e:
-                self.notify_status(f"Execution error: {str(e)[:60]}")
-                
-        # Fire and forget onto the event loop so the TUI remains perfectly responsive
-        asyncio.create_task(run_task())
+                        err = stderr.decode('utf-8').strip().split('\n')[0]
+                        if not err:
+                            err = "Unknown execution error"
+                        self.notify_status(f"Action failed: {err[:60]}")
+                except Exception as e:
+                    self.notify_status(f"Execution error: {str(e)[:60]}")
+                    
+            # Fire and forget onto the event loop so the TUI remains perfectly responsive
+            asyncio.create_task(run_task())
+
+        if item.confirm_message:
+            self.push_screen(ConfirmDialog(item.confirm_message, title=f"Run: {item.label}", level="warning"), lambda confirm: do_execute() if confirm else None)
+        else:
+            do_execute()
 
     def apply_preset(self, preset_item: ConfigItem) -> None:
         if preset_item.preset_payload is None:
             self.notify_status("Preset contains no payload.")
             return
             
-        transaction = []
-        skipped = 0
-        payload = preset_item.preset_payload
-        is_all_defaults = payload.get("__ALL_DEFAULTS__", False)
-        
-        for t_idx, items in self.schema.items():
-            for i_idx, target_item in enumerate(items):
-                if target_item.type_ in ("action", "preset", "menu"):
-                    continue
-                if not target_item.exists_in_target:
-                    skipped += 1
-                    continue
-                
-                key_path = self._get_item_uid(target_item)
-                
-                if is_all_defaults:
-                    target_val = target_item.default
-                elif key_path in payload:
-                    target_val = payload[key_path]
-                else:
-                    target_val = target_item.default # Forced Factory Reset for unmentioned properties
-                
-                if str(target_item.value) != str(target_val) and target_val is not None:
-                    transaction.append((t_idx, i_idx, target_item.value, target_val))
-
-        if not transaction:
-            if skipped > 0:
-                self.notify_status(f"Preset applied, but {skipped} items were missing/invalid.")
-            else:
-                self.notify_status("Preset already active (no changes needed).")
-            return
+        def do_apply():
+            # SECURITY FIX FOR POINT 6: Modal Timing Drift
+            # Re-calculate the transaction array strictly INSIDE the callback to prevent 
+            # race conditions when the app is paused awaiting user confirmation.
+            transaction = []
+            skipped = 0
+            payload = preset_item.preset_payload
+            is_all_defaults = payload.get("__ALL_DEFAULTS__", False)
             
-        verb = "applied" if self.auto_save else "queued"
-        msg = f"Preset '{preset_item.label}' {verb}."
-        if skipped > 0: msg += f" ({skipped} skipped)"
-        
-        self._apply_transaction(transaction, action_type="new", success_msg=msg)
+            for t_idx, items in self.schema.items():
+                for i_idx, target_item in enumerate(items):
+                    if target_item.type_ in ("action", "preset", "menu"):
+                        continue
+                    if not target_item.exists_in_target:
+                        skipped += 1
+                        continue
+                    
+                    key_path = self._get_item_uid(target_item)
+                    
+                    if is_all_defaults:
+                        target_val = target_item.default
+                    elif key_path in payload:
+                        target_val = payload[key_path]
+                    else:
+                        target_val = target_item.default # Forced Factory Reset for unmentioned properties
+                    
+                    if str(target_item.value) != str(target_val) and target_val is not None:
+                        transaction.append((t_idx, i_idx, target_item.value, target_val))
+
+            if not transaction:
+                if skipped > 0:
+                    self.notify_status(f"Preset applied, but {skipped} items were missing/invalid.")
+                else:
+                    self.notify_status("Preset already active (no changes needed).")
+                return
+                
+            verb = "applied" if self.auto_save else "queued"
+            msg = f"Preset '{preset_item.label}' {verb}."
+            if skipped > 0: msg += f" ({skipped} skipped)"
+            
+            self._apply_transaction(transaction, action_type="new", success_msg=msg)
+            
+        if preset_item.confirm_message:
+            self.push_screen(ConfirmDialog(preset_item.confirm_message, title=f"Apply Preset: {preset_item.label}", level="warning"), lambda confirm: do_apply() if confirm else None)
+        else:
+            do_apply()
 
     def prompt_string(self, tab_idx: int, item_idx: int, item: ConfigItem) -> None:
         def check_reply(new_val: str | None) -> None:
@@ -2532,12 +2679,12 @@ class DuskyTUI(App):
                         self.notify_status("Error: Value must be a float.")
                         return
 
-                self._apply_value(tab_idx, item_idx, item, new_val)
+                self._safe_apply_value(tab_idx, item_idx, item, new_val)
                 
         # Deploys HybridInputScreen to allow free text parsing and direct preset option list mapping
         self.push_screen(HybridInputScreen(f"Enter new {item.label}:", str(item.value), item.options), check_reply)
 
     def prompt_picker(self, tab_idx: int, item_idx: int, item: ConfigItem) -> None:
         def check_reply(new_val: str | None) -> None:
-            if new_val is not None: self._apply_value(tab_idx, item_idx, item, new_val)
+            if new_val is not None: self._safe_apply_value(tab_idx, item_idx, item, new_val)
         self.push_screen(PickerScreen(item.label, item.options, item.hints), check_reply)

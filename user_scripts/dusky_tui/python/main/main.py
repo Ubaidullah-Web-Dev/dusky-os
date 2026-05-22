@@ -213,6 +213,7 @@ EXAMPLES:
         ENABLE_USER_PRESETS = getattr(schema_module, "ENABLE_USER_PRESETS", True)
         USER_PRESETS_TAB = getattr(schema_module, "USER_PRESETS_TAB", None)
         GLOBAL_POPUP = getattr(schema_module, "GLOBAL_POPUP", None)
+        TAB_NOTICES = getattr(schema_module, "TAB_NOTICES", None) # Inject Tab specific structural notices
         
         # STRICT REQUIREMENT: The schema MUST explicitly define ENGINE_TYPE.
         # We access it directly so it throws an AttributeError if it's missing.
@@ -352,6 +353,10 @@ EXAMPLES:
                     print(f"- **Default:** `{item.default}`")
                     if item.extended_help:
                         print(f"\n> {item.extended_help.replace('**', '')}\n")
+                    if item.confirm_message:
+                        print(f"\n> **Requires Confirmation:** {item.confirm_message.replace('**', '')}\n")
+                    if item.warning_msg:
+                        print(f"\n> **Warning:** {item.warning_msg.replace('**', '')}\n")
             sys.exit(0)
 
         # Map both direct & compound keys safely
@@ -481,7 +486,8 @@ EXAMPLES:
         schema_name=module_name,
         enable_user_presets=ENABLE_USER_PRESETS,
         user_presets_tab=USER_PRESETS_TAB,
-        global_popup=GLOBAL_POPUP
+        global_popup=GLOBAL_POPUP,
+        tab_notices=TAB_NOTICES
     )
     
     app.run()
