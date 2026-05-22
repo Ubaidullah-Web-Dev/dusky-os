@@ -410,34 +410,42 @@ res_mon() {
     local target_sort="ram"
     local ps_sort="-rss"
     local cmd_col="comm="
-    local arg
     local interval="2"
     local count="15"
+    local target_pids=""
+    local target_name=""
     local -a plain_nums=()
 
-    # 1. Advanced Order-Agnostic Argument Tokenizer
-    for arg in "$@"; do
+    # 1. Advanced Order-Agnostic Argument Tokenizer (Now with Flag Consumption)
+    while (( $# > 0 )); do
+        local arg="$1"
         case "${arg:l}" in
             help|-h|--help) 
                 print -P "\n%F{blue}::%f %Bres_mon%b — Live System Resource Monitor"
                 print -P "%F{238}-----------------------------------------------------------------------------%f"
-                print -P "%F{green}Usage:%f res_mon [sort_metric] [display_mode] [interval] [count]"
+                print -P "%F{green}Usage:%f res_mon [sort_metric] [display_mode] [interval] [count] [filters]"
                 print -P "       %F{242}(Arguments can be provided in ANY order)%f\n"
                 
                 print -P "%BMetrics:%b (Default: ram)"
                 print -P "  %F{cyan}ram%f, %F{cyan}mem%f             - Sort by RAM usage"
-                print -P "  %F{cyan}cpu%f                  - Sort by CPU usage percentage\n"
+                print -P "  %F{cyan}cpu%f                    - Sort by CPU usage percentage\n"
                 
                 print -P "%BDisplay:%b (Default: clean base name)"
                 print -P "  %F{cyan}path%f, %F{cyan}full%f, %F{cyan}args%f     - Show full command path and arguments\n"
+
+                print -P "%BFilters:%b (Optional)"
+                print -P "  %F{cyan}-p, --pid <pids>%f       - Target specific PID(s) (comma-separated: 123,456)"
+                print -P "  %F{cyan}-n, --name <name>%f      - Fuzzy filter processes by name or argument\n"
                 
                 print -P "%BNumbers:%b (Defaults: 2s interval, 15 processes)"
                 print -P "  %F{cyan}<number>%f               - Sets the process count (e.g., 20)"
                 print -P "  %F{cyan}<number>s%f              - Sets the interval in seconds (e.g., 1s or .5s)\n"
                 
                 print -P "%BExamples:%b"
-                print -P "  %F{yellow}res_mon 5 1s%f           # Top 5 by RAM (default), updating every 1s"
-                print -P "  %F{yellow}res_mon 10 cpu path .5s%f  # Top 10 by CPU, full paths, updating every 0.5s\n"
+                print -P "  %F{yellow}res_mon 5 1s%f           # Top 5 by RAM, updating every 1s"
+                print -P "  %F{yellow}res_mon -p 1024,2048%f   # Track only PIDs 1024 and 2048"
+                print -P "  %F{yellow}res_mon -n waybar args%f # Fuzzy match 'waybar', show full arguments"
+                print -P "  %F{yellow}res_mon cpu path .5s%f   # Top 15 by CPU, full paths, updating every 0.5s\n"
                 return 0 
                 ;;
             cpu) 
@@ -450,6 +458,23 @@ res_mon() {
                 ;;
             path|full|args)
                 cmd_col="args="
+                ;;
+            -p|--pid)
+                shift
+                if [[ -z "$1" || "$1" == -* ]]; then
+                    print -u2 -P "\n%F{red}✖ Error:%f Missing argument for %B$arg%b."
+                    return 1
+                fi
+                # Normalize spaces to commas if user passed "-p '123 456'"
+                target_pids="${1// /,}"
+                ;;
+            -n|--name)
+                shift
+                if [[ -z "$1" || "$1" == -* ]]; then
+                    print -u2 -P "\n%F{red}✖ Error:%f Missing argument for %B$arg%b."
+                    return 1
+                fi
+                target_name="$1"
                 ;;
             *[0-9]s) 
                 local possible_interval="${arg%s}"
@@ -470,6 +495,7 @@ res_mon() {
                 fi
                 ;;
         esac
+        shift
     done
 
     # 2. Intelligent Number Routing
@@ -502,7 +528,17 @@ res_mon() {
     fi
 
     local title_metric=$([[ "$target_sort" == "cpu" ]] && echo "CPU Sort" || echo "RAM Sort")
-    local output_str=""
+    [[ -n "$target_pids" ]] && title_metric+=" | PIDs: $target_pids"
+    [[ -n "$target_name" ]] && title_metric+=" | Name: $target_name"
+
+    # Build ps command safely as an array to prevent injection and handle targeting natively
+    local -a ps_cmd=(ps)
+    if [[ -n "$target_pids" ]]; then
+        ps_cmd+=("-p" "$target_pids")
+    else
+        ps_cmd+=("-e")
+    fi
+    ps_cmd+=(--sort="$ps_sort" -o pid=,pcpu=,pmem=,rss=,time=,${cmd_col})
 
     # Enter UI Context: Hide cursor (\e[?25l), Disable Wrap (\e[?7l), Enter Alt-Screen (\e[?1049h)
     printf "\e[?25l\e[?7l\e[?1049h"
@@ -527,23 +563,33 @@ res_mon() {
             # Generate horizontal separator dynamically using Zsh parameter expansion
             local sep_line=${(pl:term_cols::-:)}
 
-            # Hyper-optimized Procps pipeline extracting dynamic args, truncated precisely by Awk.
-            # Using 'next' instead of 'exit' prevents kernel SIGPIPE crashes on the upstream ps command.
-            output_str="$(ps -e --sort="$ps_sort" -o pid=,pcpu=,pmem=,rss=,time=,${cmd_col} 2>/dev/null | awk -v max="$active_count" -v cmd_len="$cmd_width" '
-                NR > max { next }
+            # Hyper-optimized Procps pipeline. Name filtering logic integrates directly into awk.
+            output_str="$("${ps_cmd[@]}" 2>/dev/null | awk -v max="$active_count" -v cmd_len="$cmd_width" -v filter_name="${target_name:l}" '
                 {
-                    cmd = $6
-                    for(i=7; i<=NF; i++) {
-                        cmd = cmd " " $i
-                        # Optimizaton: Break early if command length hits screen boundary
-                        if (length(cmd) > cmd_len) break
+                    # Dual-path string logic to preserve hyper-optimized breaking when not filtering
+                    if (filter_name == "") {
+                        matched++
+                        if (matched > max) next
+                        cmd = $6
+                        for(i=7; i<=NF; i++) {
+                            cmd = cmd " " $i
+                            if (length(cmd) > cmd_len) break
+                        }
+                    } else {
+                        cmd = $6
+                        for(i=7; i<=NF; i++) cmd = cmd " " $i
+                        if (tolower(cmd) !~ filter_name) next
+                        
+                        matched++
+                        if (matched > max) next
                     }
+
                     ram_mb = $4 / 1024.0
                     
                     # ANSI Injection mathematically mapped to support >9 day process uptime shifts
                     line = sprintf("\033[38;5;246m%8s\033[0m \033[38;5;220m%6.1f%%\033[0m \033[38;5;218m%6.1f%%\033[0m \033[38;5;213m%10.1f\033[0m \033[38;5;114m%11s\033[0m   \033[1;38;5;39m%s\033[0m", $1, $2, $3, ram_mb, $5, substr(cmd, 1, cmd_len))
                     
-                    if (NR == 1) printf "%s", line
+                    if (matched == 1) printf "%s", line
                     else printf "\n%s", line
                 }
             ')"
@@ -552,9 +598,15 @@ res_mon() {
             printf "\e[H" # Seek cursor directly to 0,0
             print -P "%F{blue}::%f %B${title_metric}%b (Update: ${interval}s | Top: ${active_count})"
             print -P "%F{238}${sep_line}%f"
-            print -P "%F{242}     PID    CPU%%    MEM%%    RAM(MB)        TIME   COMMAND%f"
+            print -P "%F{242}    PID    CPU%%    MEM%%    RAM(MB)        TIME   COMMAND%f"
             print -P "%F{238}${sep_line}%f"
-            printf "%s\n" "$output_str"
+            
+            # Print output, or fallback if filter found nothing
+            if [[ -n "$output_str" ]]; then
+                printf "%s\n" "$output_str"
+            else
+                print -P "    %F{242}No matching processes found.%f"
+            fi
             
             # Wipe terminal artifacts explicitly if the process window dynamically shrinks
             printf "\e[J" 
