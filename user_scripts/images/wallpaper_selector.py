@@ -187,6 +187,7 @@ class WallpaperApp:
         self.app.connect("activate", self.do_activate)
         
         self.window = None
+        self.scrolled = None
         self.flowbox = None
         self.search_entry = None
         self.stack = None
@@ -314,8 +315,8 @@ class WallpaperApp:
             self.stack.set_transition_type(self.Gtk.StackTransitionType.CROSSFADE)
             self.stack.set_transition_duration(150)
 
-            scrolled = self.Gtk.ScrolledWindow()
-            scrolled.set_policy(self.Gtk.PolicyType.NEVER, self.Gtk.PolicyType.AUTOMATIC)
+            self.scrolled = self.Gtk.ScrolledWindow()
+            self.scrolled.set_policy(self.Gtk.PolicyType.NEVER, self.Gtk.PolicyType.AUTOMATIC)
 
             self.flowbox = self.Gtk.FlowBox()
             self.flowbox.set_valign(self.Gtk.Align.START)
@@ -328,9 +329,9 @@ class WallpaperApp:
             self.flowbox.connect("child-activated", self.on_child_activated)
             self.flowbox.connect("selected-children-changed", self.on_selection_changed)
             
-            scrolled.add(self.flowbox)
+            self.scrolled.add(self.flowbox)
 
-            self.stack.add_named(scrolled, "grid")
+            self.stack.add_named(self.scrolled, "grid")
             self.stack.add_named(self._create_empty_state_placeholder(), "empty")
             
             vbox.pack_start(self.stack, True, True, 0)
@@ -544,11 +545,37 @@ class WallpaperApp:
         self._update_visibility_and_selection()
 
         # Idle execution guarantees GTK Layout is fully resolved before forcibly snatching focus
-        # This securely un-focuses the Search Bar and allows instant arrow-key navigation.
+        # We override standard layout scrolling here to align the active wallpaper on the 1st/2nd line.
+        scroll_ctx = {'retries': 0}
+        
         def _grab_focus():
             selected = self.flowbox.get_selected_children()
             if selected:
-                selected[0].grab_focus()
+                child = selected[0]
+                alloc = child.get_allocation()
+                
+                # Wait for GTK to assign actual 2D layout coordinates (bypasses default 1x1 size)
+                if alloc.height <= 1 and scroll_ctx['retries'] < 20:
+                    scroll_ctx['retries'] += 1
+                    return True
+                    
+                # GTK native focus (naturally places item glued to the absolute bottom of viewport)
+                child.grab_focus()
+                
+                # Override and scroll beautifully to the 1st or 2nd line.
+                if self.scrolled:
+                    adj = self.scrolled.get_vadjustment()
+                    # RENDER_SIZE + margin is roughly the exact height of one row. 
+                    # Subtracting it perfectly drops the selection onto the second visual line.
+                    row_offset = RENDER_SIZE + 20 
+                    target_y = alloc.y - row_offset
+                    
+                    lower = adj.get_lower()
+                    upper = adj.get_upper() - adj.get_page_size()
+                    
+                    if upper > lower:
+                        # Clamp the adjustment safely within bounds
+                        adj.set_value(max(lower, min(target_y, upper)))
             else:
                 self.flowbox.grab_focus()
             return False
