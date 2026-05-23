@@ -108,7 +108,7 @@ ensure_memory_file() {
 read_memory() {
     local menu_id="$1"
     [[ -f "$MEMORY_FILE" ]] || return 0
-    grep -E "^${menu_id}=" "$MEMORY_FILE" | cut -d'=' -f2- || true
+    grep -E "^${menu_id}=" "$MEMORY_FILE" | tail -n 1 | cut -d'=' -f2- || true
 }
 
 write_memory() {
@@ -324,7 +324,8 @@ save_preset() {
         return 1
     fi
     
-    if grep -q -F "${preset_name}|" "$PRESETS_FILE" 2>/dev/null; then
+    # -e guards against preset names starting with flags (like -v)
+    if grep -q -F -e "${preset_name}|" "$PRESETS_FILE" 2>/dev/null; then
         notify critical "Duplicate Preset" "A preset with that name already exists."
         return 1
     fi
@@ -336,9 +337,30 @@ save_preset() {
 
     get_current_state
 
-    local args="--mode ${CUR_MODE} --type ${CUR_TYPE} --contrast ${CUR_CONTRAST} --index ${CUR_INDEX} --base16 ${CUR_BASE16} --trans-type ${CUR_T_TYPE} --trans-duration ${CUR_T_DUR} --trans-fps ${CUR_T_FPS} --trans-bezier ${CUR_T_BEZ} --trans-angle ${CUR_T_ANG} --trans-pos ${CUR_T_POS}"
+    # Safely serialize array logic using %q to prevent word-splitting crashes on load
+    local -a cmd_args=(
+        --mode "$CUR_MODE"
+        --type "$CUR_TYPE"
+        --contrast "$CUR_CONTRAST"
+        --index "$CUR_INDEX"
+        --base16 "$CUR_BASE16"
+        --trans-type "$CUR_T_TYPE"
+        --trans-duration "$CUR_T_DUR"
+        --trans-fps "$CUR_T_FPS"
+        --trans-bezier "$CUR_T_BEZ"
+        --trans-angle "$CUR_T_ANG"
+        --trans-pos "$CUR_T_POS"
+    )
 
-    printf '%s|%s\n' "$preset_name" "$args" >> "$PRESETS_FILE"
+    local args_serialized=""
+    local escaped
+    for arg in "${cmd_args[@]}"; do
+        printf -v escaped '%q' "$arg"
+        args_serialized+="$escaped "
+    done
+    args_serialized="${args_serialized% }" # Trim trailing space
+
+    printf '%s|%s\n' "$preset_name" "$args_serialized" >> "$PRESETS_FILE"
     notify normal "Preset Saved" "Successfully saved preset: $preset_name"
 }
 
@@ -372,14 +394,16 @@ load_preset() {
     
     if [[ -n "$args" ]]; then
         notify normal "Loading Preset" "Applying: $choice"
-        set -f
-        if ! "$THEME_CTL" set --no-wall $args; then
-            set +f
+        
+        # Safely rebuild the array using eval on the encoded %q serialization
+        local -a parsed_args
+        eval "parsed_args=($args)"
+        
+        if ! "$THEME_CTL" set --no-wall "${parsed_args[@]}"; then
             notify critical "Preset Failed" "Failed to apply preset: $choice"
             log_error "Failed to apply preset: $choice with args: $args"
             return 1
         fi
-        set +f
     else
         notify critical "Error" "Could not find configurations for preset: $choice"
     fi
