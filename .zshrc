@@ -620,7 +620,6 @@ printf "\e[?25l\e[?7l\e[?1049h"
     # Restore UI Context: Show Cursor (\e[?25h), Enable Wrap (\e[?7h), Exit Alt-Screen (\e[?1049l)
     printf "\e[?25h\e[?7h\e[?1049l"
 }
-}
 
 # monitor info
 mon_info() {
