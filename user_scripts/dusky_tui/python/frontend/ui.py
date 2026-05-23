@@ -955,7 +955,7 @@ class DuskyTUI(App):
 
     /* Schema Driven Notice Boxes */
     NoticeBox {
-        width: 100%; height: auto; padding: 0 1; margin: 1 1 0 1; background: transparent;
+        width: 100%; height: auto; padding: 0 1; margin: 1 1 1 1; background: transparent;
     }
     NoticeBox > Markdown { background: transparent; color: $foreground; margin: 0; padding: 0; }
     NoticeBox > Markdown > * { margin: 0; padding: 0; }
