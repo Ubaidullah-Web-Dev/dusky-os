@@ -259,44 +259,44 @@ class WallpaperApp:
             self.search_entry = self.Gtk.SearchEntry()
             self.search_entry.set_placeholder_text("Search... (Press /)")
             self.search_entry.set_tooltip_text("Filter wallpapers by filename (Press / to focus)")
-            self.search_entry.set_width_chars(26)  # Widened for comfort
+            self.search_entry.set_width_chars(28)  # Widened for comfort
             self.search_entry.get_style_context().add_class("search-bar")
             self.search_entry.connect("search-changed", self.on_search_changed)
             header.pack_start(self.search_entry, False, False, 0)
             
-            # --- SHORTCUTS IN HEADER ---
-            shortcuts_data = [
-                ("RMB", "Fast Apply"),
-                ("MMB", "Favorite"),
-                ("Alt+T", "Toggle Favs"),
-                ("Alt+Y", "Rebuild Cache")
-            ]
-            
-            markup_parts = [
-                f"<span background='#313244' foreground='#cdd6f4' font_family='monospace' size='7500'><b> {k} </b></span> "
-                f"<span size='7800' foreground='#a6adc8'>{d}</span>"
-                for k, d in shortcuts_data
-            ]
-            
-            shortcuts_label = self.Gtk.Label()
-            shortcuts_label.set_use_markup(True)
-            shortcuts_label.set_markup("  •  ".join(markup_parts))
-            shortcuts_label.set_halign(self.Gtk.Align.CENTER)
-            # Ellipsize prevents the label from pushing other UI elements offscreen if the window shrinks
-            shortcuts_label.set_ellipsize(self.Pango.EllipsizeMode.END) 
-            
-            # The shortcuts label elegantly absorbs the middle spacer area
-            header.pack_start(shortcuts_label, True, True, 0)
+            # --- FLEXIBLE SPACER ---
+            # Elegantly pushes the search bar left and the buttons right
+            spacer = self.Gtk.Box()
+            header.pack_start(spacer, True, True, 0)
 
             # --- ACTION BUTTONS ---
             action_box = self.Gtk.Box(orientation=self.Gtk.Orientation.HORIZONTAL, spacing=8)
             
+            # Rebuild Cache Button
+            btn_refresh = self.Gtk.Button()
+            btn_refresh.set_tooltip_text("Rebuild Cache [Alt+Y]")
+            btn_refresh.set_image(self.Gtk.Image.new_from_icon_name("view-refresh-symbolic", self.Gtk.IconSize.BUTTON))
+            btn_refresh.connect("clicked", lambda w: self.trigger_action('refresh'))
+            btn_refresh.get_style_context().add_class("action-btn")
+            btn_refresh.get_style_context().add_class("icon-btn")
+
+            # Help / Shortcuts Button
+            btn_help = self.Gtk.Button()
+            btn_help.set_tooltip_text("Keyboard Shortcuts")
+            btn_help.set_image(self.Gtk.Image.new_from_icon_name("help-about-symbolic", self.Gtk.IconSize.BUTTON))
+            btn_help.connect("clicked", self.show_shortcuts_popover)
+            btn_help.get_style_context().add_class("action-btn")
+            btn_help.get_style_context().add_class("icon-btn")
+
+            # Toggle Favorites Button
             btn_toggle = self.Gtk.Button(label="♥")
             btn_toggle.set_tooltip_text("Toggle view to show only favorite wallpapers [Alt+T]")
             btn_toggle.connect("clicked", lambda w: self.trigger_action('toggle'))
             btn_toggle.get_style_context().add_class("action-btn")
             btn_toggle.get_style_context().add_class("toggle-btn")
 
+            action_box.pack_start(btn_refresh, False, False, 0)
+            action_box.pack_start(btn_help, False, False, 0)
             action_box.pack_start(btn_toggle, False, False, 0)
 
             header.pack_start(action_box, False, False, 0)
@@ -337,6 +337,52 @@ class WallpaperApp:
 
         self.window.present()
         self.flowbox.grab_focus()
+
+    def show_shortcuts_popover(self, widget):
+        """Displays a clean, non-intrusive popover detailing all keyboard shortcuts."""
+        popover = self.Gtk.Popover.new(widget)
+        popover.set_position(self.Gtk.PositionType.BOTTOM)
+        
+        box = self.Gtk.Box(orientation=self.Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_margin_start(18)
+        box.set_margin_end(18)
+        box.set_margin_top(16)
+        box.set_margin_bottom(16)
+
+        title = self.Gtk.Label(label="Keyboard Shortcuts")
+        title.get_style_context().add_class("shortcuts-title")
+        title.set_halign(self.Gtk.Align.START)
+        box.pack_start(title, False, False, 0)
+        
+        grid = self.Gtk.Grid()
+        grid.set_column_spacing(24)
+        grid.set_row_spacing(10)
+        
+        shortcuts = [
+            ("Apply & Regen Theme", "Enter / L-Click"),
+            ("Fast Apply", "Alt+H / R-Click"),
+            ("Toggle Favorite", "Alt+U / M-Click"),
+            ("Toggle Favorites View", "Alt+T"),
+            ("Rebuild Cache", "Alt+Y"),
+            ("Focus Search", "Ctrl+F / /"),
+            ("Quit Selector", "Esc / Q")
+        ]
+        
+        for i, (desc, keys) in enumerate(shortcuts):
+            lbl_desc = self.Gtk.Label(label=desc)
+            lbl_desc.set_halign(self.Gtk.Align.START)
+            
+            lbl_keys = self.Gtk.Label()
+            lbl_keys.set_markup(f"<span font_family='monospace' foreground='#a6adc8'><b>{keys}</b></span>")
+            lbl_keys.set_halign(self.Gtk.Align.END)
+            
+            grid.attach(lbl_desc, 0, i, 1, 1)
+            grid.attach(lbl_keys, 1, i, 1, 1)
+            
+        box.pack_start(grid, False, False, 0)
+        box.show_all()
+        popover.add(box)
+        popover.popup()
 
     def on_window_destroy(self, widget):
         print("Shutting down... killing background workers.")
@@ -394,10 +440,27 @@ class WallpaperApp:
             background-color: alpha(@accent_color, 0.15); 
             border-color: @accent_color; 
         }
+        .icon-btn {
+            padding: 6px 8px; /* Tighter padding specifically for icon buttons */
+        }
         .toggle-btn {
             font-size: 1.15em;
             padding: 4px 10px;
             color: #f38ba8;
+        }
+        .shortcuts-title {
+            font-weight: 800;
+            font-size: 1.1em;
+            margin-bottom: 8px;
+            color: @accent_color;
+            border-bottom: 1px solid alpha(@window_fg_color, 0.1);
+            padding-bottom: 6px;
+        }
+        popover {
+            border-radius: 12px;
+            background-color: shade(@window_bg_color, 0.95);
+            box-shadow: 0px 4px 16px rgba(0,0,0,0.4);
+            border: 1px solid alpha(@window_fg_color, 0.08);
         }
         
         /* FIX FOR BLACK BOTTOM AREA: 
@@ -681,6 +744,10 @@ class WallpaperApp:
                 self.show_only_favorites = not self.show_only_favorites
                 self.flowbox.invalidate_filter()
                 self.GLib.idle_add(self._update_visibility_and_selection)
+            case 'refresh':
+                print("Rebuilding cache dynamically...")
+                CacheManager.precache_all()
+                self.refresh_ui()
 
     def on_child_activated(self, flowbox, child):
         self.apply_wallpaper(getattr(child, 'rel_path', None), regen=True)
@@ -739,9 +806,7 @@ class WallpaperApp:
             return True
 
         if keyval in (self.Gdk.KEY_t, self.Gdk.KEY_T) and is_ctrl:
-            self.show_only_favorites = not self.show_only_favorites
-            self.flowbox.invalidate_filter()
-            self.GLib.idle_add(self._update_visibility_and_selection)
+            self.trigger_action('toggle')
             return True
 
         rel_path = self.get_selected_path()
@@ -757,14 +822,10 @@ class WallpaperApp:
                 if rel_path: self.toggle_favorite(rel_path)
                 return True
             case self.Gdk.KEY_t if is_alt:
-                self.show_only_favorites = not self.show_only_favorites
-                self.flowbox.invalidate_filter()
-                self.GLib.idle_add(self._update_visibility_and_selection)
+                self.trigger_action('toggle')
                 return True
             case self.Gdk.KEY_y if is_alt:
-                print("Rebuilding cache dynamically...")
-                CacheManager.precache_all()
-                self.refresh_ui()
+                self.trigger_action('refresh')
                 return True
 
         return False
