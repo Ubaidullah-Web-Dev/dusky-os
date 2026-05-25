@@ -8,22 +8,19 @@
 #
 #  HOW TO USE THIS ENGINE:
 #  You only need to care about TWO arrays to configure this updater:
-#    1. CUSTOM_SCRIPT_PATHS (Tells the engine WHERE a script lives)
+#    1. SCRIPT_SEARCH_DIRS  (Tells the engine WHERE to look for scripts)
 #    2. UPDATE_SEQUENCE     (Tells the engine WHEN and HOW to run a script)
 #
 # ==============================================================================
-#  1. THE CUSTOM_SCRIPT_PATHS ARRAY (The "Where")
+#  1. THE SCRIPT_SEARCH_DIRS ARRAY (The "Where")
 # ==============================================================================
-#  By default, the engine assumes ALL scripts live in:
-#  ~/user_scripts/arch_setup_scripts/scripts/
+#  Directories to search for scripts (in order — first match wins).
+#  By default, the engine will scan these paths relative to your home/work tree.
+#  Entries WITHOUT a '/' in the name are searched across these directories.
+#  Entries WITH a '/' are treated as direct paths.
 #
-#  If you have a script living SOMEWHERE ELSE in your home directory, you MUST
-#  map its exact location here. 
-#
-#  Syntax:  ["script_filename.sh"]="relative/path/from/home/script_filename.sh"
-#
-#  ⚠️ CRITICAL RULE: Adding a script here DOES NOT run it! It only acts as a 
-#  dictionary lookup for the engine. To actually run it, you must ALSO add it 
+#  ⚠️ CRITICAL RULE: Adding a directory here DOES NOT run its scripts! It only acts 
+#  as a search path for the engine. To actually run a script, you must ALSO add it 
 #  to the UPDATE_SEQUENCE array below.
 #
 # ==============================================================================
@@ -110,7 +107,7 @@ declare -ri LOG_RETENTION_DAYS=14
 declare -ri BACKUP_RETENTION_DAYS=14
 declare -ri DISK_MIN_FREE_MB=100
 declare -ri DISK_COPY_RESERVE_MB=64
-declare -r VERSION="8.0.1"
+declare -r VERSION="8.0.3"
 declare -ri SYNC_RC_RECOVERABLE=10
 declare -ri SYNC_RC_UNSAFE=20
 
@@ -119,7 +116,6 @@ declare -ri SYNC_RC_UNSAFE=20
 # ==============================================================================
 declare -r DOTFILES_GIT_DIR="${HOME}/dusky"
 declare -r WORK_TREE="${HOME}"
-declare -r SCRIPT_DIR="${HOME}/user_scripts/arch_setup_scripts/scripts"
 declare -r LOG_BASE_DIR="${HOME}/Documents/logs"
 declare -r BACKUP_BASE_DIR="${HOME}/Documents/dusky_backups"
 declare -r STATE_HOME_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/dusky"
@@ -135,69 +131,58 @@ declare -r UPSTREAM_TRACKING_REF="refs/dusky-updater/upstream/${BRANCH}"
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# CUSTOM SCRIPT PATHS Guide
+# SCRIPT SEARCH DIRECTORIES Guide
 # ------------------------------------------------------------------------------
-# DO NOT REMOVE THESE COMMENTS, THESE ARE INSTRUCTIONS FOR ADDING SCRIPTS WITH CUSTOM PATH
-# Map specific scripts to custom paths relative to ${HOME}.
-# If a script in UPDATE_SEQUENCE matches a key here, this path is used.
-# Format: ["script_name.sh"]="path/from/home/script_name.sh"
-
-# ⚠️ IMPORTANT INSTRUCTIONS:
-# 1. DEFINITION ONLY: This array ONLY maps the script name to a custom file location.
-#    Adding a script here DOES NOT cause it to run automatically.
+# Directories to search for scripts (in order — first match wins)
+# If a script in UPDATE_SEQUENCE does not contain a '/', it is searched here.
 #
-# 2. EXECUTION REQUIRED: To actually run the script, you MUST also add it to the
-#    'UPDATE_SEQUENCE' list further down in this file.
+# Format: "${WORK_TREE}/path/from/home/directory"
+#
+# Example:
+#   "${WORK_TREE}/user_scripts/networking"
+#   Then in UPDATE_SEQUENCE add:
+#     "S | warp_toggle.sh"
+
+declare -a SCRIPT_SEARCH_DIRS=(
+    "${WORK_TREE}/user_scripts/arch_setup_scripts/scripts"
+    "${WORK_TREE}/user_scripts/arch_setup_scripts"
+    "${WORK_TREE}/user_scripts/networking"
+    "${WORK_TREE}/user_scripts/misc_extra"
+    "${WORK_TREE}/user_scripts/misc_extra/delete_in_3_weeks"
+    "${WORK_TREE}/user_scripts/update_dusky/update_checker"
+    "${WORK_TREE}/user_scripts/dusky_system/reload_cc"
+    "${WORK_TREE}/user_scripts/services"
+    "${WORK_TREE}/user_scripts/update_dusky"
+    "${WORK_TREE}/user_scripts/rofi"
+    "${WORK_TREE}/user_scripts/theme_matugen/config"
+    "${WORK_TREE}/user_scripts/theme_matugen/firefox"
+    "${WORK_TREE}/user_scripts/theme_matugen"
+    "${WORK_TREE}/user_scripts/waybar"
+    "${WORK_TREE}/user_scripts/btrfs_snapshots"
+    "${WORK_TREE}/user_scripts/tts_stt/dusky_kokoro"
+    "${WORK_TREE}/user_scripts/tts_stt/dusky_parakeet"
+)
+
+# ------------------------------------------------------------------------------
+# SCRIPT CONFLICT RESOLUTIONS
+# ------------------------------------------------------------------------------
+# If a script exists in multiple search directories, the engine will normally 
+# prompt you at startup to choose which one to run. You can pre-configure the 
+# exact path here to bypass the prompt and run autonomously.
 #
 # Format: ["script_name.sh"]="path/relative/to/home/script_name.sh"
 #
-# Example:
-#   ["warp_toggle.sh"]="user_scripts/networking/warp_toggle.sh"
-#   Then in UPDATE_SEQUENCE add:
-#     "S | warp_toggle.sh"
-#     "S | ignore-fail | warp_toggle.sh --auto"
-
-# ------------------------------------------------------------------------------
-# CUSTOM SCRIPT PATHS
-# ------------------------------------------------------------------------------
-declare -A CUSTOM_SCRIPT_PATHS=(
-    ["warp_toggle.sh"]="user_scripts/networking/warp_toggle.sh"
-    ["fix_theme_dir.sh"]="user_scripts/misc_extra/fix_theme_dir.sh"
-    ["backup_hyprlang_files.sh"]="user_scripts/misc_extra/backup_hyprlang_files.sh"
-    ["pacman_packages.sh"]="user_scripts/misc_extra/pacman_packages.sh"
-    ["paru_packages.sh"]="user_scripts/misc_extra/paru_packages.sh"
-    ["copy_service_files.sh"]="user_scripts/misc_extra/copy_service_files.sh"
-    ["update_checker.sh"]="user_scripts/update_dusky/update_checker/update_checker.sh"
-    ["cc_restart.sh"]="user_scripts/dusky_system/reload_cc/cc_restart.sh"
-    ["dusky_service_manager.sh"]="user_scripts/services/dusky_service_manager.sh"
-#    ["append_defaults_keybinds_edit_here.sh"]="user_scripts/misc_extra/append_defaults_keybinds_edit_here.sh"
-    ["reboot_post_lua_update.sh"]="user_scripts/misc_extra/delete_in_3_weeks/reboot_post_lua_update.sh"
-    ["dusky_commands_before.sh"]="user_scripts/misc_extra/dusky_commands_before.sh"
-    ["system_update.sh"]="user_scripts/update_dusky/system_update.sh"
-    ["dusky_commands_after.sh"]="user_scripts/misc_extra/dusky_commands_after.sh"
-    ["rofi_wallpaper_selctor.sh"]="user_scripts/rofi/rofi_wallpaper_selctor.sh"
-    ["hypr_anim.sh"]="user_scripts/rofi/hypr_anim.sh"
-    ["dusky_matugen_config_tui.sh"]="user_scripts/theme_matugen/config/dusky_matugen_config_tui.sh"
-    ["dusky_firefox_tui.sh"]="user_scripts/theme_matugen/firefox/dusky_firefox_tui.sh"
-    ["theme_ctl.sh"]="user_scripts/theme_matugen/theme_ctl.sh"
-    ["update_counter.sh"]="user_scripts/waybar/update_counter.sh"
+# TIP: If you want to run BOTH versions of the script at different times in 
+# your sequence, do NOT use this array. Instead, provide the full relative 
+# path directly in the UPDATE_SEQUENCE (e.g. "U | folderA/script.sh" and 
+# "U | folderB/script.sh"). The engine natively handles this perfectly.
+declare -A SCRIPT_CONFLICT_RESOLUTIONS=(
+    # ["update_checker.sh"]="user_scripts/update_dusky/update_checker.sh"
 )
 
 # ------------------------------------------------------------------------------
 # UPDATE SEQUENCE
 # ------------------------------------------------------------------------------
-# Entry formats:
-#   "U | script.sh --auto"
-#   "S | ignore-fail | script.sh --auto"
-#   "U | | script.sh --auto"
-#
-# Rules:
-#   - Field 1: U or S
-#   - Field 2: optional flags; currently supported: ignore-fail
-#   - Field 3: script name plus whitespace-separated arguments
-#   - Legacy form "U | true script.sh --auto" is still accepted
-#   - Quotes, backslash escapes, and additional "|" characters inside the
-#     command field are not supported
 declare -ra UPDATE_SEQUENCE=(
 
 #================= CUSTOM=====================
@@ -400,7 +385,7 @@ declare -ga MANIFEST_IGNORE_FAIL=()
 declare -ga MANIFEST_ARGV_NAME=()
 declare -ga MANIFEST_PATH=()
 declare -ga MANIFEST_PATH_STATE=()
-declare -ga MANIFEST_IS_CUSTOM=()
+declare -ga MANIFEST_INTERPRETER=()
 
 declare -g OPT_DRY_RUN=false
 declare -g OPT_SKIP_SYNC=false
@@ -659,8 +644,45 @@ file_sha256() {
 }
 
 # ==============================================================================
-# MANIFEST PARSING
+# MANIFEST PARSING & RESOLUTION
 # ==============================================================================
+validate_search_dirs() {
+    local needs_search_dirs=0
+    local i=""
+    local valid=0
+    local dir=""
+
+    for i in "${!MANIFEST_SCRIPT[@]}"; do
+        if [[ "${MANIFEST_SCRIPT[$i]}" != */* ]]; then
+            needs_search_dirs=1
+            break
+        fi
+    done
+
+    if (( needs_search_dirs == 0 )); then
+        return 0
+    fi
+
+    if [[ ${#SCRIPT_SEARCH_DIRS[@]} -eq 0 ]]; then
+        log ERROR "SCRIPT_SEARCH_DIRS is empty, but search-based entries are configured."
+        exit 1
+    fi
+
+    for dir in "${SCRIPT_SEARCH_DIRS[@]}"; do
+        if [[ -d "$dir" ]]; then
+            (( ++valid ))
+        fi
+    done
+
+    if (( valid == 0 )); then
+        log ERROR "None of the configured script search directories exist!"
+        log ERROR "Check your SCRIPT_SEARCH_DIRS configuration."
+        exit 1
+    fi
+
+    return 0
+}
+
 parse_update_sequence_manifest() {
     local entry="" mode="" flags_part="" command_part="" script=""
     local ignore_fail=false
@@ -676,7 +698,7 @@ parse_update_sequence_manifest() {
     MANIFEST_ARGV_NAME=()
     MANIFEST_PATH=()
     MANIFEST_PATH_STATE=()
-    MANIFEST_IS_CUSTOM=()
+    MANIFEST_INTERPRETER=()
 
     for entry in "${UPDATE_SEQUENCE[@]}"; do
         [[ -z "${entry//[[:space:]]/}" ]] && continue
@@ -774,10 +796,175 @@ parse_update_sequence_manifest() {
         MANIFEST_ARGV_NAME+=("$argv_name")
         MANIFEST_PATH+=("")
         MANIFEST_PATH_STATE+=("unknown")
-        MANIFEST_IS_CUSTOM+=("false")
+        MANIFEST_INTERPRETER+=("")
 
         ((idx++)) || true
     done
+}
+
+resolve_and_validate_manifest() {
+    local i=0 script="" script_path=""
+    local -a matches=()
+    local preflight_failures=0
+    local needs_python=false
+
+    log INFO "Performing pre-flight validation and conflict resolution..."
+
+    for i in "${!MANIFEST_MODE[@]}"; do
+        script="${MANIFEST_SCRIPT[$i]}"
+        matches=()
+
+        # Step 1: Scan for paths
+        if [[ "$script" == */* ]]; then
+            local explicit_path="$script"
+            [[ "$script" != /* && "$script" != ~* ]] && explicit_path="${WORK_TREE}/${script}"
+            if [[ -f "$explicit_path" && -r "$explicit_path" ]]; then
+                matches+=("$explicit_path")
+            fi
+        else
+            local dir=""
+            for dir in "${SCRIPT_SEARCH_DIRS[@]}"; do
+                if [[ -f "${dir}/${script}" && -r "${dir}/${script}" ]]; then
+                    matches+=("${dir}/${script}")
+                fi
+            done
+        fi
+
+        # Step 2: Handle missing/duplicate scripts
+        if ((${#matches[@]} == 0)); then
+            MANIFEST_PATH[$i]="$script"
+            MANIFEST_PATH_STATE[$i]="missing"
+            log ERROR "Required script not found or unreadable: $script"
+            ((preflight_failures++))
+            continue
+        elif ((${#matches[@]} == 1)); then
+            script_path="${matches[0]}"
+        else
+            # CONFLICT RESOLUTION
+            local predefined="${SCRIPT_CONFLICT_RESOLUTIONS[$script]:-}"
+            if [[ -n "$predefined" ]]; then
+                local explicit_pre="${predefined}"
+                [[ "$explicit_pre" != /* && "$explicit_pre" != ~* ]] && explicit_pre="${WORK_TREE}/${explicit_pre}"
+                if [[ -f "$explicit_pre" && -r "$explicit_pre" ]]; then
+                    script_path="$explicit_pre"
+                    log INFO "Resolved duplicate '$script' using SCRIPT_CONFLICT_RESOLUTIONS -> $script_path"
+                else
+                    log ERROR "Predefined resolution for '$script' is missing or unreadable: $explicit_pre"
+                    MANIFEST_PATH[$i]="$script"
+                    MANIFEST_PATH_STATE[$i]="missing"
+                    ((preflight_failures++))
+                    continue
+                fi
+            else
+                if [[ "$OPT_DRY_RUN" == true || "$OPT_FORCE" == true || ! -t 0 ]]; then
+                    log ERROR "Conflict: Multiple versions of '$script' found."
+                    local m
+                    for m in "${matches[@]}"; do log ERROR "  Found at: $m"; done
+                    log ERROR "Cannot prompt in non-interactive/dry-run mode. Add to SCRIPT_CONFLICT_RESOLUTIONS."
+                    MANIFEST_PATH[$i]="$script"
+                    MANIFEST_PATH_STATE[$i]="conflict"
+                    ((preflight_failures++))
+                    continue
+                fi
+
+                printf '\n%s[CONFLICT DETECTED]%s Multiple versions of %s found:\n' "$CLR_YLW" "$CLR_RST" "$script"
+                local j
+                for ((j=0; j<${#matches[@]}; j++)); do
+                    printf '  %d) %s\n' "$((j+1))" "${matches[$j]}"
+                done
+                local choice=""
+                while true; do
+                    read -r -p "Which one should be executed? (1-${#matches[@]}): " choice
+                    if [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#matches[@]})); then
+                        script_path="${matches[$((choice-1))]}"
+                        log OK "Selected: $script_path"
+                        log INFO "Tip: Add [\"$script\"]=\"$script_path\" to SCRIPT_CONFLICT_RESOLUTIONS to automate this."
+                        break
+                    fi
+                    echo "Invalid choice. Please enter a number between 1 and ${#matches[@]}."
+                done
+            fi
+        fi
+
+        MANIFEST_PATH[$i]="$script_path"
+        MANIFEST_PATH_STATE[$i]="ok"
+
+        # Step 3: Precise Interpreter Detection
+        local first_line=""
+        read -r first_line < "$script_path" || true
+        local has_py_ext=false
+        local has_sh_ext=false
+        local has_py_shebang=false
+        local has_bash_shebang=false
+
+        [[ "$script_path" == *.py ]] && has_py_ext=true
+        [[ "$script_path" == *.sh ]] && has_sh_ext=true
+        [[ "$first_line" =~ ^#![[:space:]]*(/usr/bin/env[[:space:]]+python.*|/usr/bin/python.*) ]] && has_py_shebang=true
+        [[ "$first_line" =~ ^#![[:space:]]*(/usr/bin/env[[:space:]]+bash.*|/bin/bash.*|/bin/sh.*|/bin/zsh.*|/usr/bin/env[[:space:]]+sh.*) ]] && has_bash_shebang=true
+
+        local resolved_interpreter=""
+
+        # Check for explicit contradictions
+        if [[ "$has_py_ext" == true && "$has_bash_shebang" == true ]] || [[ "$has_sh_ext" == true && "$has_py_shebang" == true ]]; then
+            if [[ "$OPT_DRY_RUN" == true || "$OPT_FORCE" == true || ! -t 0 ]]; then
+                log ERROR "Interpreter conflict for '$script': File extension and Shebang disagree."
+                log ERROR "Cannot prompt in non-interactive/dry-run mode. Please fix the file extension or shebang."
+                ((preflight_failures++))
+                continue
+            fi
+
+            printf '\n%s[INTERPRETER CONFLICT]%s Script %s has conflicting indicators (e.g. .py with bash shebang, or .sh with python shebang).\n' "$CLR_YLW" "$CLR_RST" "$script"
+            printf '  1) Run with Bash\n'
+            printf '  2) Run with Python\n'
+            local int_choice=""
+            while true; do
+                read -r -p "Select interpreter (1-2): " int_choice
+                case "$int_choice" in
+                    1) resolved_interpreter="$BASH_BIN"; break ;;
+                    2) resolved_interpreter="python"; needs_python=true; break ;;
+                    *) echo "Invalid choice." ;;
+                esac
+            done
+        else
+            if [[ "$has_py_ext" == true || "$has_py_shebang" == true ]]; then
+                resolved_interpreter="python"
+                needs_python=true
+            else
+                resolved_interpreter="$BASH_BIN"
+            fi
+        fi
+
+        MANIFEST_INTERPRETER[$i]="$resolved_interpreter"
+    done
+
+    if ((preflight_failures > 0)); then
+        log ERROR "Aborting preflight due to ${preflight_failures} resolution error(s)"
+        return 1
+    fi
+
+    # Preflight Python check and automatic pacman installation
+    if [[ "$needs_python" == true ]] && ! command -v python >/dev/null 2>&1; then
+        if [[ "$OPT_DRY_RUN" == true ]]; then
+            log WARN "[DRY-RUN] Python dependency detected but not installed. Would install python via pacman."
+        else
+            log WARN "Python dependency detected, but 'python' binary is not installed."
+            log INFO "Installing Python via pacman..."
+            
+            if [[ -z "$SUDO_PID" ]]; then
+                init_sudo
+            fi
+
+            if run_logged_command sudo pacman -S python --noconfirm --needed; then
+                log OK "Python installed successfully."
+            else
+                log ERROR "Failed to install Python. Aborting update sequence."
+                return 1
+            fi
+        fi
+    fi
+
+    log OK "Preflight validation complete."
+    return 0
 }
 
 list_active_scripts() {
@@ -2738,71 +2925,10 @@ stop_sudo() {
 execute_scripts() {
     log SECTION "Executing Update Sequence"
 
-    local script_dir_missing=false
-    if [[ ! -d "$SCRIPT_DIR" ]]; then
-        script_dir_missing=true
-        log WARN "Default script directory is missing: $SCRIPT_DIR"
-    fi
-
     local i=0 total="${#MANIFEST_MODE[@]}"
-    local mode="" script="" ignore_fail="" script_path="" is_custom=false
-    local path_state="" quoted_args=""
-    local preflight_failures=0
+    local mode="" script="" ignore_fail="" script_path=""
+    local path_state="" quoted_args="" interpreter=""
     local -a args=()
-
-    for i in "${!MANIFEST_MODE[@]}"; do
-        script="${MANIFEST_SCRIPT[$i]}"
-
-        if [[ -v "CUSTOM_SCRIPT_PATHS[$script]" && -n "${CUSTOM_SCRIPT_PATHS[$script]}" ]]; then
-            script_path="${WORK_TREE}/${CUSTOM_SCRIPT_PATHS[$script]}"
-            is_custom=true
-        else
-            script_path="${SCRIPT_DIR}/${script}"
-            is_custom=false
-        fi
-
-        MANIFEST_PATH[$i]="$script_path"
-        MANIFEST_IS_CUSTOM[$i]="$is_custom"
-
-        if [[ "$is_custom" != "true" && "$script_dir_missing" == "true" ]]; then
-            MANIFEST_PATH_STATE[$i]="missing"
-        elif [[ -e "$script_path" || -L "$script_path" ]]; then
-            if [[ ! -f "$script_path" ]]; then
-                MANIFEST_PATH_STATE[$i]="not-a-file"
-            elif [[ ! -r "$script_path" ]]; then
-                MANIFEST_PATH_STATE[$i]="unreadable"
-            else
-                MANIFEST_PATH_STATE[$i]="ok"
-            fi
-        else
-            MANIFEST_PATH_STATE[$i]="missing"
-        fi
-
-        case "${MANIFEST_PATH_STATE[$i]}" in
-            ok)
-                ;;
-            missing)
-                log ERROR "Required script not found: $script -> $(quote_for_log "$script_path")"
-                HARD_FAILED_SCRIPTS+=("$script (missing)")
-                ((preflight_failures++)) || true
-                ;;
-            unreadable)
-                log ERROR "Required script is unreadable: $script -> $(quote_for_log "$script_path")"
-                HARD_FAILED_SCRIPTS+=("$script (unreadable)")
-                ((preflight_failures++)) || true
-                ;;
-            not-a-file)
-                log ERROR "Required script path is not a regular file: $script -> $(quote_for_log "$script_path")"
-                HARD_FAILED_SCRIPTS+=("$script (not-a-file)")
-                ((preflight_failures++)) || true
-                ;;
-        esac
-    done
-
-    if ((preflight_failures > 0)); then
-        log ERROR "Aborting script execution due to ${preflight_failures} manifest path error(s)"
-        return 0
-    fi
 
     for i in "${!MANIFEST_MODE[@]}"; do
         mode="${MANIFEST_MODE[$i]}"
@@ -2810,6 +2936,7 @@ execute_scripts() {
         ignore_fail="${MANIFEST_IGNORE_FAIL[$i]}"
         script_path="${MANIFEST_PATH[$i]}"
         path_state="${MANIFEST_PATH_STATE[$i]}"
+        interpreter="${MANIFEST_INTERPRETER[$i]}"
         local -n argv_ref="${MANIFEST_ARGV_NAME[$i]}"
         args=("${argv_ref[@]}")
         quoted_args="$(join_quoted_argv "${args[@]}")"
@@ -2818,6 +2945,8 @@ execute_scripts() {
             ok)
                 ;;
             *)
+                # Conflicts or missing scripts were already caught and logged in Preflight
+                HARD_FAILED_SCRIPTS+=("$script ($path_state)")
                 continue
                 ;;
         esac
@@ -2849,9 +2978,11 @@ execute_scripts() {
         # The Retry/Skip prompt logic natively integrated into the execution sequence
         while true; do
             local rc=0
+            
+            # Execute in the root WORK_TREE (maintaining expected relative path resolution)
             case "$mode" in
-                S) run_logged_command sudo "$BASH_BIN" "$script_path" "${args[@]}" || rc=$? ;;
-                U) run_logged_command "$BASH_BIN" "$script_path" "${args[@]}" || rc=$? ;;
+                S) run_logged_command sudo "$interpreter" "$script_path" "${args[@]}" || rc=$? ;;
+                U) run_logged_command "$interpreter" "$script_path" "${args[@]}" || rc=$? ;;
             esac
 
             if ((rc == 0)); then
@@ -3051,10 +3182,6 @@ main() {
         acquire_lock || exit 1
     fi
 
-    CURRENT_PHASE="preflight"
-    parse_update_sequence_manifest
-    require_sudo_if_needed || exit 1
-
     local self_hash_before=""
     if [[ "$OPT_DRY_RUN" != true && "$OPT_POST_SELF_UPDATE" != true && -r "$SELF_PATH" ]]; then
         self_hash_before="$(file_sha256 "$SELF_PATH" || true)"
@@ -3111,6 +3238,12 @@ main() {
     if [[ "$OPT_SYNC_ONLY" == true ]]; then
         log OK "Sync-only mode — skipping script execution."
     elif [[ "$SYNC_FAILED" != true || "$cont" =~ ^[Yy]$ ]]; then
+        CURRENT_PHASE="preflight"
+        parse_update_sequence_manifest
+        validate_search_dirs
+        resolve_and_validate_manifest || exit 1
+        require_sudo_if_needed || exit 1
+
         CURRENT_PHASE="script execution"
         execute_scripts || true
     fi

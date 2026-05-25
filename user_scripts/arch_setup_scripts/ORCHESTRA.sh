@@ -30,6 +30,16 @@ SCRIPT_SEARCH_DIRS=(
     # "/opt/shared_team_scripts"
 )
 
+# ------------------------------------------------------------------------------
+# SCRIPT CONFLICT RESOLUTIONS
+# ------------------------------------------------------------------------------
+# Pre-configure exact paths to bypass prompts if a script exists in multiple
+# search directories.
+# Format: ["script_name.sh"]="path/relative/to/home/script_name.sh"
+declare -A SCRIPT_CONFLICT_RESOLUTIONS=(
+    # ["update_checker.sh"]="user_scripts/update_dusky/update_checker.sh"
+)
+
 # Delay (in seconds) after each successful script. Set to 0 to disable.
 POST_SCRIPT_DELAY=0
 
@@ -184,6 +194,7 @@ declare -g EXECUTION_PHASE=0
 # 4. O(1) Arrays
 declare -gA COMPLETED_SCRIPTS=()
 declare -gA SCRIPT_CACHE=()
+declare -gA SCRIPT_INTERPRETERS=()
 
 # 5. Colors
 declare -g RED="" GREEN="" BLUE="" YELLOW="" BOLD="" RESET=""
@@ -426,24 +437,74 @@ resolve_script() {
     unset 'SCRIPT_CACHE[$name]'
 
     if [[ "$name" == */* ]]; then
-        if [[ -f "$name" && -r "$name" ]]; then
-            SCRIPT_CACHE["$name"]="$name"
-            printf '%s' "$name"
+        local explicit_path="$name"
+        [[ "$name" != /* && "$name" != ~* ]] && explicit_path="${HOME}/${name}"
+        if [[ -f "$explicit_path" && -r "$explicit_path" ]]; then
+            SCRIPT_CACHE["$name"]="$explicit_path"
+            printf '%s' "$explicit_path"
             return 0
         fi
         return 1
     fi
 
     local dir=""
+    local -a matches=()
     for dir in "${SCRIPT_SEARCH_DIRS[@]}"; do
         if [[ -f "${dir}/${name}" && -r "${dir}/${name}" ]]; then
-            SCRIPT_CACHE["$name"]="${dir}/${name}"
-            printf '%s' "${dir}/${name}"
-            return 0
+            matches+=("${dir}/${name}")
         fi
     done
 
-    return 1
+    if ((${#matches[@]} == 0)); then
+        return 1
+    elif ((${#matches[@]} == 1)); then
+        SCRIPT_CACHE["$name"]="${matches[0]}"
+        printf '%s' "${matches[0]}"
+        return 0
+    else
+        # CONFLICT RESOLUTION
+        local predefined="${SCRIPT_CONFLICT_RESOLUTIONS[$name]:-}"
+        if [[ -n "$predefined" ]]; then
+            local explicit_pre="${predefined}"
+            [[ "$explicit_pre" != /* && "$explicit_pre" != ~* ]] && explicit_pre="${HOME}/${explicit_pre}"
+            if [[ -f "$explicit_pre" && -r "$explicit_pre" ]]; then
+                SCRIPT_CACHE["$name"]="$explicit_pre"
+                log "INFO" "Resolved duplicate '$name' using SCRIPT_CONFLICT_RESOLUTIONS -> $explicit_pre" >&2
+                printf '%s' "$explicit_pre"
+                return 0
+            else
+                log "ERROR" "Predefined resolution for '$name' is missing or unreadable: $explicit_pre" >&2
+                return 1
+            fi
+        else
+            if [[ ! -t 0 ]]; then
+                log "ERROR" "Conflict: Multiple versions of '$name' found." >&2
+                local m
+                for m in "${matches[@]}"; do log "ERROR" "  Found at: $m" >&2; done
+                log "ERROR" "Cannot prompt in non-interactive mode. Add to SCRIPT_CONFLICT_RESOLUTIONS." >&2
+                return 1
+            fi
+
+            printf '\n%s[CONFLICT DETECTED]%s Multiple versions of %s found:\n' "${YELLOW:-}" "${RESET:-}" "$name" >&2
+            local j
+            for ((j=0; j<${#matches[@]}; j++)); do
+                printf '  %d) %s\n' "$((j+1))" "${matches[$j]}" >&2
+            done
+            local choice=""
+            while true; do
+                read -r -p "Which one should be executed? (1-${#matches[@]}): " choice >&2
+                if [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#matches[@]})); then
+                    local chosen_path="${matches[$((choice-1))]}"
+                    log "SUCCESS" "Selected: $chosen_path" >&2
+                    log "INFO" "Tip: Add [\"$name\"]=\"$chosen_path\" to SCRIPT_CONFLICT_RESOLUTIONS to automate this." >&2
+                    SCRIPT_CACHE["$name"]="$chosen_path"
+                    printf '%s' "$chosen_path"
+                    return 0
+                fi
+                echo "Invalid choice. Please enter a number between 1 and ${#matches[@]}." >&2
+            done
+        fi
+    fi
 }
 
 report_search_locations() {
@@ -527,14 +588,14 @@ preflight_check() {
     local script_path=""
     local -a args=()
 
-    log "INFO" "Performing pre-flight validation..."
+    log "INFO" "Performing pre-flight validation and conflict resolution..."
 
     for entry in "${INSTALL_SEQUENCE[@]}"; do
         [[ -n "${entry//[[:space:]]/}" ]] || continue
         parse_install_entry "$entry" mode filename args base_state_key ignore_fail
 
         if ! script_path="$(resolve_script "$filename")"; then
-            log "ERROR" "Missing or unreadable: ${filename}"
+            log "ERROR" "Missing, unreadable, or unresolved conflict: ${filename}"
             (( ++missing ))
         fi
     done
@@ -807,6 +868,8 @@ main() {
     local ignore_fail=0
     local -a args=()
 
+    log "INFO" "Performing dependency and interpreter resolution..."
+
     for entry in "${INSTALL_SEQUENCE[@]}"; do
         [[ -n "${entry//[[:space:]]/}" ]] || continue
         parse_install_entry "$entry" mode filename args base_state_key ignore_fail
@@ -815,26 +878,52 @@ main() {
             needs_sudo=1
         fi
 
-        # Dynamically evaluate if a script requires Python based on extension or Shebang
-        if [[ $needs_python -eq 0 ]]; then
-            if [[ "$filename" == *.py ]]; then
-                needs_python=1
+        # Dynamically evaluate script interpreter and dependencies
+        local script_path=""
+        if script_path="$(resolve_script "$filename" 2>/dev/null)"; then
+            local first_line=""
+            read -r first_line < "$script_path" || true
+            local has_py_ext=0
+            local has_sh_ext=0
+            local has_py_shebang=0
+            local has_bash_shebang=0
+
+            [[ "$script_path" == *.py ]] && has_py_ext=1
+            [[ "$script_path" == *.sh ]] && has_sh_ext=1
+            [[ "$first_line" =~ ^#![[:space:]]*(/usr/bin/env[[:space:]]+python.*|/usr/bin/python.*) ]] && has_py_shebang=1
+            [[ "$first_line" =~ ^#![[:space:]]*(/usr/bin/env[[:space:]]+bash.*|/bin/bash.*|/bin/sh.*|/bin/zsh.*|/usr/bin/env[[:space:]]+sh.*) ]] && has_bash_shebang=1
+
+            local resolved_interpreter=""
+
+            # Check for explicit contradictions
+            if [[ "$has_py_ext" -eq 1 && "$has_bash_shebang" -eq 1 ]] || [[ "$has_sh_ext" -eq 1 && "$has_py_shebang" -eq 1 ]]; then
+                if [[ ! -t 0 ]]; then
+                    log "ERROR" "Interpreter conflict for '$filename': File extension and Shebang disagree."
+                    log "ERROR" "Cannot prompt in non-interactive mode. Please fix the file extension or shebang."
+                    exit 1
+                fi
+
+                printf '\n%s[INTERPRETER CONFLICT]%s Script %s has conflicting indicators (e.g. .py with bash shebang, or .sh with python shebang).\n' "${YELLOW}" "${RESET}" "$filename"
+                printf '  1) Run with Bash\n'
+                printf '  2) Run with Python\n'
+                local int_choice=""
+                while true; do
+                    read -r -p "Select interpreter (1-2): " int_choice
+                    case "$int_choice" in
+                        1) resolved_interpreter="bash"; break ;;
+                        2) resolved_interpreter="python"; needs_python=1; break ;;
+                        *) echo "Invalid choice." ;;
+                    esac
+                done
             else
-                local script_path=""
-                if script_path="$(resolve_script "$filename" 2>/dev/null)"; then
-                    local first_line=""
-                    read -r first_line < "$script_path" || true
-                    # Catch bash-agnostic /usr/bin/env python or explicitly mapped python binaries
-                    if [[ "$first_line" =~ python ]]; then
-                        needs_python=1
-                    fi
+                if [[ "$has_py_ext" -eq 1 || "$has_py_shebang" -eq 1 ]]; then
+                    resolved_interpreter="python"
+                    needs_python=1
+                else
+                    resolved_interpreter="bash"
                 fi
             fi
-        fi
-
-        # Early exit optimization: if both are found, stop searching
-        if [[ $needs_sudo -eq 1 && $needs_python -eq 1 ]]; then
-            break
+            SCRIPT_INTERPRETERS["$filename"]="$resolved_interpreter"
         fi
     done
 
@@ -1034,24 +1123,19 @@ main() {
             fi
 
             local -a interpreter_cmd=()
-            local first_line=""
-            local shebang_regex='^#![[:space:]]*(.+)'
+            local cached_int="${SCRIPT_INTERPRETERS["$filename"]:-}"
 
-            read -r first_line < "$script_path" || true
-
-            if [[ "$first_line" =~ $shebang_regex ]]; then
-                read -r -a interpreter_cmd <<< "${BASH_REMATCH[1]}"
-            elif [[ "$script_path" == *.py ]]; then
-                # Optimized strictly for Arch Linux which provides /usr/bin/python
-                interpreter_cmd=("python")
+            if [[ -n "$cached_int" ]]; then
+                interpreter_cmd=("$cached_int")
             else
+                # Fallback if somehow missed in dependency scan
                 interpreter_cmd=("bash")
             fi
 
             if [[ "$mode" == "S" ]]; then
-                ( exec 9>&-; cd "$(dirname "$script_path")" && sudo "${interpreter_cmd[@]}" "$(basename "$script_path")" "${args[@]}" ) || result=$?
+                ( exec 9>&-; sudo "${interpreter_cmd[@]}" "$script_path" "${args[@]}" ) || result=$?
             elif [[ "$mode" == "U" ]]; then
-                ( exec 9>&-; cd "$(dirname "$script_path")" && "${interpreter_cmd[@]}" "$(basename "$script_path")" "${args[@]}" ) || result=$?
+                ( exec 9>&-; "${interpreter_cmd[@]}" "$script_path" "${args[@]}" ) || result=$?
             else
                 log "ERROR" "Invalid mode '$mode' in config. Use 'S' or 'U'."
                 exit 1
