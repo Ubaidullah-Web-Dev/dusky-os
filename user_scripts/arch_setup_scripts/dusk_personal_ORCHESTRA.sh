@@ -108,6 +108,7 @@ INSTALL_SEQUENCE=(
     "U | 236_browser_switcher.sh"
     "U | 237_text_editer_switcher.sh"
     "U | 238_terminal_switcher.sh"
+    "U | 243_mousepad_defaults.py"
     "S | 245_asusd_service_fix.sh"
 #    "S | 246_asusd_tuf_f15_config.sh"
     "S | 250_ftp_arch.sh"
