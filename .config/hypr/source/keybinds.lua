@@ -1136,54 +1136,100 @@ hl.bind(
 
 
 -- =============================================================================
--- APPS THAT NEED ALT+ KEYS SILENCED
--- Add any app's class name here. Find the class with: hyprctl activewindow
+--  APP KEY PASSTHROUGH
+--  ──────────────────────────────────────────────────────────────────────────
+--  Some apps (TUIs, clipboard tools, etc.) need full keyboard access.
+--  When one of these apps is focused, Hyprland silences its own keybinds
+--  and lets every keystroke pass directly to the app.
+--
+--  Your normal keybinds that use { submap_universal = true } still work.
+--  Everything else is intentionally silenced while these apps are focused.
+--
+--  HOW TO ADD AN APP:
+--    1. Focus the app, then run: hyprctl activewindow | grep class
+--    2. Add the class name to the table below.
 -- =============================================================================
 
-local alt_passthrough_apps = {
+local PASSTHROUGH_APPS = {
     ["terminal_clipboard.sh"] = true,
-    ["dusky_tui"] = true,
+    ["dusky_tui"]             = true,
     ["wallpaper_selector.py"] = true,
-    -- ["some_other_app"]     = true,   ← add more here, same format
-    -- ["foot_vim"]           = true,
-    -- ["some_other_app"]     = true,
+    -- ["foot_vim"]           = true,   ← add more here, same format
 }
 
+-- The name of our custom submap.
+-- Referenced in multiple places, so we keep it as a variable
+-- to avoid typos and make renaming easy.
+local SUBMAP_PASSTHROUGH = "app_passthrough"
+
 
 -- =============================================================================
--- ALT-PASSTHROUGH SUBMAP
+--  THE PASSTHROUGH SUBMAP DEFINITION
+--  ──────────────────────────────────────────────────────────────────────────
+--  This submap is intentionally empty of binds.
+--  Its whole job is to be a "silent mode" — when active, Hyprland stops
+--  intercepting keys, so your focused app receives them instead.
+--
+--  Your essential binds (terminal, launcher, workspace switching, etc.)
+--  should use { submap_universal = true } in your main keybinds.lua so
+--  they continue to work even while this submap is active.
+--
+--  The only bind defined here is the emergency manual escape hatch.
 -- =============================================================================
 
-hl.define_submap("apps_passthru", function()
+hl.define_submap(SUBMAP_PASSTHROUGH, function()
 
-    -- ─── Workspace switching ─────────────────────────────────────────────────
-    local _ws = dusky_scripts .. "hypr/multi_monitor_workspace.sh"
-    local function _w(action, n)
-        return hl.dsp.exec_cmd(_ws .. " " .. action .. " " .. tostring(n))
-    end
+    -- ─── Emergency manual reset ───────────────────────────────────────────────
+    -- If something goes wrong and you're stuck (e.g. no window is focused),
+    -- press SUPER+Escape at any time to force-return to your normal keybinds.
+    -- locked = true ensures this works even on the lock screen.
+    hl.bind("SUPER + Escape", hl.dsp.submap("reset"), { locked = true, submap_universal = true })
 
-
-    -- =========================================================================
-    -- ↓↓↓ ADD YOUR OWN BINDS HERE — copy any line from keybinds.lua as-is ↓↓↓
-    -- =========================================================================
-
+    -- ─── Add app-specific binds below if needed ───────────────────────────────
+    -- If a passthrough app still needs SOME Hyprland bind to work (beyond your
+    -- universal ones), define it here. Otherwise leave this section empty.
+    --
     -- hl.bind("SUPER + N", hl.dsp.exec_cmd("..."))
-    -- hl.bind("SUPER + S", hl.dsp.exec_cmd("..."))
-
-    -- =========================================================================
-
-
-    -- ─── Emergency exit ───────────────────────────────────────────────────────
-    hl.bind("SUPER + Escape", hl.dsp.submap("reset"), { locked = true })
 
 end)
 
 
--- ─── Auto-enter / auto-exit on focus change ──────────────────────────────────
+-- =============================================================================
+--  AUTOMATIC SUBMAP SWITCHING
+--  ──────────────────────────────────────────────────────────────────────────
+--  Three listeners together make this bulletproof:
+--
+--  [1] hyprland.start  → guarantees we start in global on boot, even if a
+--                         passthrough app launches and grabs focus early.
+--
+--  [2] window.active   → switches mode whenever focus changes between windows.
+--                         Enters passthrough when a listed app is focused;
+--                         resets to global for everything else.
+--
+--  [3] window.destroy  → catches the case where a passthrough app closes but
+--                         focus goes to nothing (no window). In that situation
+--                         window.active doesn't fire, leaving you stuck in
+--                         passthrough. This listener catches that gap.
+-- =============================================================================
+
+-- [1] Always start in the global submap, no matter what.
+hl.on("hyprland.start", function()
+    hl.dispatch(hl.dsp.submap("reset"))
+end)
+
+-- [2] Switch submap whenever the focused window changes.
 hl.on("window.active", function(w)
-    if w ~= nil and alt_passthrough_apps[w.class] then
-        hl.dispatch(hl.dsp.submap("apps_passthru"))
+    if w ~= nil and PASSTHROUGH_APPS[w.class] then
+        hl.dispatch(hl.dsp.submap(SUBMAP_PASSTHROUGH))  -- silence Hyprland binds
     else
+        hl.dispatch(hl.dsp.submap("reset"))              -- restore normal binds
+    end
+end)
+
+-- [3] If a passthrough app is closed and nothing else takes focus,
+--     window.active won't fire. This ensures we still reset.
+hl.on("window.destroy", function(w)
+    if w ~= nil and PASSTHROUGH_APPS[w.class] then
         hl.dispatch(hl.dsp.submap("reset"))
     end
 end)
