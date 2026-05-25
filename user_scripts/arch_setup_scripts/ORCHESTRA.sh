@@ -93,12 +93,12 @@ INSTALL_SEQUENCE=(
     "S | 220_logrotate_optimization.sh"
 #    "S | 225_faillock_timeout.sh"
 #    "U | 230_asus_tuf_tweaks.sh"
-    "U | 235_file_manager_switch.sh --nemo"
+    "U | 235_file_manager_switch.sh --thunar"
     "U | 236_browser_switcher.sh --firefox"
 
 #    "U | dusky_firefox_tui.sh --sync --all"
 
-    "U | 237_text_editer_switcher.sh --gnome-text-editor"
+    "U | 237_text_editer_switcher.sh --mousepad"
     "U | 238_terminal_switcher.sh --kitty"
     "U | 243_mousepad_defaults.py"
 #    "S | 245_asusd_service_fix.sh"

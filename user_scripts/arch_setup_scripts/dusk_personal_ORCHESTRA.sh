@@ -795,8 +795,9 @@ main() {
 
     local start_ts=$SECONDS
 
-    # Check for sudo requirement
+    # --- PRE-EXECUTION DEPENDENCY SCANNING ---
     local needs_sudo=0
+    local needs_python=0
     local entry=""
     local mode=""
     local filename=""
@@ -807,14 +808,53 @@ main() {
     for entry in "${INSTALL_SEQUENCE[@]}"; do
         [[ -n "${entry//[[:space:]]/}" ]] || continue
         parse_install_entry "$entry" mode filename args base_state_key ignore_fail
+        
         if [[ "$mode" == "S" ]]; then
             needs_sudo=1
+        fi
+
+        # Dynamically evaluate if a script requires Python based on extension or Shebang
+        if [[ $needs_python -eq 0 ]]; then
+            if [[ "$filename" == *.py ]]; then
+                needs_python=1
+            else
+                local script_path=""
+                if script_path="$(resolve_script "$filename" 2>/dev/null)"; then
+                    local first_line=""
+                    read -r first_line < "$script_path" || true
+                    # Catch bash-agnostic /usr/bin/env python or explicitly mapped python binaries
+                    if [[ "$first_line" =~ python ]]; then
+                        needs_python=1
+                    fi
+                fi
+            fi
+        fi
+
+        # Early exit optimization: if both are found, stop searching
+        if [[ $needs_sudo -eq 1 && $needs_python -eq 1 ]]; then
             break
         fi
     done
 
+    # If Python is missing but required, we will forcibly require Sudo for installation
+    if [[ $needs_python -eq 1 ]] && ! command -v python >/dev/null 2>&1; then
+        needs_sudo=1
+    fi
+
+    # Authenticate via Sudo globally once if required
     if [[ $needs_sudo -eq 1 ]]; then
         init_sudo
+    fi
+
+    # Automated Arch repo provisioning for Python 
+    if [[ $needs_python -eq 1 ]] && ! command -v python >/dev/null 2>&1; then
+        log "WARN" "Python dependency detected, but 'python' binary is not installed."
+        log "RUN" "Installing Python via pacman..."
+        sudo pacman -S python --noconfirm --needed || {
+            log "ERROR" "Failed to install Python. Aborting orchestrator."
+            exit 1
+        }
+        log "SUCCESS" "Python installed successfully."
     fi
 
     ensure_state_dir
@@ -901,6 +941,7 @@ main() {
     local -A seen_state_keys=()
 
     EXECUTION_PHASE=1
+    export PYTHONUNBUFFERED=1 # Unbuffer Python outputs explicitly ensuring real-time log piping.
 
     for entry in "${INSTALL_SEQUENCE[@]}"; do
         [[ -n "${entry//[[:space:]]/}" ]] || continue
@@ -994,13 +1035,13 @@ main() {
             local first_line=""
             local shebang_regex='^#![[:space:]]*(.+)'
 
-
             read -r first_line < "$script_path" || true
 
             if [[ "$first_line" =~ $shebang_regex ]]; then
                 read -r -a interpreter_cmd <<< "${BASH_REMATCH[1]}"
             elif [[ "$script_path" == *.py ]]; then
-                interpreter_cmd=("python3")
+                # Optimized strictly for Arch Linux which provides /usr/bin/python
+                interpreter_cmd=("python")
             else
                 interpreter_cmd=("bash")
             fi
