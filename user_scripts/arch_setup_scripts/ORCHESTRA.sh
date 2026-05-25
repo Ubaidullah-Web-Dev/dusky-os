@@ -100,6 +100,7 @@ INSTALL_SEQUENCE=(
 
     "U | 237_text_editer_switcher.sh --gnome-text-editor"
     "U | 238_terminal_switcher.sh --kitty"
+    "U | 243_mousepad_defaults.py"
 #    "S | 245_asusd_service_fix.sh"
 #    "S | 250_ftp_arch.sh"
 #    "U | 255_tldr_update.sh"
