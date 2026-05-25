@@ -212,6 +212,9 @@ switch_terminal() {
             for (i = 1; i <= NR; i++) {
                 if (lines[i] ~ /description[[:space:]]*=[[:space:]]*"Launch Terminal"/) {
                     found = 1
+                    if (lines[i] !~ /submap_universal/) {
+                        sub(/[[:space:]]*\}[[:space:]]*$/, ", submap_universal = true }", lines[i])
+                    }
                     for (j = i; j >= 1; j--) {
                         if (lines[j] ~ /hl\.dsp\.exec_cmd/) {
                             sub(/hl\.dsp\.exec_cmd\([^)]+\)/, "hl.dsp.exec_cmd(" new_cmd ")", lines[j])
