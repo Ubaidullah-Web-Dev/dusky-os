@@ -45,7 +45,7 @@ INSTALL_SEQUENCE=(
 
     "U | 005_hypr_custom_config_setup.sh"
     "U | 010_package_removal.sh --auto"
-    "U | 015_set_thunar_terminal_kitty.sh"
+    "U | 015_set_thunar_terminal.py -t foot"
     "U | 020_desktop_apps_username_setter.sh"
     "U | 025_configure_keyboard.sh"
     "U | 035_configure_uwsm_gpu.sh --auto"
