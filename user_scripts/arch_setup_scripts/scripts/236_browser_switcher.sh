@@ -289,7 +289,7 @@ switch_browser() {
                 print "hl.bind("
                 print "    \"SUPER + W\","
                 print "    hl.dsp.exec_cmd(" new_cmd "),"
-                print "    { description = \"Launch Browser\" }"
+                print "    { description = \"Launch Browser\", submap_universal = true }"
                 print ")"
             }
         }

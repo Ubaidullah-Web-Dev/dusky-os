@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# ELITE HYPRLAND TERMINAL SWITCHER - PLATINUM EDITION (v6.7)
+# ELITE HYPRLAND TERMINAL SWITCHER - PLATINUM EDITION (v6.7.1)
 # =============================================================================
 #
 # BASED ON: Dusky TUI Engine v5.9 (Template Aligned)
@@ -32,7 +32,7 @@ declare -r STATE_FILE="${HOME}/.config/dusky/settings/terminal_switch"
 
 # UI Configuration (Template Aligned)
 declare -r APP_TITLE="Dusky Terminal Manager"
-declare -r APP_VERSION="v6.7 (Omni-Environment)"
+declare -r APP_VERSION="v6.7.1 (Omni-Environment)"
 declare -ri BOX_INNER_WIDTH=60
 declare -ri MAX_DISPLAY_ROWS=10
 declare -ri ITEM_PADDING=38  
@@ -228,7 +228,7 @@ switch_terminal() {
                 print "hl.bind("
                 print "    \"SUPER + Q\","
                 print "    hl.dsp.exec_cmd(" new_cmd "),"
-                print "    { description = \"Launch Terminal\" }"
+                print "    { description = \"Launch Terminal\", submap_universal = true }"
                 print ")"
             }
         }

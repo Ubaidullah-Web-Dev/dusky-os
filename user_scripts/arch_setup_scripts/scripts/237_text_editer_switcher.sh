@@ -303,7 +303,7 @@ switch_text_editor() {
                 print "hl.bind("
                 print "    \"SUPER + R\","
                 print "    hl.dsp.exec_cmd(" new_cmd "),"
-                print "    { description = \"Open Text Editor\" }"
+                print "    { description = \"Open Text Editor\", submap_universal = true }"
                 print ")"
             }
         }

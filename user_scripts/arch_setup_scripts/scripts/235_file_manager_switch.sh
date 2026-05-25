@@ -279,7 +279,7 @@ switch_file_manager() {
                 print "hl.bind("
                 print "    \"SUPER + E\","
                 print "    hl.dsp.exec_cmd(" new_cmd "),"
-                print "    { description = \"File Manager\" }"
+                print "    { description = \"File Manager\", submap_universal = true }"
                 print ")"
             }
         }
