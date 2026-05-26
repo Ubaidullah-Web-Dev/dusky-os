@@ -119,7 +119,7 @@ SCHEMA = {
             key="focus_on_activate",
             scope="misc",
             type_="bool",
-            default=False,
+            default=True,
             parent_ref="misc_menu_id",
             extended_help="**Focus on Activate**\n\nAutomatically focus a window that requests activation (e.g., urgency hint or xdg_activation)."
         ),
