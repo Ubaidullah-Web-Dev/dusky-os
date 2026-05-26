@@ -519,35 +519,13 @@ verify_snapper_works() {
     snapper --no-dbus -c "$1" list >/dev/null 2>&1 || fatal "Snapper $1 config is broken."
 }
 
-snapper_cleanup_counts() {
-    # CHROOT FIX: Inject --no-dbus
-    snapper --no-dbus --csv -c "$1" list 2>/dev/null | awk -F',' '
-        NR == 1 {
-            for (i = 1; i <= NF; i++) {
-                if ($i == "number") num_col = i
-                else if ($i == "cleanup") cleanup_col = i
-            }
-            next
-        }
-        num_col && cleanup_col &&
-        $num_col ~ /^[0-9]+$/ &&
-        $num_col != "0" {
-            if ($cleanup_col == "number") number_count++
-            else if ($cleanup_col == "important") important_count++
-        }
-        END {
-            printf "%d %d\n", number_count + 0, important_count + 0
-        }
-    '
-}
-
 tune_snapper() {
     local cfg="$1"
     local strict_limit=6
 
     info "Enforcing strict cleanup limits for ${cfg}: NUMBER_LIMIT=${strict_limit}"
 
-    # CHROOT FIX: Inject --no-dbus to bypass dead systemd/dbus in arch-chroot
+    # CHROOT FIX: Inject --no-dbus
     snapper --no-dbus -c "$cfg" set-config \
         TIMELINE_CREATE="no" \
         NUMBER_CLEANUP="yes" \

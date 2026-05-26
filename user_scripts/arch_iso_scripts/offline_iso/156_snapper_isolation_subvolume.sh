@@ -519,49 +519,18 @@ verify_snapper_works() {
     snapper --no-dbus -c "$1" list >/dev/null 2>&1 || fatal "Snapper $1 config is broken."
 }
 
-snapper_cleanup_counts() {
-    # CHROOT FIX: Inject --no-dbus
-    snapper --no-dbus --csv -c "$1" list 2>/dev/null | awk -F',' '
-        NR == 1 {
-            for (i = 1; i <= NF; i++) {
-                if ($i == "number") num_col = i
-                else if ($i == "cleanup") cleanup_col = i
-            }
-            next
-        }
-        num_col && cleanup_col &&
-        $num_col ~ /^[0-9]+$/ &&
-        $num_col != "0" {
-            if ($cleanup_col == "number") number_count++
-            else if ($cleanup_col == "important") important_count++
-        }
-        END {
-            printf "%d %d\n", number_count + 0, important_count + 0
-        }
-    '
-}
-
 tune_snapper() {
     local cfg="$1"
-    local default_limit=5 reserve=3
-    local number_count=0 important_count=0
-    local number_limit="$default_limit" important_limit="$default_limit"
+    local strict_limit=6
 
-    read -r number_count important_count < <(snapper_cleanup_counts "$cfg")
-
-    if (( number_count > default_limit )); then
-        number_limit=$(( number_count + reserve ))
-    fi
-    if (( important_count > default_limit )); then
-        important_limit=$(( important_count + reserve ))
-    fi
+    info "Enforcing strict cleanup limits for ${cfg}: NUMBER_LIMIT=${strict_limit}"
 
     # CHROOT FIX: Inject --no-dbus
     snapper --no-dbus -c "$cfg" set-config \
         TIMELINE_CREATE="no" \
         NUMBER_CLEANUP="yes" \
-        NUMBER_LIMIT="${number_limit}" \
-        NUMBER_LIMIT_IMPORTANT="${important_limit}" \
+        NUMBER_LIMIT="${strict_limit}" \
+        NUMBER_LIMIT_IMPORTANT="${strict_limit}" \
         SPACE_LIMIT="0.0" \
         FREE_LIMIT="0.0"
 }

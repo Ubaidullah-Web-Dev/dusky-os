@@ -6,7 +6,21 @@ set -Eeuo pipefail
 export LC_ALL=C
 
 AUTO_MODE=false
-[[ "${1:-}" == "--auto" ]] && AUTO_MODE=true
+BOOT_SYNC_FLAG=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --auto) AUTO_MODE=true ;;
+        --boot-sync) BOOT_SYNC_FLAG=true ;;
+    esac
+done
+
+# If manual mode is active, we permit sync features to run (so it prompts you).
+# If auto mode is active, we ONLY permit sync features if --boot-sync is passed.
+ENABLE_SYNC_FEATURES=false
+if [[ "$AUTO_MODE" == false ]] || [[ "$BOOT_SYNC_FLAG" == true ]]; then
+    ENABLE_SYNC_FEATURES=true
+fi
 
 declare -A BACKED_UP=()
 declare -a EFFECTIVE_HOOKS=()
@@ -121,13 +135,51 @@ get_effective_hooks() {
     for hook in "${EFFECTIVE_HOOKS[@]}"; do EFFECTIVE_HOOKS_SET["$hook"]=1; done
 }
 
+remove_sync_features() {
+    # Silence any active services from background running
+    systemctl disable limine-snapper-sync.service 2>/dev/null || true
+    systemctl disable limine-snapper-sync.path 2>/dev/null || true
+    
+    local -a pkgs_to_remove=()
+    pacman -Q limine-snapper-sync >/dev/null 2>&1 && pkgs_to_remove+=(limine-snapper-sync)
+    pacman -Q snap-pac >/dev/null 2>&1 && pkgs_to_remove+=(snap-pac)
+
+    # Completely purge the packages to kill ALPM pacman hooks
+    if (( ${#pkgs_to_remove[@]} > 0 )); then
+        info "Purging automated sync packages to enforce manual-only policy..."
+        pacman -Rns --noconfirm "${pkgs_to_remove[@]}" || true
+    fi
+    
+    # Forensic sweep of ESP to prevent hostage capacity issues
+    local esp_mnt
+    esp_mnt="$(findmnt -n -e -o TARGET -M /boot 2>/dev/null || findmnt -n -e -o TARGET -M /efi 2>/dev/null || findmnt -n -e -o TARGET -M /boot/efi 2>/dev/null || true)"
+    if [[ -n "$esp_mnt" ]]; then
+        local snap_dirs=("limine-snapshots" "EFI/limine/snapshots" "limine/snapshots")
+        local dir
+        for dir in "${snap_dirs[@]}"; do
+            if test -d "$esp_mnt/$dir"; then
+                info "Cleaning up orphaned bootloader snapshots at $esp_mnt/$dir..."
+                rm -rf "$esp_mnt/$dir"
+            fi
+        done
+        rm -f "$esp_mnt/limine-snapshots.conf" 2>/dev/null || true
+        rm -f "$esp_mnt/EFI/limine/limine-snapshots.conf" 2>/dev/null || true
+    fi
+    
+    rm -f /etc/limine-snapper-sync.conf /etc/snap-pac.ini
+}
+
 install_aur_packages() {
     local sync_in=false hook_in=false
     pacman -Q limine-snapper-sync >/dev/null 2>&1 && sync_in=true
     pacman -Q limine-mkinitcpio-hook >/dev/null 2>&1 && hook_in=true
 
     local -a pkgs=()
-    [[ "$sync_in" == false ]] && pkgs+=(limine-snapper-sync)
+    
+    if [[ "$ENABLE_SYNC_FEATURES" == true ]] && [[ "$sync_in" == false ]]; then
+        pkgs+=(limine-snapper-sync)
+    fi
+    
     if [[ "$hook_in" == false ]] && ! command -v limine-update >/dev/null 2>&1; then
         pkgs+=(limine-mkinitcpio-hook)
     fi
@@ -344,10 +396,12 @@ enable_services_and_sync() {
     # Systemd init is not running in chroot, so we only *enable* them for next boot. 
     # Do NOT use --now.
     systemctl enable snapper-cleanup.timer
-    systemctl enable limine-snapper-sync.service
 
-    info "Manually running boot menu sync for offline chroot environment..."
-    limine-snapper-sync || true
+    if [[ "$ENABLE_SYNC_FEATURES" == true ]]; then
+        systemctl enable limine-snapper-sync.service
+        info "Manually running boot menu sync for offline chroot environment..."
+        limine-snapper-sync || true
+    fi
 }
 
 preflight_checks() {
@@ -358,11 +412,21 @@ preflight_checks() {
 preflight_checks
 execute "Verify layout" verify_previous_setup
 execute "Install AUR packages" install_aur_packages
-require_cmd limine-update; require_cmd limine-snapper-sync; require_cmd snapper
+require_cmd limine-update; require_cmd snapper
+
+# OverlayFS hook is critical for manually booting read-only snapshots even if sync is disabled.
 execute "Inject OverlayFS hook" configure_mkinitcpio_overlay_hook
-execute "Configure sync daemon" configure_sync_daemon
-execute "Install snap-pac" install_snap_pac
-execute "Configure snap-pac" configure_snap_pac
-execute "Ensure home snap-pac snapshot" ensure_home_snap_pac_snapshot
+
+if [[ "$ENABLE_SYNC_FEATURES" == true ]]; then
+    require_cmd limine-snapper-sync
+    execute "Configure sync daemon" configure_sync_daemon
+    execute "Install snap-pac" install_snap_pac
+    execute "Configure snap-pac" configure_snap_pac
+    execute "Ensure home snap-pac snapshot" ensure_home_snap_pac_snapshot
+else
+    info "Sync features are disabled via flag constraint."
+    execute "Remove sync features" remove_sync_features
+fi
+
 execute "Create baseline snapshot" create_post_config_baseline_snapshot
 execute "Enable services" enable_services_and_sync
