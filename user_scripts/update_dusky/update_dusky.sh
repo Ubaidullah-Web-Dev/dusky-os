@@ -3076,9 +3076,11 @@ execute_scripts() {
                 local _fail_choice=""
                 printf '\n%s[ACTION REQUIRED]%s Script execution failed: %s\n' "$CLR_YLW" "$CLR_RST" "$script"
                 
-                if ! read -r -p "Do you want to [S]kip, [R]etry, or [Q]uit? (s/r/q): " _fail_choice; then
+                if ! read -r -p "Do you want to [S]kip, [R]etry, or [Q]uit? (S/r/q): " _fail_choice; then
                     _fail_choice="q"
                 fi
+
+                _fail_choice="${_fail_choice:-s}"
 
                 case "${_fail_choice,,}" in
                     s|skip)
