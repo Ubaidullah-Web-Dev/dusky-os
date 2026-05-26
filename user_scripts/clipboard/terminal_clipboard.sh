@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #==============================================================================
-# FZF CLIPBOARD MANAGER (v2.4 - Unified Wayland/UWSM Edition)
+# FZF CLIPBOARD MANAGER (v2.5 - Unified Wayland/UWSM Edition)
 # Arch Linux / Hyprland / UWSM clipboard utility
 # Optimized for: Bash 5.3+, FZF 0.72.0+
 #==============================================================================
@@ -669,7 +669,8 @@ cmd_preview() {
             printf '  \e[33mj / k\e[0m       : Move Cursor Down / Up\n'
             printf '  \e[33mg / G\e[0m       : Top / Bottom of list\n'
             printf '  \e[33mCtrl-D/U\e[0m    : Half page Down / Up\n'
-            printf '  \e[33m/\e[0m           : Enter Search mode (Esc to exit search)\n\n'
+            printf '  \e[33m/\e[0m           : Enter Search Mode\n'
+            printf '  \e[33mEsc\e[0m         : Exit Search Mode (Return to Normal)\n\n'
             printf '  \e[36m[ SELECTION ]\e[0m\n'
             printf '  \e[33mv / V\e[0m       : Toggle selection under cursor\n'
             printf '  \e[33mJ / K\e[0m       : Toggle selection Down / Up\n'
@@ -686,7 +687,7 @@ cmd_preview() {
             printf '  \e[33mAlt-D\e[0m       : Delete selected item(s)\n'
             printf '  \e[33mAlt-W\e[0m       : Wipe entire clipboard\n'
             printf '  \e[33mEnter\e[0m       : Copy selected to clipboard & exit\n'
-            printf '  \e[33mq / Ctrl-C\e[0m  : Abort / Exit\n'
+            printf '  \e[33mq / Ctrl-C\e[0m  : Quit / Abort without copying\n'
         else
             printf '\e[1;36m━━━ 💡 SHORTCUTS ━━━\e[0m\n\n'
             printf '  \e[33mF1\e[0m          : Toggle this help menu\n'
@@ -979,7 +980,7 @@ show_menu() {
             --multi --ansi --reverse --no-sort --exact --cycle --scheme=history
             --margin=0 --padding=0 --highlight-line
             --border=rounded --border-label="$combined_label" --border-label-pos=3
-            --info=hidden --header=" F1 Help | Alt-M Toggle Keys " --header-first
+            --info=hidden --header=" F1 Help | Alt-M VIM " --header-first
             --pointer="▌" --delimiter="$SEP" --with-nth=1
             --track --id-nth=3
             --query="$initial_query"
@@ -1004,9 +1005,16 @@ show_menu() {
         )
 
         if [[ "$current_vim_mode" == "true" ]]; then
+            # Reinstating the explicit ignore list to physically lock the text buffer.
+            # Covers alphanumerics, space, backspace, and delete (excluding mapped vim keys).
+            local unmapped="a,b,c,d,e,f,h,i,l,m,n,o,p,r,s,t,u,w,x,y,z,A,B,C,D,E,F,H,I,L,M,N,O,P,Q,R,S,T,U,W,X,Y,Z,0,1,2,3,4,5,6,7,8,9,space,bspace,del"
+            local ignore_binds="${unmapped//,/:ignore,}:ignore"
+
             fzf_args+=(
-                --prompt=" 🅝  > "
-                --bind="esc:change-prompt( 🅝  > )+rebind(j,k,h,l,g,G,J,K,v,V,q,ctrl-d,ctrl-u,/)"
+                --prompt=" 🅝 (q:quit /:search) > "
+                --bind="start:disable-search"
+                --bind="$ignore_binds"
+                --bind="esc:change-prompt( 🅝 (q:quit /:search) > )+disable-search+rebind(j,k,g,G,J,K,v,V,q,ctrl-a,ctrl-d,ctrl-u,/,${unmapped})"
                 --bind="ctrl-c:execute-silent($cap)+abort"
                 --bind="j:down"
                 --bind="k:up"
@@ -1020,7 +1028,7 @@ show_menu() {
                 --bind="ctrl-d:half-page-down"
                 --bind="ctrl-u:half-page-up"
                 --bind="q:execute-silent($cap)+abort"
-                --bind="/:change-prompt( 🔎 > )+unbind(j,k,h,l,g,G,J,K,v,V,q,ctrl-d,ctrl-u,/)+clear-query"
+                --bind="/:change-prompt( 🔎 > )+enable-search+unbind(j,k,g,G,J,K,v,V,q,ctrl-a,ctrl-d,ctrl-u,/,${unmapped})"
             )
         else
             fzf_args+=(

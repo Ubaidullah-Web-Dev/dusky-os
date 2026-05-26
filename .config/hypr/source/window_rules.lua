@@ -1190,6 +1190,18 @@ hl.window_rule({
     center = true,
 })
 
+-- Mousepad save dialog ---
+hl.window_rule({
+    name = "mousepad_save_dialog",
+    match = {
+        class = "^(org\\.xfce\\.mousepad)$",
+        title = "^Save( .*)?$"
+    },
+    float = true,
+    center = true,
+})
+
+
 --- System benchmarking script ---
 hl.window_rule({
     name = "sysbench_benchmark.sh",
