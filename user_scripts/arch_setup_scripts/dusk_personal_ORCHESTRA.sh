@@ -86,7 +86,7 @@ INSTALL_SEQUENCE=(
     "U | dusky_matugen_config_tui.sh --smart"
 
     "U | 140_fc_cache_fv.sh"
-    "U | 145_matugen_directories.sh"
+    "U | 145_matugen_directories.py"
     "U | 150_wallpapers_download.sh"
     "U | 155_blur_shadow_opacity.sh"
     "U | 160_theme_ctl.sh"

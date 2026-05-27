@@ -230,7 +230,7 @@ declare -ra UPDATE_SEQUENCE=(
     "U | 131_dbus_copy_service_files.sh"
 #    "U | 135_battery_notify_service.sh"
 #    "U | 140_fc_cache_fv.sh"
-#    "U | 145_matugen_directories.sh"
+    "U | 145_matugen_directories.py"
 #    "U | 150_wallpapers_download.sh"
 #    "U | 155_blur_shadow_opacity.sh"
 #    "U | ignore-fail | 160_theme_ctl.sh"
