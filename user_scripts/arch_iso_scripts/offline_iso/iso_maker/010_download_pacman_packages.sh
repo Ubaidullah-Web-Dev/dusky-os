@@ -17,7 +17,7 @@ declare -ar pkgs_offline=(
 
 # Group 1: Graphics & Drivers
 declare -ar pkgs_graphics=(
-  "intel-media-driver" "vpl-gpu-rt" "mesa" "vulkan-intel" "mesa-utils" "intel-gpu-tools" "libva" "libva-utils" "vulkan-icd-loader" "vulkan-tools" "sof-firmware" "linux-firmware" "linux-headers" "acpi_call"
+  "intel-media-driver" "vpl-gpu-rt" "mesa" "vulkan-intel" "mesa-utils" "intel-gpu-tools" "libva" "libva-utils" "vulkan-icd-loader" "vulkan-tools" "sof-firmware" "linux-firmware" "linux-headers" "acpi_call" "kernel-modules-hook"
 )
 
 # Group 2: Hyprland Core
@@ -90,10 +90,8 @@ declare -ar pkgs_productivity=(
 )
 
 declare -ar pkgs_btrfs_snapshot=(
-  "limine" "efibootmgr" "efitools" "kernel-modules-hook" "btrfs-progs" "snapper"
+ "snapper"
 
-  # for limine snapshot configuration
-  # "snap-pac" "jdk-openjdk" "mtools"
 )
 
 # ==============================================================================

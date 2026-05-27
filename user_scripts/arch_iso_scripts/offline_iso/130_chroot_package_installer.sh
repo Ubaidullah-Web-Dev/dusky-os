@@ -9,12 +9,12 @@
 
 # Group 0: Dusky ISO packages
 declare -ar pkgs_offline=(
-  "intel-ucode" "amd-ucode" "mkinitcpio" "gradle" "glaze" "python-cssselect" "gradle" "base" "base-devel" "python-lxml" "python-certifi" "python-charset-normalizer" "python-idna" "python-requests" "python-urllib3" "deno" "yt-dlp" "yt-dlp-ejs" "hunspell" "xf86-input-libinput" "xorg-xauth" "boost-libs"
+  "intel-ucode" "amd-ucode" "mkinitcpio" "glaze" "python-cssselect" "base" "base-devel" "python-lxml" "python-certifi" "python-charset-normalizer" "python-idna" "python-requests" "python-urllib3" "deno" "yt-dlp" "yt-dlp-ejs" "hunspell" "xf86-input-libinput" "xorg-xauth" "boost-libs"
  )
 
 # Group 1: Graphics & Drivers
 declare -ar pkgs_graphics=(
-  "intel-media-driver" "vpl-gpu-rt" "mesa" "vulkan-intel" "mesa-utils" "intel-gpu-tools" "libva" "libva-utils" "vulkan-icd-loader" "vulkan-tools" "sof-firmware" "linux-firmware" "linux-headers" "acpi_call"
+  "intel-media-driver" "vpl-gpu-rt" "mesa" "vulkan-intel" "mesa-utils" "intel-gpu-tools" "libva" "libva-utils" "vulkan-icd-loader" "vulkan-tools" "sof-firmware" "linux-firmware" "linux-headers" "acpi_call" "kernel-modules-hook"
 )
 
 # Group 2: Hyprland Core
@@ -84,12 +84,9 @@ declare -ar pkgs_productivity=(
   "zathura" "zathura-pdf-mupdf" "cava"
 )
 
-# Group 14: Limine and snapshot
+# Group 14: snapshot
 declare -ar pkgs_btrfs_snapshot=(
-  "limine" "efibootmgr" "efitools" "kernel-modules-hook" "btrfs-progs" "snapper"
-
-  # for limine snapshot configuration
-  # "snap-pac" "jdk-openjdk" "mtools"
+"snapper"
 )
 
 declare -ar GROUP_LABELS=(

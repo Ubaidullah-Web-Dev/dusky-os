@@ -23,15 +23,6 @@ declare -ar pkgs_aur=(
   "xdg-terminal-exec"
   "paru"
   "python-pywalfox"
-
-#  "papirus-icon-theme-git"
-#  "papirus-folders-git"
-# "fluent-icon-theme-git"
-
-##   snapshot & limine
-
-#  "limine-mkinitcpio-hook"
-#  "limine-snapper-sync"
 )
 
 

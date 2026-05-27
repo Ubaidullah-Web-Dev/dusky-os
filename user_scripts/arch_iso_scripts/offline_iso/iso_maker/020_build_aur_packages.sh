@@ -46,10 +46,7 @@ declare -a AUR_PACKAGES=(
     'tray-tui'
     'xdg-terminal-exec'
     'paru'
-    'limine-mkinitcpio-hook'
 
-# for limine bootloader snapshot
-#    'limine-snapper-sync'
 )
 
 # ==============================================================================

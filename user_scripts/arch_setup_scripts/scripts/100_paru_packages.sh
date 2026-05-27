@@ -99,16 +99,6 @@ declare -ar PACKAGES=(
   "peaclock"
   "tray-tui"
   "xdg-terminal-exec"
-
-#  "papirus-icon-theme-git"
-#  "papirus-folders-git"
-# "fluent-icon-theme-git"
-
-# snapshot & limine
-  "limine-mkinitcpio-hook"
-
-# limine snapshot sync
-#  "limine-snapper-sync"
 )
 
 # Delay before auto-retrying
