@@ -1,5 +1,5 @@
 # =============================================================================
-# Dusky Package Atlas (Platinum Edition - Revision 15 - Apex)
+# Dusky Package Atlas (Platinum Edition - Revision 16 - Apex)
 # Architecture: FZF 0.73+ Responsive Layout, Zero-fork environment metadata,
 #               Zero-eval stream filtering, Interactive F1 Help Overlay,
 #               Zero-blink live reloading, Absolute Name-Over-Desc Tiebreaking,
@@ -67,12 +67,12 @@ fetch_data | sort "${sort_args[@]}" | awk -F"|" '\''
         
         date_fmt = strftime("%Y-%m-%d", date)
 
-        # Space Reclamation: Package (30), Version (16), Date (10)
-        disp_name = (length(name) > 30) ? substr(name, 1, 27) "..." : name
-        disp_ver  = (length(ver) > 16)  ? substr(ver, 1, 13) "..."  : ver
+        # Space Reclamation: Package (35), Version (11), Date (10)
+        disp_name = (length(name) > 35) ? substr(name, 1, 32) "..." : name
+        disp_ver  = (length(ver) > 11)  ? substr(ver, 1, 8) "..."  : ver
         
         # Exact width visual string rendering
-        visual_str = sprintf("\033[1;38;5;39m%-30s\033[0m \033[38;5;238m│\033[0m \033[38;5;220m%-16s\033[0m \033[38;5;238m│\033[0m \033[38;5;114m%-10s\033[0m \033[38;5;238m│\033[0m \033[38;5;208m%10s\033[0m", disp_name, disp_ver, date_fmt, size_fmt)
+        visual_str = sprintf("\033[1;38;5;39m%-35s\033[0m \033[38;5;238m│\033[0m \033[38;5;220m%-11s\033[0m \033[38;5;238m│\033[0m \033[38;5;114m%-10s\033[0m \033[38;5;238m│\033[0m \033[38;5;208m%10s\033[0m", disp_name, disp_ver, date_fmt, size_fmt)
         
         # Hidden Search Hack: Appends 150 invisible spaces followed by the package description.
         # This pushes the searchable description out of the terminal view (--no-hscroll keeps it hidden).
@@ -186,8 +186,8 @@ bash -c "$DUSKY_PKG_PREVIEW" _ "$pkg" | sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2})
         date_desc) prompt_str="   Newest (Date) ❯ " ;;
     esac
 
-    # 7. Bold-Stretch Immune Header Geometry (Recalibrated for 30/16/10/10 layout mapping)
-    local visual_header=$'\033[1;37mPACKAGE                       \033[0m \033[38;5;238m│\033[0m \033[38;5;242mVERSION         \033[0m \033[38;5;238m│\033[0m \033[38;5;242mDATE      \033[0m \033[38;5;238m│\033[0m \033[38;5;242m      SIZE\033[0m'
+    # 7. Bold-Stretch Immune Header Geometry (Recalibrated for 35/11/10/10 layout mapping)
+    local visual_header=$'\033[1;37mPACKAGE                             \033[0m \033[38;5;238m│\033[0m \033[38;5;242mVERSION    \033[0m \033[38;5;238m│\033[0m \033[38;5;242mDATE      \033[0m \033[38;5;238m│\033[0m \033[38;5;242m      SIZE\033[0m'
 
     # 8. Data Stream Construction & Responsive FZF Execution
     local fzf_choice
@@ -196,6 +196,7 @@ bash -c "$DUSKY_PKG_PREVIEW" _ "$pkg" | sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2})
         --with-nth=2 \
         --tiebreak=begin,length \
         --no-hscroll \
+        --ellipsis='' \
         --highlight-line \
         --prompt="$prompt_str" \
         --pointer="" \
