@@ -1,5 +1,5 @@
 # =============================================================================
-# Dusky Package Atlas (Platinum Edition - Revision 4)
+# Dusky Package Atlas (Platinum Edition - Revision 5)
 # Architecture: FZF 0.72.0+ Responsive Layout, Zero-fork environment metadata,
 #               Zero-eval stream filtering, Interactive F1 Help Overlay,
 #               Live FZF dynamic pipeline reloading (Sort by Size/Date).
@@ -11,6 +11,7 @@
 _pkg_header() {
     print -P "\n%F{blue}::%f %B${1}%b (Top ${2})"
     print -P "%F{238}------------------------------------------------------------%f"
+    # Precisely mathematically aligned to exactly match Awk output padding
     print -P "%F{242}INSTALL DATE             SIZE  PACKAGE%f"
     print -P "%F{238}------------------------------------------------------------%f"
 }
@@ -27,7 +28,7 @@ _pkg_interactive() {
     # 2. F1 Help Menu Payload (Zero-quote-hell environment export)
     export DUSKY_PKG_HELP='clear; printf "\n\n  \033[1;38;5;81m󰏖 Dusky Package Atlas - Keyboard Shortcuts\033[0m\n  \033[38;5;238m──────────────────────────────────────────────\033[0m\n  \033[1;33m[CTRL-S]\033[0m  Sort by Largest Package Size (Hogs)\n  \033[1;33m[ALT-S]\033[0m   Sort by Smallest Package Size (Tiny)\n  \033[1;33m[CTRL-D]\033[0m  Sort by Newest Install Date\n  \033[1;33m[CTRL-R]\033[0m  Reset to Default Alphabetical Order\n  \033[1;33m[F1]\033[0m      Show this Help Menu\n  \033[1;33m[ESC]\033[0m     Exit Interactive Atlas\n  \033[1;33m[ENTER]\033[0m   Select Package and Inject to Prompt\n\n  \033[38;5;242mPress any key to return...\033[0m"; read -rsn1'
 
-    # 3. Compile Live List Generator (FZF Reload Pipeline - BUG FIXED: Zero Eval)
+    # 3. Compile Live List Generator (FZF Reload Pipeline - Zero Eval)
     export DUSKY_PKG_LIST='
 export LC_ALL=C
 mode="$1"
@@ -100,7 +101,7 @@ pacman -Qi "$pkg" 2>/dev/null | awk -F":" '\''
 
 printf "\n\033[1;38;5;81m:: \033[1;37mSystem Integration\033[0m\n\033[38;5;238m────────────────────────────────────────────────────────────\033[0m\n"
 
-# Single-Pass Forensic File Extraction (Expanded Systemd Coverage)
+# Single-Pass Forensic File Extraction (Bulletproof Regexes)
 pacman -Ql "$pkg" 2>/dev/null | awk '\''
     BEGIN { bins=""; srvs=""; apps="" }
     {
@@ -108,7 +109,8 @@ pacman -Ql "$pkg" 2>/dev/null | awk '\''
         
         if (path ~ /^\/usr\/(local\/)?s?bin\/[^\/]+$/) 
             bins = bins "  \033[38;5;114m" path "\033[0m\n"
-        else if (path ~ /^(\/usr|\/etc)\/lib\/systemd\/(system|user)\/.*\.(service|timer|socket|path|mount|conf|target|device)$/) 
+        # Captures both distribution units (/usr/lib) and custom local overrides (/etc)
+        else if (path ~ /^(\/usr\/lib|\/etc)\/systemd\/(system|user)\/.*\.(service|timer|socket|path|mount|conf|target|device)$/) 
             srvs = srvs "  \033[38;5;203m" path "\033[0m\n"
         else if (path ~ /^\/usr\/share\/applications\/[^\/]+\.desktop$/) 
             apps = apps "  \033[38;5;39m" path "\033[0m\n"
@@ -194,7 +196,7 @@ pkg() {
     local -i count=-1
     local -i show_help=0
 
-    # 3. Argument Tokenizer
+    # 3. Argument Tokenizer (Now supports vastly expanded semantic synonyms)
     for arg in "$@"; do
         case "${arg:l}" in
             help|-h|--help)
@@ -206,10 +208,10 @@ pkg() {
             all)
                 target="all"
                 ;;
-            hogs|size)
+            hogs|size|big|fat|massive|huge|giant)
                 metric="size_desc"
                 ;;
-            tiny|small)
+            tiny|small|micro|mini|little)
                 metric="size_asc"
                 ;;
             new|recent|latest)
@@ -242,14 +244,14 @@ pkg() {
         print -P "  %F{cyan}explicit%f, %F{cyan}user%f       - Only explicitly installed packages\n"
         
         print -P "%BMetrics:%b"
-        print -P "  %F{cyan}size%f, %F{cyan}hogs%f           - Sort by size descending (largest first)"
-        print -P "  %F{cyan}tiny%f, %F{cyan}small%f          - Sort by size ascending (smallest first)"
-        print -P "  %F{cyan}new%f, %F{cyan}recent%f         - Sort by installation date (newest first)"
-        print -P "  %F{cyan}old%f, %F{cyan}ancient%f        - Sort by installation date (oldest first)\n"
+        print -P "  %F{cyan}hogs%f, %F{cyan}big%f, %F{cyan}massive%f... - Sort by size descending (largest first)"
+        print -P "  %F{cyan}tiny%f, %F{cyan}small%f, %F{cyan}micro%f... - Sort by size ascending (smallest first)"
+        print -P "  %F{cyan}new%f, %F{cyan}recent%f, %F{cyan}latest%f  - Sort by installation date (newest first)"
+        print -P "  %F{cyan}old%f, %F{cyan}ancient%f          - Sort by installation date (oldest first)\n"
         
         print -P "%BExamples:%b"
         print -P "  %F{yellow}pkg%f                  # Launch Interactive FZF Package Atlas"
-        print -P "  %F{yellow}pkg explicit hogs%f    # Launch Atlas showing explicitly installed Hogs"
+        print -P "  %F{yellow}pkg explicit massive%f # Launch Atlas showing explicitly installed Hogs"
         print -P "  %F{yellow}pkg 50 size%f          # Print classic CLI list of Top 50 largest packages\n"
         return 0
     fi
@@ -297,7 +299,7 @@ pkg() {
 # Native Zsh tab-completion
 _pkg() {
     _arguments \
-        "1:command:(hogs size tiny small all explicit user new recent latest old ancient help)" \
+        "1:command:(hogs size big fat massive huge giant tiny small micro mini little all explicit user new recent latest old ancient help)" \
         "2:count: "
 }
 compdef _pkg pkg
