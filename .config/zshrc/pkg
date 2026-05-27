@@ -1,8 +1,9 @@
 # =============================================================================
-# Dusky Package Atlas (Platinum Edition - Revision 5)
+# Dusky Package Atlas (Platinum Edition - Revision 6)
 # Architecture: FZF 0.72.0+ Responsive Layout, Zero-fork environment metadata,
 #               Zero-eval stream filtering, Interactive F1 Help Overlay,
-#               Live FZF dynamic pipeline reloading (Sort by Size/Date).
+#               Zero-blink live reloading, Target-lock tracking, 
+#               Absolute priority Name-Over-Description Search Tiebreaking.
 # Usage: pkg [command] [count]
 #        (Run without count to launch the Interactive FZF Atlas)
 # =============================================================================
@@ -141,6 +142,9 @@ pacman -Ql "$pkg" 2>/dev/null | awk '\''
     fzf_choice=$(bash -c "$DUSKY_PKG_LIST" _ "$init_mode" "$init_target" | fzf --ansi \
         --delimiter='\|' \
         --with-nth=2 \
+        --tiebreak=begin,length \
+        --track \
+        --highlight-line \
         --prompt="$prompt_str" \
         --pointer="" \
         --marker="✓" \
@@ -153,17 +157,17 @@ pacman -Ql "$pkg" 2>/dev/null | awk '\''
         --info=inline-right \
         --header="  PACKAGE                   │ VERSION          │       SIZE │ DESCRIPTION                     [F1] Shortcuts" \
         --header-first \
-        --bind="ctrl-s:reload(bash -c \"\$DUSKY_PKG_LIST\" _ size_desc $init_target)+change-prompt(   Hogs (Largest) ❯ )" \
-        --bind="alt-s:reload(bash -c \"\$DUSKY_PKG_LIST\" _ size_asc $init_target)+change-prompt(   Tiny (Smallest) ❯ )" \
-        --bind="ctrl-d:reload(bash -c \"\$DUSKY_PKG_LIST\" _ date_desc $init_target)+change-prompt(   Newest (Date) ❯ )" \
-        --bind="ctrl-r:reload(bash -c \"\$DUSKY_PKG_LIST\" _ alpha $init_target)+change-prompt(   Search Packages ❯ )" \
+        --bind="ctrl-s:reload-sync(bash -c \"\$DUSKY_PKG_LIST\" _ size_desc $init_target)+change-prompt(   Hogs (Largest) ❯ )" \
+        --bind="alt-s:reload-sync(bash -c \"\$DUSKY_PKG_LIST\" _ size_asc $init_target)+change-prompt(   Tiny (Smallest) ❯ )" \
+        --bind="ctrl-d:reload-sync(bash -c \"\$DUSKY_PKG_LIST\" _ date_desc $init_target)+change-prompt(   Newest (Date) ❯ )" \
+        --bind="ctrl-r:reload-sync(bash -c \"\$DUSKY_PKG_LIST\" _ alpha $init_target)+change-prompt(   Search Packages ❯ )" \
         --bind="f1:execute(bash -c \"\$DUSKY_PKG_HELP\")" \
         --color="bg+:#1e1e2e,bg:#11111b,spinner:#f5e0dc,hl:#f38ba8" \
         --color="fg:#cdd6f4,header:#89b4fa,info:#cba6f7,pointer:#a6e3a1" \
         --color="marker:#f5e0dc,fg+:#cdd6f4,prompt:#cba6f7,hl+:#f38ba8" \
         --color="border:#585b70,label:#a6e3a1" \
         --preview='bash -c "$DUSKY_PKG_PREVIEW" _ {1}' \
-        --preview-window="right,50%,border-left,<100(down,50%,border-top)")
+        --preview-window="right,50%,border-left,wrap,<100(down,50%,border-top,wrap)")
 
     # Cleanup Memory
     unset DUSKY_PKG_LIST
