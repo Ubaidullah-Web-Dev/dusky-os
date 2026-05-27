@@ -147,13 +147,13 @@ log_success "Topology mapped securely. Base kernel command line established."
 
 log_info "Deploying systemd-boot to $ESP_MNT..."
 
-# Explicitly use --variables=yes to override the default container/chroot block
+# Explicitly use --variables=yes to override the default container/chroot block in systemd 258+
 if bootctl is-installed --esp-path="$ESP_MNT" >/dev/null 2>&1; then
     log_info "Existing systemd-boot detected. Performing update..."
     bootctl update --esp-path="$ESP_MNT" --variables=yes
 else
     log_info "Performing fresh systemd-boot installation..."
-    if ! bootctl install --esp-path="$ESP_MNT" --variables=yes >/dev/null 2>&1; then
+    if ! bootctl install --esp-path="$ESP_MNT" --variables=yes; then
         log_warn "Installation returned non-zero (common on restricted firmware). Verifying deployment..."
         if ! bootctl is-installed --esp-path="$ESP_MNT" >/dev/null 2>&1; then
              log_error "bootctl installation failed completely."
@@ -164,7 +164,7 @@ fi
 
 # Systemd 243+ Security standard: Initialize Early-Boot Random Seed in ESP
 log_info "Initializing cryptographic random seed for early-boot entropy..."
-bootctl random-seed --esp-path="$ESP_MNT"
+bootctl random-seed --esp-path="$ESP_MNT" --variables=yes || log_warn "Could not store EFI system token (normal on locked firmware)."
 
 log_success "systemd-boot binaries deployed and random seed generated."
 
@@ -193,11 +193,17 @@ if (( ${#KERNELS[@]} == 0 )); then
     exit 1
 fi
 
+# Ensure the BLS entries directory exists
+mkdir -p "$ESP_MNT/loader/entries"
+
 # Define Plymouth specific parameters
 PLYMOUTH_ARGS="quiet splash loglevel=3 rd.udev.log_level=3 vt.global_cursor_default=0 nowatchdog"
 
 for kernel_path in "${KERNELS[@]}"; do
-    KNAME=$(basename "$kernel_path" | sed 's/^vmlinuz-//')
+    # Pure native bash string manipulation (avoids spawning `sed` subprocesses)
+    kbase="${kernel_path##*/}"
+    KNAME="${kbase#vmlinuz-}"
+    
     ENTRY_FILE="$ESP_MNT/loader/entries/arch-${KNAME}.conf"
     FALLBACK_FILE="$ESP_MNT/loader/entries/arch-${KNAME}-fallback.conf"
     
@@ -206,11 +212,11 @@ for kernel_path in "${KERNELS[@]}"; do
     # --- Primary Entry (With Plymouth Graphical Splash) ---
     {
         printf "title   Arch Linux (%s)\n" "$KNAME"
-        printf "linux   /vmlinuz-%s\n" "$KNAME"
+        printf "linux   /%s\n" "$kbase"
         
         # Microcode must precede the initramfs in systemd-boot configs
         for ucode in "${UCODES[@]}"; do
-            printf "initrd  /%s\n" "$(basename "$ucode")"
+            printf "initrd  /%s\n" "${ucode##*/}"
         done
         
         printf "initrd  /initramfs-%s.img\n" "$KNAME"
@@ -221,10 +227,10 @@ for kernel_path in "${KERNELS[@]}"; do
     if [[ -f "$ESP_MNT/initramfs-${KNAME}-fallback.img" ]]; then
         {
             printf "title   Arch Linux (%s - Fallback Recovery)\n" "$KNAME"
-            printf "linux   /vmlinuz-%s\n" "$KNAME"
+            printf "linux   /%s\n" "$kbase"
             
             for ucode in "${UCODES[@]}"; do
-                printf "initrd  /%s\n" "$(basename "$ucode")"
+                printf "initrd  /%s\n" "${ucode##*/}"
             done
             
             printf "initrd  /initramfs-%s-fallback.img\n" "$KNAME"
