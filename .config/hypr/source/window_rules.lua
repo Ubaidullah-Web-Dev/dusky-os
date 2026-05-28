@@ -788,6 +788,17 @@ hl.window_rule({
     move = {"(monitor_w*0.05)", "(monitor_h*0.05)"}
 })
 
+
+
+--- dusky_packages.sh script ---
+hl.window_rule({
+    name = "dusky_packages.sh",
+    match = { class = "^(dusky_packages.sh)$" },
+    float = true,
+    size = {"(monitor_w*0.9)", "(monitor_h*0.9)"},
+    move = {"(monitor_w*0.05)", "(monitor_h*0.05)"}
+})
+
 --- dusky_appearances.sh script ---
 hl.window_rule({
     name = "dusky_appearances.sh",

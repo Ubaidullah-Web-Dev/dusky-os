@@ -74,6 +74,7 @@ readonly TARGET_FILES=(
     "dusky_monitor.desktop"
     "dusky_matugen_presets.desktop"
     "dusky_network.desktop"
+    "dusky_packages.desktop"
     "dusky_power.desktop"
     "dusky_waybars.desktop"
     "dusky_wayclick_config.desktop"
