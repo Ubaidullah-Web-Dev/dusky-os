@@ -60,10 +60,22 @@ if (( EUID != 0 )); then
   exec "$sudo_bin" --preserve-env=TERM,NO_COLOR -- bash -- "$script_path" "$@"
 fi
 
-# --- 3. SAFETY ---
+# --- 3. SAFETY & ARGUMENT PARSING ---
 
 set -Eeuo pipefail
 shopt -s inherit_errexit
+
+TARGET_OS="arch"
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --cachyos|--cachy) TARGET_OS="cachyos"; shift ;;
+      --arch)            TARGET_OS="arch"; shift ;;
+      *)                 shift ;; # Safely ignore --auto or other unknown flags
+    esac
+  done
+}
 
 # --- 4. UI ---
 
@@ -232,17 +244,25 @@ run_pacman() {
 ensure_keyring() {
   local keyring_dir='/etc/pacman.d/gnupg'
 
-  print_info "Checking Arch keyring"
+  print_info "Checking pacman keyring"
 
   if [[ -s ${keyring_dir}/trustdb.gpg ]] && { [[ -s ${keyring_dir}/pubring.kbx ]] || [[ -s ${keyring_dir}/pubring.gpg ]]; }; then
-    print_ok "Arch keyring already initialized."
+    print_ok "Pacman keyring already initialized."
     return 0
   fi
 
   print_warn "Pacman keyring is not initialized. Initializing now..."
   pacman-key --init
-  pacman-key --populate archlinux
-  print_ok "Arch keyring initialized."
+
+  if [[ "${TARGET_OS}" == "cachyos" ]]; then
+      print_info "Populating Arch Linux and CachyOS keyrings..."
+      pacman-key --populate archlinux cachyos
+  else
+      print_info "Populating standard Arch Linux keyring..."
+      pacman-key --populate archlinux
+  fi
+
+  print_ok "Keyring initialized."
 }
 
 install_group() {
@@ -346,6 +366,7 @@ print_summary() {
 }
 
 main() {
+  parse_args "$@"
   local i
 
   ensure_arch_environment
