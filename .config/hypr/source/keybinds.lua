@@ -132,8 +132,8 @@ hl.bind(
 
 hl.bind(
     "ALT + 4",
-    hl.dsp.exec_cmd("waypaper"),
-    { description = "Wallpaper App" }
+    hl.dsp.exec_cmd(dusky_scripts .. "images/wallpaper_selector.py"),
+    { description = "Rofi Wallpaper Selector", submap_universal = true }
 )
 
 hl.bind(
