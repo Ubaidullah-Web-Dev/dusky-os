@@ -33,6 +33,7 @@ declare -ra CHROOT_SEQUENCE=(
   "135_plymouth_setup.sh"
   "130_chroot_package_installer.sh --auto"
   "131_chroot_aur_packages.sh --auto"
+  "133_uwsm_gpu_env.py --auto"
 #  "150_limine_bootloader.sh --auto"
   "151_systemd_bootloader_luks.sh"
   "154_mkinitcpio_hooks_restore.sh"

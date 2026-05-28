@@ -52,7 +52,7 @@ class GPUCard:
 def parse_args():
     parser = argparse.ArgumentParser(description="Configure UWSM GPU environment variables.")
     parser.add_argument("--auto", action="store_true", help="Automatically select the best primary GPU")
-    parser.add_argument("--user", type=str, help="Target username (crucial when running as root in arch-chroot)")
+    parser.add_argument("--user", type=str, help="Specific target username (optional, defaults to auto-discovering all human users)")
     return parser.parse_args()
 
 def check_deps():
@@ -235,24 +235,30 @@ def build_aq_runtime_string(primary: GPUCard, all_cards: list[GPUCard]) -> str:
             
     return ":".join(parts)
 
-def ensure_user_paths(target_user: Optional[str]) -> tuple[Path, int, int]:
-    # Target execution context and return configuration directory & ownership
+def get_target_users(target_user: Optional[str]) -> list[pwd.struct_passwd]:
     if target_user:
         try:
-            # Reaches into chroot /etc/passwd identically mapping to the target ISO's user db
-            user_info = pwd.getpwnam(target_user)
-            config_base = Path(user_info.pw_dir) / ".config"
-            return config_base / "uwsm", user_info.pw_uid, user_info.pw_gid
+            return [pwd.getpwnam(target_user)]
         except KeyError:
             Log.err(f"Target user '{target_user}' not found on the system.")
             sys.exit(1)
-    else:
-        # Default behavior mirrors bash via dynamic evaluation
-        if os.geteuid() == 0:
-            Log.warn("Running as root without --user. Configuration will apply to /root.")
+    
+    if os.geteuid() != 0:
+        # Running as a normal user (outside chroot), configure just for the current user
+        return [pwd.getpwuid(os.getuid())]
         
-        config_base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-        return config_base / "uwsm", os.getuid(), os.getgid()
+    # Running as root without a specific user: target all human users (UID >= 1000)
+    users = []
+    for p in pwd.getpwall():
+        # Standard Arch Linux human users are 1000-59999, exclude system/nobody accounts
+        if 1000 <= p.pw_uid < 60000 and Path(p.pw_dir).is_dir():
+            users.append(p)
+            
+    if not users:
+        Log.warn("No regular human users (UID >= 1000) found. Falling back to root configuration.")
+        return [pwd.getpwuid(0)]
+        
+    return users
 
 def ensure_dir_with_ownership(path: Path, uid: int, gid: int):
     # Generates only missing directories up the tree and enforces exact system user ownership
@@ -267,12 +273,6 @@ def ensure_dir_with_ownership(path: Path, uid: int, gid: int):
         os.chown(d, uid, gid)
 
 def generate_config(primary: GPUCard, all_cards: list[GPUCard], mode: str, args: argparse.Namespace):
-    uwsm_dir, uid, gid = ensure_user_paths(args.user)
-    env_dir = uwsm_dir / "env.d"
-    output_file = env_dir / "gpu"
-    
-    ensure_dir_with_ownership(env_dir, uid, gid)
-
     aq_runtime_string = build_aq_runtime_string(primary, all_cards)
     
     dri_dir = Path("/usr/lib/dri")
@@ -317,32 +317,46 @@ def generate_config(primary: GPUCard, all_cards: list[GPUCard], mode: str, args:
         
     config_text = "\n".join(config_content)
     
-    # Atomic write pattern mapping 1-to-1 against bash standard tmp generation rules
-    fd, tmp_path_str = tempfile.mkstemp(dir=env_dir, prefix=".gpu.")
-    tmp_path = Path(tmp_path_str)
-    
-    try:
-        with os.fdopen(fd, 'w') as f:
-            f.write(config_text)
-            
-        os.chmod(tmp_path, 0o644)
-        os.chown(tmp_path, uid, gid)
+    target_users = get_target_users(args.user)
+    output_files = []
+
+    for user in target_users:
+        uwsm_dir = Path(user.pw_dir) / ".config" / "uwsm"
+        env_dir = uwsm_dir / "env.d"
+        output_file = env_dir / "gpu"
         
-        # Matches idempotent cmp testing
-        if output_file.exists() and output_file.read_text() == config_text:
-            tmp_path.unlink()
-            Log.ok(f"Config is strictly optimal and up to date: {output_file}")
-        else:
-            shutil.move(tmp_path, output_file)
-            Log.ok(f"Config generated and securely written to: {output_file}")
+        ensure_dir_with_ownership(env_dir, user.pw_uid, user.pw_gid)
+        
+        # Atomic write pattern mapping 1-to-1 against bash standard tmp generation rules
+        fd, tmp_path_str = tempfile.mkstemp(dir=env_dir, prefix=".gpu.")
+        tmp_path = Path(tmp_path_str)
+        
+        try:
+            with os.fdopen(fd, 'w') as f:
+                f.write(config_text)
+                
+            os.chmod(tmp_path, 0o644)
+            os.chown(tmp_path, user.pw_uid, user.pw_gid)
             
-    except Exception as e:
-        if tmp_path.exists():
-            tmp_path.unlink()
-        Log.err(f"Failed writing configuration: {e}")
+            # Matches idempotent cmp testing
+            if output_file.exists() and output_file.read_text() == config_text:
+                tmp_path.unlink()
+                Log.ok(f"Config is strictly optimal and up to date for {user.pw_name}: {output_file}")
+            else:
+                shutil.move(tmp_path, output_file)
+                Log.ok(f"Config generated and securely written for {user.pw_name}: {output_file}")
+                
+            output_files.append(output_file)
+        except Exception as e:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            Log.err(f"Failed writing configuration for {user.pw_name}: {e}")
+            
+    if not output_files:
+        Log.err("No configuration files were written.")
         sys.exit(1)
         
-    return output_file
+    return output_files[0]
 
 def preview_config(output_file: Path):
     Log.info("Previewing active config parameters:")
