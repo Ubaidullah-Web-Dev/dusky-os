@@ -9,6 +9,8 @@
 #                  Silently aborts if CachyOS is detected to protect the OS.
 #   --revert     : Bypasses generation. Atomically restores the pacman
 #                  configuration from /etc/pacman.conf.bak.
+#   --cachyos    : Force CachyOS target (Overrides auto-detection).
+#   --arch       : Force Standard Arch target (Overrides auto-detection).
 # -----------------------------------------------------------------------------
 
 # --- Strict Error Handling ---
@@ -54,6 +56,7 @@ fi
 # --- 2. Argument Parsing ---
 AUTO_MODE=0
 REVERT_MODE=0
+TARGET_OS=""
 
 for arg in "$@"; do
     case "${arg}" in
@@ -62,6 +65,12 @@ for arg in "$@"; do
             ;;
         --revert) 
             REVERT_MODE=1 
+            ;;
+        --cachyos|--cachy)
+            TARGET_OS="cachyos"
+            ;;
+        --arch)
+            TARGET_OS="arch"
             ;;
     esac
 done
@@ -94,20 +103,31 @@ if (( REVERT_MODE == 1 )); then
     fi
 fi
 
-# --- 4. CachyOS Safeguard ---
-if grep -qi "cachyos" /etc/os-release 2>/dev/null; then
-    if (( AUTO_MODE == 1 )); then
-        log_info "CachyOS detected and --auto flag passed. Aborting silently to preserve system integrity."
-        exit 0
-    else
-        log_warn "CachyOS detected!"
-        log_warn "Applying this standard Arch pacman.conf on CachyOS will severely break its custom packaging."
-        read -r -p "Are you absolutely sure you want to proceed? [y/N]: " response
-        if [[ ! "${response}" =~ ^[Yy]$ ]]; then
-            log_info "Aborting pacman configuration update."
+# --- 4. Organic State Intelligence ---
+if [[ -z "${TARGET_OS}" ]]; then
+    log_info "Analyzing system state to determine optimal configuration..."
+    
+    if grep -qi "ID=cachyos" /etc/os-release 2>/dev/null; then
+        if (( AUTO_MODE == 1 )); then
+            log_info "Pure CachyOS detected and --auto flag passed. Aborting silently to preserve system integrity."
             exit 0
+        else
+            log_warn "Pure CachyOS detected!"
+            log_warn "Applying this script on CachyOS will severely break its custom packaging."
+            read -r -p "Are you absolutely sure you want to proceed? [y/N]: " response
+            if [[ ! "${response}" =~ ^[Yy]$ ]]; then
+                log_info "Aborting pacman configuration update."
+                exit 0
+            fi
+            log_warn "Proceeding at your own risk..."
+            TARGET_OS="cachyos"
         fi
-        log_warn "Proceeding at your own risk..."
+    elif pacman -Qq cachyos-mirrorlist &>/dev/null; then
+        log_ok "Franken-Arch detected (CachyOS packages found on Standard Arch)."
+        TARGET_OS="cachyos"
+    else
+        log_info "Standard Arch Linux detected."
+        TARGET_OS="arch"
     fi
 fi
 
@@ -132,9 +152,10 @@ fi
 # Create temp file on the SAME filesystem to guarantee rename(2) atomicity
 TMP_FILE="$(mktemp "${TARGET_DIR}/.pacman.conf.XXXXXX")"
 
-log_info "Generating new configuration..."
+log_info "Generating new configuration for ${TARGET_OS^^}..."
 
-cat >"${TMP_FILE}" <<'EOF'
+{
+    cat << 'EOF'
 # /etc/pacman.conf
 # See the pacman.conf(5) manpage for option and repository directives
 [options]
@@ -153,7 +174,6 @@ Color
 ILoveCandy
 VerbosePkgLists
 HoldPkg     = pacman glibc
-Architecture = auto
 CheckSpace
 ParallelDownloads = 5
 DownloadUser = alpm
@@ -187,6 +207,34 @@ LocalFileSigLevel = Optional
 # uncommented to enable the repo.
 #
 
+EOF
+
+    # --- DYNAMIC CACHYOS INJECTION ---
+    if [[ "${TARGET_OS}" == "cachyos" ]]; then
+        cat << 'CACHYOS_BLOCK_EOF'
+Architecture = x86_64_v3 x86_64
+
+[cachyos-v3] 
+Include = /etc/pacman.d/cachyos-v3-mirrorlist 
+
+[cachyos-extra-v3] 
+Include = /etc/pacman.d/cachyos-v3-mirrorlist 
+
+[cachyos-core-v3] 
+Include = /etc/pacman.d/cachyos-v3-mirrorlist
+
+[cachyos]
+SigLevel = Optional TrustAll
+Include = /etc/pacman.d/cachyos-mirrorlist
+
+CACHYOS_BLOCK_EOF
+    else
+        echo "Architecture = auto"
+        echo ""
+    fi
+    # ---------------------------------
+
+    cat << 'ARCH_BLOCK_EOF'
 # The testing repositories are disabled by default. To enable, uncomment the
 # repo name header and Include lines. You can add preferred servers immediately
 # after the header, and they will be used before the default mirrors.
@@ -217,7 +265,9 @@ Include = /etc/pacman.d/mirrorlist
 #[custom]
 #SigLevel = Optional TrustAll
 #Server = file:///home/custompkgs
-EOF
+ARCH_BLOCK_EOF
+
+} > "${TMP_FILE}"
 
 # Ensure correct ownership and permissions before moving
 chmod 644 "${TMP_FILE}"
