@@ -410,33 +410,38 @@ if [[ -r "$DMABUF_INFO" ]]; then
         echo "| Size (MB) | Exporter |"
         echo "|---|---|"
         
-        # Subshell to prevent head -10 SIGPIPE truncation bug causing blank tables
+        # Completely decoupled extraction using temp files to guarantee 0% chance of SIGPIPE swallows
         (
             set +e +o pipefail
-            awk '
-                /^[0-9]+/ {print $1, $5}
-                /^size:/ {
-                    sz=$2; exp="unknown"
-                    for(i=1;i<=NF;i++) if($i=="exp_name:") exp=$(i+1)
-                    print sz, exp
-                }
-            ' "$DMABUF_INFO" 2>/dev/null | sort -k1 -rn | head -n 10 | awk '{printf "| %.1f | %s |\n", $1/1048576, $2}'
+            
+            # Tabular Format (Kernel 6.8+)
+            grep -E '^[0-9]+' "$DMABUF_INFO" 2>/dev/null | awk '{print $1, $5}' > /tmp/dmabuf_sizes.txt || true
+            
+            # Legacy Format (Kernel < 6.8)
+            grep -E '^size:' "$DMABUF_INFO" 2>/dev/null | awk '{sz=$2; exp="unknown"; for(i=1;i<=NF;i++) if($i=="exp_name:") exp=$(i+1); print sz, exp}' >> /tmp/dmabuf_sizes.txt || true
+            
+            sort -k1 -rn /tmp/dmabuf_sizes.txt | head -10 | while read -r sz exp; do
+                printf "| %.1f | %s |\n" "$(awk "BEGIN {printf \"%.1f\", $sz/1048576}")" "$exp"
+            done
+            rm -f /tmp/dmabuf_sizes.txt
         ) || true
         
         echo ""
         echo "### Buffer Breakdown by Exporter"
         echo "| Exporter Driver | Object Count |"
         echo "|---|---|"
+        
         (
             set +e +o pipefail
-            awk '
-                /^[0-9]+/ {print $5}
-                /^size:/ {
-                    exp="unknown"
-                    for(i=1;i<=NF;i++) if($i=="exp_name:") print $(i+1)
-                }
-            ' "$DMABUF_INFO" 2>/dev/null | sort | uniq -c | sort -rn | awk '{printf "| %s | %d |\n", $2, $1}'
+            grep -E '^[0-9]+' "$DMABUF_INFO" 2>/dev/null | awk '{print $5}' > /tmp/dmabuf_exp.txt || true
+            grep -E '^size:' "$DMABUF_INFO" 2>/dev/null | awk '{exp="unknown"; for(i=1;i<=NF;i++) if($i=="exp_name:") exp=$(i+1); print exp}' >> /tmp/dmabuf_exp.txt || true
+            
+            sort /tmp/dmabuf_exp.txt | uniq -c | sort -rn | while read -r cnt exp; do
+                printf "| %s | %d |\n" "$exp" "$cnt"
+            done
+            rm -f /tmp/dmabuf_exp.txt
         ) || true
+
     else
         echo "**No active DMA-BUFs tracked.** (Format mismatch or idle system)."
     fi
@@ -475,8 +480,7 @@ echo "- **ShmemHugePages:** $(to_mb $SHMEM_HUGE) MB"
 echo "- **FileHugePages:** $(to_mb $FILE_HUGE) MB"
 echo ""
 
-echo "### Active THP Allocation Tiers"
-thp_found=false
+# Optional Multi-Size THP (mTHP) Tiers display
 for f in $THP_DIR/hugepages-*kB/nr_anon; do
     [[ -r "$f" ]] || continue
     
@@ -486,14 +490,10 @@ for f in $THP_DIR/hugepages-*kB/nr_anon; do
     
     if [[ "$sz" -gt 0 && "$count" -gt 0 ]]; then
         total_mb=$(awk "BEGIN {printf \"%.1f\", ($count * $sz) / 1024}")
+        echo "### Active mTHP Allocation Tiers"
         echo "- **hugepages-${sz}kB:** \`$count\` active allocations (*$total_mb MB total*)"
-        thp_found=true
     fi
 done
-
-if [[ "$thp_found" == false ]]; then
-    echo "- *No active hugepages mapped in anon tiers.*"
-fi
 
 echo ""
 echo '> **Note:** If **AnonHugePages** is extremely large (> 1 GB), standard tools will show vastly inflated RAM usage for apps like Electron and Chromium. The PSS table (Section 4) calculates this away to give you the real number.'
