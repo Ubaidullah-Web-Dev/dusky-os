@@ -11,7 +11,7 @@
 
 declare -ra ISO_SEQUENCE=(
   "010_set_variables.sh"
-  "020_environment_prep.sh --auto"
+  "020_environment_prep.sh --auto --cachy"
   "030_partitioning.sh"
   "040_disk_mount.sh --auto"
   "045_repo_bind_mount.sh"
