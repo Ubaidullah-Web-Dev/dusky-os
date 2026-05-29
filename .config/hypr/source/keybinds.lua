@@ -97,7 +97,7 @@ hl.bind(
 hl.bind(
     "ALT + SHIFT + SPACE",
     hl.dsp.exec_cmd("pkill rofi; rofi -show power-menu -modi power-menu:" .. dusky_scripts .. "rofi/powermenu.sh"),
-    { description = "Power Menu", submap_universal = true }
+    { description = "Power Menu" }
 )
 
 -- System Monitor (btop)
@@ -246,7 +246,7 @@ hl.bind(
 hl.bind(
     "ALT + F4",
     hl.dsp.exec_cmd(dusky_scripts .. "wlogout/wlogout_scale.sh"),
-    { description = "Logout Menu", submap_universal = true }
+    { description = "Logout Menu" }
 )
 
 hl.bind(
@@ -1159,6 +1159,7 @@ local PASSTHROUGH_APPS = {
     ["terminal_clipboard.sh"] = true,
     ["dusky_tui"]             = true,
     ["wallpaper_selector.py"] = true,
+    ["virt-manager"]          = true,
     -- ["foot_vim"]           = true,   ← add more here, same format
 }
 
