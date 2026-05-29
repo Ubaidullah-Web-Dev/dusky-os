@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Arch Linux (EFI + Btrfs root) | Dusky Minimalist Boot & LUKS Setup
-# FORENSICALLY AUDITED (SYSTEMD-BOOT / PLYMOUTH API COMPLIANT)
-# PALETTE: Pure Black (Background), Cornsilk (Logo), Olive Leaf (Logs)
+# Arch Linux (EFI + Btrfs root) | Dusky Graphical Boot & LUKS Setup
+# CHROOT DEPLOYMENT EDITION - 100% SELF-CONTAINED (SYNTHETIC GEOMETRY)
+# ORCHESTRATOR ALIGNED: Defers initramfs generation to Phase 158.
 
 set -Eeuo pipefail
 export LC_ALL=C
+
+# --- Dynamic Path Resolution ---
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
 # --- Configuration ---
 readonly THEME_NAME="dusky"
@@ -22,7 +25,7 @@ require_cmd() {
 
 # --- Pre-flight Checks ---
 if (( EUID != 0 )); then
-    fatal "Deployment halted: Root privileges are strictly required."
+    fatal "Deployment halted: Root privileges are strictly required to modify system paths and mkinitcpio hooks."
 fi
 
 info "Validating base dependencies..."
@@ -34,182 +37,208 @@ require_cmd base64
 # --- Execution ---
 info "Ensuring Plymouth is installed..."
 if ! pacman -Q plymouth >/dev/null 2>&1; then
+    # Strict Offline Mode: Respects the airlock established by orchestrator
     if ! pacman -S --needed --noconfirm plymouth; then
-        fatal "The installation of 'plymouth' failed. Ensure it is in your pacstrap payload."
+        printf "\n\033[1;31m========================================================================\033[0m\n" >&2
+        printf "\033[1;31m[CRITICAL ARCHITECTURAL FAILURE]\033[0m\n" >&2
+        printf "The offline installation of 'plymouth' failed.\n" >&2
+        printf "RESOLUTION: You MUST include 'plymouth' in your 070_pacstrap payload.\n" >&2
+        printf "\033[1;31m========================================================================\033[0m\n\n" >&2
+        exit 1
     fi
 fi
 
+info "Validating Plymouth binaries..."
 require_cmd plymouth-set-default-theme
 
-info "Deploying custom minimal theme: $THEME_NAME..."
+info "Deploying custom self-contained theme: $THEME_NAME..."
 mkdir -p "$THEME_DIR"
 
-# Generate a pure 1x1 white pixel dynamically (Bypasses missing initramfs font glyphs)
-info "Generating mathematical pixel asset..."
-echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/wcAAwAB/4O0lQAAAABJRU5ErkJggg==" | base64 -d > "${THEME_DIR}/pixel.png"
+# Auto-generate a 1x1 white pixel using base64. 
+# We use this single pixel to synthesize the entire progress bar geometry.
+base64 -d > "$THEME_DIR/fill.png" << 'EOF'
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=
+EOF
 
 # Generate .plymouth configuration
 cat << EOF > "${THEME_DIR}/${THEME_NAME}.plymouth"
 [Plymouth Theme]
-Name=Dusky Minimal
-Description=Pure typographic LUKS prompt with geometric primitives.
+Name=Dusky
+Description=Dusky elegant synthetic graphical LUKS prompt and splash.
 ModuleName=script
 
 [script]
 ImageDir=${THEME_DIR}
 ScriptFile=${THEME_DIR}/${THEME_NAME}.script
 ConsoleLogBackgroundColor=0x000000
-MonospaceFont=Cantarell 11
-Font=Cantarell 11
 EOF
 
-# Generate .script file (The core visual logic)
+# Generate the flawless synthetic Plymouth script logic
 cat << 'EOF' > "${THEME_DIR}/${THEME_NAME}.script"
-# --- Pure Black Background (Maximum Contrast) ---
+// --- Window Background (Pitch Black) ---
 Window.SetBackgroundTopColor(0.0, 0.0, 0.0);
 Window.SetBackgroundBottomColor(0.0, 0.0, 0.0);
 
-global.pixel_image = Image("pixel.png");
+global.password_mode = 0;
+screen_w = Window.GetWidth();
+screen_h = Window.GetHeight();
 
-# --- Logo & Animation Engine (Cornsilk text: #fefae0) ---
-global.logo_image = Image.Text("dusky", 0.9961, 0.9804, 0.8784, 1.0, "Cantarell 36");
-global.logo_sprite = Sprite(global.logo_image);
-global.logo_sprite.SetPosition(
-    Window.GetWidth() / 2 - global.logo_image.GetWidth() / 2,
-    Window.GetHeight() / 2 - global.logo_image.GetHeight() / 2,
-    10 # Z-Index
-);
+// FAILSAFE: Prevent division by zero if DRM is exceptionally slow to report geometry during early boot
+if (screen_w == 0) screen_w = 1920;
+if (screen_h == 0) screen_h = 1080;
 
-global.animation_time = 0.0;
-global.password_dialog_active = 0;
+// --- DUSKY Text Logo (Lowercase, Smaller, Thinner) ---
+logo.image = Image.Text("dusky", 0.9, 0.9, 0.9, 1.0, "Sans Light 32");
+logo.sprite = Sprite(logo.image);
+logo.x = screen_w / 2 - logo.image.GetWidth() / 2;
+logo.y = screen_h / 2 - logo.image.GetHeight() / 2 - 40;
+logo.sprite.SetPosition(logo.x, logo.y, 10);
 
+// =========================================================================
+// SYNTHETIC PROGRESS BAR (No external assets required)
+// =========================================================================
+global.bar_width = 150;
+global.bar_height = 4; // Extremely sleek and minimal 4-pixel height
+
+// --- Background Track (Stretched pixel with 20% opacity) ---
+track.image = Image("fill.png").Scale(global.bar_width, global.bar_height);
+track.sprite = Sprite(track.image);
+track.x = screen_w / 2 - global.bar_width / 2;
+track.y = logo.y + logo.image.GetHeight() + 50; 
+track.sprite.SetPosition(track.x, track.y, 10);
+track.sprite.SetOpacity(0.2); // Creates a subtle dark grey line
+
+// --- Foreground Fill (Dynamic stretch) ---
+fill.original_image = Image("fill.png");
+fill.sprite = Sprite();
+fill.sprite.SetPosition(track.x, track.y, 11);
+fill.sprite.SetOpacity(0.9);
+
+global.current_progress = 0.0;
+global.target_progress = 0.0;
+global.last_fill_w = 0; // Optimization tracker
+
+// --- Smooth Progress Bar Animation Loop ---
 fun refresh_callback () {
-    if (global.password_dialog_active == 0) {
-        global.animation_time += 0.025;
-        # Subtle breathing effect mapped to opacity (0.7 to 1.0)
-        opacity = 0.85 + (0.15 * Math.Sin(global.animation_time * 2.0));
-        global.logo_sprite.SetOpacity(opacity);
-    } else {
-        global.logo_sprite.SetOpacity(1.0);
+    // Smoothly ease the bar towards the target progress
+    if (global.current_progress < global.target_progress) {
+        global.current_progress += 0.005; // Minimum guaranteed speed
+        global.current_progress += (global.target_progress - global.current_progress) * 0.1; // Ease in
+    }
+    if (global.current_progress > 1.0) global.current_progress = 1.0;
+
+    if (global.password_mode == 0) {
+        fill_w = Math.Int(global.bar_width * global.current_progress);
+        if (fill_w < 1) fill_w = 1;
+
+        // OPTIMIZATION: Only hit the rendering engine to scale if the width actually changed
+        if (global.last_fill_w != fill_w) {
+            fill_img = fill.original_image.Scale(fill_w, global.bar_height);
+            fill.sprite.SetImage(fill_img);
+            global.last_fill_w = fill_w;
+        }
+        
+        // Exact mathematical overlay on top of the track
+        fill.sprite.SetPosition(track.x, track.y, 11);
     }
 }
 Plymouth.SetRefreshFunction(refresh_callback);
 
-# --- Minimal Progress Line (3 pixels tall) ---
-global.progress_sprite = Sprite();
-global.dialog_y = global.logo_sprite.GetY() + global.logo_image.GetHeight() + 45;
-global.progress_sprite.SetPosition(0, global.dialog_y, 10);
-global.progress_sprite.SetOpacity(0);
-
-fun progress_callback (duration, progress) {
-    if (global.password_dialog_active == 1) {
-        global.progress_sprite.SetOpacity(0);
-        return;
+fun progress_callback(duration, progress) {
+    if (progress > global.target_progress) {
+        global.target_progress = progress;
     }
-    
-    max_width = Window.GetWidth() * 0.3;
-    bar_width = Math.Int(max_width * progress);
-    if (bar_width < 1) bar_width = 1;
-    
-    # Scale base64 pixel to a 3px tall line, opacity 0.8
-    scaled_bar = global.pixel_image.Scale(bar_width, 3);
-    global.progress_sprite.SetImage(scaled_bar);
-    global.progress_sprite.SetX(Window.GetWidth() / 2 - bar_width / 2);
-    global.progress_sprite.SetOpacity(0.8);
 }
 Plymouth.SetBootProgressFunction(progress_callback);
 
-# --- LUKS Password Prompt ---
-global.prompt_sprite = Sprite();
-global.prompt_sprite.SetPosition(Window.GetWidth() / 2, global.dialog_y, 20);
-global.prompt_sprite.SetOpacity(0);
-
-global.bullets = [];
-
-fun display_normal_callback () {
-    global.password_dialog_active = 0;
-    global.prompt_sprite.SetOpacity(0);
-    for (index = 0; global.bullets[index]; index++) {
-        global.bullets[index].SetOpacity(0);
+// --- Systemd Live Logs (One line at a time) ---
+status_sprite = Sprite();
+fun status_callback(status) {
+    if (global.password_mode == 0) {
+        status_img = Image.Text(status, 0.4, 0.4, 0.4, 1.0, "Monospace 10"); 
+        status_sprite.SetImage(status_img);
+        status_sprite.SetX(screen_w / 2 - status_img.GetWidth() / 2);
+        status_sprite.SetY(screen_h * 0.90);
+        status_sprite.SetOpacity(1);
     }
 }
+Plymouth.SetUpdateStatusFunction(status_callback);
 
-fun display_password_callback (prompt_text, bullet_count) {
-    global.password_dialog_active = 1;
-    global.progress_sprite.SetOpacity(0);
-    
-    # Render prompt text (Cornsilk slightly muted via alpha channel)
-    prompt_image = Image.Text(prompt_text, 0.9961, 0.9804, 0.8784, 0.8, "Cantarell 12");
-    global.prompt_sprite.SetImage(prompt_image);
-    global.prompt_sprite.SetX(Window.GetWidth() / 2 - prompt_image.GetWidth() / 2);
-    global.prompt_sprite.SetOpacity(1);
-    
-    # Render Geometric Bullets (6x6 squares to avoid font glyph issues)
-    bullet_size = 6;
-    bullet_spacing = 10;
-    total_width = bullet_count * bullet_size + (bullet_count - 1) * bullet_spacing;
-    start_x = Window.GetWidth() / 2 - total_width / 2;
-    bullet_y = global.prompt_sprite.GetY() + prompt_image.GetHeight() + 20;
-    
-    # Clear old bullets
-    for (index = 0; global.bullets[index]; index++) {
-        global.bullets[index].SetOpacity(0);
+// --- Password Prompt ---
+prompt_sprite = Sprite();
+bullets_sprite = Sprite();
+
+fun display_password_callback(prompt_ignored, bullets) {
+    global.password_mode = 1;
+
+    // Fade out progress bar and logs while asking for password
+    fill.sprite.SetOpacity(0);
+    track.sprite.SetOpacity(0);
+    status_sprite.SetOpacity(0);
+
+    // Hardcode "unlock" 
+    prompt_img = Image.Text("unlock", 0.7, 0.7, 0.7, 1.0, "Sans Light 16");
+    prompt_sprite.SetImage(prompt_img);
+    prompt_sprite.SetX(screen_w / 2 - prompt_img.GetWidth() / 2);
+    prompt_sprite.SetY(logo.y + logo.image.GetHeight() + 40);
+    prompt_sprite.SetOpacity(1);
+
+    bullets_str = "";
+    for (i = 0; i < bullets; i++) {
+        bullets_str += "*"; // Standard asterisks
     }
+    if (bullets == 0) bullets_str = " "; 
+
+    // Reduced asterisk size to match the sleek design
+    bullets_img = Image.Text(bullets_str, 1.0, 1.0, 1.0, 1.0, "Monospace 16");
+    bullets_sprite.SetImage(bullets_img);
+    bullets_sprite.SetX(screen_w / 2 - bullets_img.GetWidth() / 2);
     
-    # Draw new bullets
-    for (index = 0; index < bullet_count; index++) {
-        if (!global.bullets[index]) {
-            global.bullets[index] = Sprite(global.pixel_image.Scale(bullet_size, bullet_size));
-        }
-        global.bullets[index].SetPosition(start_x + index * (bullet_size + bullet_spacing), bullet_y, 20);
-        global.bullets[index].SetOpacity(0.9);
-    }
+    // Tightened spacing between text and asterisks
+    bullets_sprite.SetY(prompt_sprite.GetY() + 25);
+    bullets_sprite.SetOpacity(1);
 }
-Plymouth.SetDisplayNormalFunction(display_normal_callback);
+
+fun display_normal_callback() {
+    global.password_mode = 0;
+    prompt_sprite.SetOpacity(0);
+    bullets_sprite.SetOpacity(0);
+
+    // Restore elements
+    track.sprite.SetOpacity(0.2);
+    fill.sprite.SetOpacity(0.9);
+    status_sprite.SetOpacity(1);
+}
+
 Plymouth.SetDisplayPasswordFunction(display_password_callback);
-
-# --- Systemd Message Broadcasting (Olive Leaf: #606c38) ---
-global.message_sprite = Sprite();
-global.message_sprite.SetPosition(Window.GetWidth() / 2, Window.GetHeight() * 0.85, 5);
-
-fun display_message_callback (text) {
-    my_image = Image.Text(text, 0.3765, 0.4235, 0.2196, 1.0, "Cantarell 10");
-    global.message_sprite.SetImage(my_image);
-    global.message_sprite.SetX(Window.GetWidth() / 2 - my_image.GetWidth() / 2);
-    global.message_sprite.SetOpacity(1);
-}
-
-fun hide_message_callback (text) {
-    global.message_sprite.SetOpacity(0);
-}
-
-Plymouth.SetMessageFunction(display_message_callback);
-Plymouth.SetHideMessageFunction(hide_message_callback);
-Plymouth.SetUpdateStatusFunction(display_message_callback);
-
-fun quit_callback () { global.logo_sprite.SetOpacity(1); }
-Plymouth.SetQuitFunction(quit_callback);
+Plymouth.SetDisplayNormalFunction(display_normal_callback);
 EOF
 
+# Ensure permissions are strictly locked down for initramfs packaging
 chmod 0644 "${THEME_DIR}"/*
+
+info "Setting default theme to ${THEME_NAME}..."
+plymouth-set-default-theme "$THEME_NAME"
 
 info "Patching mkinitcpio drop-in config to inject plymouth hook..."
 if [[ -f "$MKINITCPIO_CONF" ]]; then
+    # ARCH FIX: Ensure idempotency and robust injection regardless of systemd or udev hooks
     if ! grep -q "^[^#]*HOOKS=.*plymouth" "$MKINITCPIO_CONF"; then
-        sed -i --follow-symlinks -E 's/^([^#]*HOOKS=\([^)]*systemd)([[:space:]]*)/\1 plymouth /' "$MKINITCPIO_CONF"
-        info "Injected modern plymouth hook into $MKINITCPIO_CONF"
+        if grep -q "^[^#]*HOOKS=.*systemd" "$MKINITCPIO_CONF"; then
+            sed -i --follow-symlinks -E 's/^([^#]*HOOKS=\([^)]*systemd)([[:space:]]*)/\1 plymouth /' "$MKINITCPIO_CONF"
+            info "Injected modern plymouth hook (after systemd) into $MKINITCPIO_CONF"
+        elif grep -q "^[^#]*HOOKS=.*udev" "$MKINITCPIO_CONF"; then
+            sed -i --follow-symlinks -E 's/^([^#]*HOOKS=\([^)]*udev)([[:space:]]*)/\1 plymouth /' "$MKINITCPIO_CONF"
+            info "Injected modern plymouth hook (after udev) into $MKINITCPIO_CONF"
+        else
+            warn "Could not find 'systemd' or 'udev' in HOOKS. Please add 'plymouth' manually."
+        fi
     else
-        info "plymouth hook already present."
+        info "plymouth hook already present or config is commented out."
     fi
 else
-    if grep -q "^[^#]*HOOKS=.*systemd" /etc/mkinitcpio.conf && ! grep -q "^[^#]*HOOKS=.*plymouth" /etc/mkinitcpio.conf; then
-         sed -i -E 's/^([^#]*HOOKS=\([^)]*systemd)([[:space:]]*)/\1 plymouth /' /etc/mkinitcpio.conf
-         info "Injected modern plymouth hook into /etc/mkinitcpio.conf"
-    fi
+    warn "$MKINITCPIO_CONF not found. Ensure 120_mkintcpip_optimizer.sh is run before this script."
 fi
 
-info "Setting default theme to ${THEME_NAME}..."
-# Removed the -R flag to prevent premature initramfs generation
-plymouth-set-default-theme "$THEME_NAME"
-
-info "Dusky Plymouth deployment complete. (Initramfs rebuild intentionally deferred)."
+info "Dusky Plymouth deployment successful."
+info "Initramfs hooks are configured. Generation is deferred to 158_mkinitcpio_restore_and_generate.sh."
