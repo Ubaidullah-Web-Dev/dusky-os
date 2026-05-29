@@ -208,7 +208,8 @@ else
     fi
 fi
 
-info "Setting default theme to ${THEME_NAME} and rebuilding initramfs..."
-plymouth-set-default-theme -R "$THEME_NAME"
+info "Setting default theme to ${THEME_NAME}..."
+# Removed the -R flag to prevent premature initramfs generation
+plymouth-set-default-theme "$THEME_NAME"
 
-info "Dusky Plymouth deployment complete. Initramfs has been rebuilt."
+info "Dusky Plymouth deployment complete. (Initramfs rebuild intentionally deferred)."
