@@ -312,6 +312,12 @@ fi
 log_info "Normalizing target temporary directory permissions..."
 normalize_target_tmp_permissions
 
+# --- NEW: Mask mkinitcpio ALPM hooks to prevent premature generation ---
+log_info "Masking mkinitcpio ALPM hooks in target to prevent redundant generation..."
+mkdir -p "$MOUNT_POINT/etc/pacman.d/hooks"
+ln -sf /dev/null "$MOUNT_POINT/etc/pacman.d/hooks/90-mkinitcpio-install.hook"
+ln -sf /dev/null "$MOUNT_POINT/etc/pacman.d/hooks/60-mkinitcpio-remove.hook"
+
 echo "Installing..."
 wait_for_pacman_lock
 
