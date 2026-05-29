@@ -20,11 +20,13 @@ SUDO_PID=""
 ROLLBACK_ON_EXIT=false
 
 cleanup() {
-    local cmd mnt f
+    local cmd mnt f i
+    
+    # Execute rollbacks in LIFO (Last-In-First-Out) order to safely unwind dependencies
     if [[ "$ROLLBACK_ON_EXIT" == true ]] && (( ${#ROLLBACK_CMDS[@]} > 0 )); then
         warn "Executing transactional rollbacks..."
-        for cmd in "${ROLLBACK_CMDS[@]}"; do
-            eval "$cmd" 2>/dev/null || true
+        for (( i=${#ROLLBACK_CMDS[@]}-1; i>=0; i-- )); do
+            eval "${ROLLBACK_CMDS[i]}" 2>/dev/null || true
         done
     fi
 
@@ -321,18 +323,20 @@ ensure_snapper_config() {
     fi
 
     # Check if ANY other config covers the path to prevent "subvolume already covered" error
-    local conf conflicting_name
-    while read -r -d '' conf; do
-        [[ -n "$conf" ]] || continue
-        if sudo grep -q "^SUBVOLUME=\"${config_path}\"$" "$conf" 2>/dev/null; then
-            conflicting_name="$(basename "$conf")"
-            warn "Subvolume ${config_path} is already covered by '${conflicting_name}'. Purging conflict..."
-            sudo rm -f "$conf"
-            if sudo test -f "/etc/conf.d/snapper"; then
-                sudo sed -i -E "s/[[:space:]]*\b${conflicting_name}\b//g" /etc/conf.d/snapper || true
+    if sudo test -d /etc/snapper/configs; then
+        local conf conflicting_name
+        while read -r -d '' conf; do
+            [[ -n "$conf" ]] || continue
+            if sudo grep -q "^SUBVOLUME=\"${config_path}\"$" "$conf" 2>/dev/null; then
+                conflicting_name="$(basename "$conf")"
+                warn "Subvolume ${config_path} is already covered by '${conflicting_name}'. Purging conflict..."
+                sudo rm -f "$conf"
+                if sudo test -f "/etc/conf.d/snapper"; then
+                    sudo sed -i -E "s/[[:space:]]*\b${conflicting_name}\b//g" /etc/conf.d/snapper || true
+                fi
             fi
-        fi
-    done < <(sudo find /etc/snapper/configs/ -mindepth 1 -maxdepth 1 -type f -print0 2>/dev/null || true)
+        done < <(sudo find /etc/snapper/configs/ -mindepth 1 -maxdepth 1 -type f -print0 2>/dev/null || true)
+    fi
 
     if mountpoint -q "$snap_dir"; then
         warn "${snap_dir} is already mounted. Temporarily unmounting to allow Snapper to initialize..."
@@ -628,17 +632,17 @@ enforce_flat_topology() {
 
         if [[ ! -e "$sv" ]]; then
             sudo mkdir -p "$sv"
-            sudo chmod 0755 "$sv"
+            sudo chmod 0700 "$sv"
         fi
     done
 
     sudo mkdir -p /etc/tmpfiles.d
 
-    if write_tmpfiles_override /etc/tmpfiles.d/systemd-nspawn.conf "d /var/lib/machines 0755 - - -"; then
+    if write_tmpfiles_override /etc/tmpfiles.d/systemd-nspawn.conf "d /var/lib/machines 0700 - - -"; then
         changed=true
     fi
 
-    if write_tmpfiles_override /etc/tmpfiles.d/portables.conf "d /var/lib/portables 0755 - - -"; then
+    if write_tmpfiles_override /etc/tmpfiles.d/portables.conf "d /var/lib/portables 0700 - - -"; then
         changed=true
     fi
 
@@ -671,8 +675,17 @@ preflight_checks() {
     require_cmd btrfs
     [[ "$(stat -f -c %T /)" == "btrfs" ]] || fatal "Root is not Btrfs."
     [[ "$(stat -f -c %T /home)" == "btrfs" ]] || fatal "/home is not Btrfs."
+    
+    info "Requesting administrative privileges..."
     sudo -v || fatal "Cannot obtain sudo privileges."
-    (while true; do sudo -n -v 2>/dev/null || exit; sleep 240; done) &
+    
+    local parent_pid=$$
+    (
+        while kill -0 "$parent_pid" 2>/dev/null; do
+            sudo -n -v 2>/dev/null || exit 0
+            sleep 60
+        done
+    ) &
     SUDO_PID=$!
 }
 
