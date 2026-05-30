@@ -37,7 +37,7 @@ ${C_BOLD}Usage:${C_RESET} ${SCRIPT_NAME} [OPTIONS]
 
   --auto, -a           Auto-detect RAM size and set dynamic profile (default)
   --aggressive, -A     Force 32GB+ "Absolute Max" RAM usage profile
-  --standard, -S       Force <32GB "Absolute Conservative" RAM savings profile
+  --standard, -S       Force <32GB "Dynamic Efficiency" RAM savings profile
   --dry-run, -n        Print the generated config and exit without applying
   --help, -h           Show this help menu
 EOF
@@ -112,15 +112,15 @@ declare -i EXPECTED_DIRTY_BG_BYTES
 if [[ "$MODE" == "AGGRESSIVE" ]] || [[ "$MODE" == "AUTO" && SYSTEM_RAM_GB -ge 30 ]]; then
     EXPECTED_MODE="ABSOLUTE_MAX (32GB+)"
     EXPECTED_SWAPPINESS=150
-    EXPECTED_VFS_PRESSURE=10
-    EXPECTED_SCALE_FACTOR=200
+    EXPECTED_VFS_PRESSURE=50
+    EXPECTED_SCALE_FACTOR=125
     EXPECTED_DIRTY_BYTES=4294967296
     EXPECTED_DIRTY_BG_BYTES=1073741824
 else
-    EXPECTED_MODE="ABSOLUTE_CONSERVATIVE (<32GB)"
-    EXPECTED_SWAPPINESS=180
+    EXPECTED_MODE="DYNAMIC_EFFICIENCY (<32GB)"
+    EXPECTED_SWAPPINESS=150
     EXPECTED_VFS_PRESSURE=50
-    EXPECTED_SCALE_FACTOR=125
+    EXPECTED_SCALE_FACTOR=10
     EXPECTED_DIRTY_BYTES=268435456
     EXPECTED_DIRTY_BG_BYTES=67108864
 fi
@@ -128,9 +128,6 @@ fi
 # Static Constants
 readonly EXPECTED_PAGE_CLUSTER=0
 readonly EXPECTED_BOOST_FACTOR=0
-readonly EXPECTED_DEFRAG_MODE=1
-readonly EXPECTED_COMPACTION=10
-readonly EXPECTED_MIN_FREE=50000
 readonly EXPECTED_MAX_MAP_COUNT=16777216
 
 # --- 5. Generation & Verification ---
@@ -178,9 +175,7 @@ vm.dirty_background_bytes = ${EXPECTED_DIRTY_BG_BYTES}
 # --- MEMORY ALLOCATION & COMPACTION ---
 vm.watermark_scale_factor = ${EXPECTED_SCALE_FACTOR}
 vm.watermark_boost_factor = ${EXPECTED_BOOST_FACTOR}
-vm.compaction_proactiveness = ${EXPECTED_COMPACTION}
-vm.defrag_mode = ${EXPECTED_DEFRAG_MODE}
-vm.min_free_kbytes = ${EXPECTED_MIN_FREE}
+vm.compaction_proactiveness = 0
 
 # --- APPLICATION COMPATIBILITY ---
 vm.max_map_count = ${EXPECTED_MAX_MAP_COUNT}
