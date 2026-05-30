@@ -22,6 +22,10 @@ readonly USER_SVC_CONF="${USER_SVC_DIR}/99-oomd-kill-policy.conf"
 readonly USER_SLICE_DIR="/etc/systemd/user/session.slice.d"
 readonly USER_SLICE_CONF="${USER_SLICE_DIR}/99-oomd-avoid.conf"
 
+# Modern UWSM (Universal Wayland Session Manager) specific shield
+readonly UWSM_SLICE_DIR="/etc/systemd/user/app-graphical-session.slice.d"
+readonly UWSM_SLICE_CONF="${UWSM_SLICE_DIR}/99-oomd-avoid.conf"
+
 # --- Formatting ---
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     C_RESET=$'\033[0m'
@@ -31,8 +35,7 @@ if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     C_YELLOW=$'\033[1;33m'
     C_BOLD=$'\033[1m'
 else
-    C_RESET='' C_GREEN='' C_BLUE='' C_RED='' C_YELLOW='' C_BOLD=''
-fi
+    C_RESET='' C_GREEN='' C_BLUE='' C_RED='' C_YELLOW='' C_BOLD=''\nfi
 
 log_info()    { printf '%s[INFO]%s %s\n'  "$C_BLUE"   "$C_RESET" "$1"; }
 log_success() { printf '%s[OK]%s %s\n'    "$C_GREEN"  "$C_RESET" "$1"; }
@@ -75,12 +78,14 @@ log_info "Initializing Platinum systemd-oomd & UWSM Optimizer..."
 tmp_oomd="$(umask 077 && mktemp)"
 tmp_user_svc="$(umask 077 && mktemp)"
 tmp_session_slice="$(umask 077 && mktemp)"
-trap 'rm -f "$tmp_oomd" "$tmp_user_svc" "$tmp_session_slice"' EXIT
+tmp_uwsm_slice="$(umask 077 && mktemp)"
+trap 'rm -f "$tmp_oomd" "$tmp_user_svc" "$tmp_session_slice" "$tmp_uwsm_slice"' EXIT
 
 # A. Global OOMD Limits (The Hair-Trigger)
 cat > "$tmp_oomd" <<EOF
 # Managed by ${SCRIPT_NAME}
 [OOM]
+# ZRAM threshold: 90% swap usage means the physical compression pool is dangerously full.
 SwapUsedLimit=90%
 DefaultMemoryPressureLimit=60%
 DefaultMemoryPressureDurationSec=10s
@@ -95,13 +100,16 @@ ManagedOOMMemoryPressure=kill
 ManagedOOMSwap=kill
 EOF
 
-# C. User Session Slice Policy (The Shield)
+# C. Desktop Session Shields (The Shield)
 cat > "$tmp_session_slice" <<EOF
 # Managed by ${SCRIPT_NAME}
 [Slice]
-# Instructs systemd-oomd to heavily bias away from killing the desktop environment (Hyprland).
+# Instructs systemd-oomd to heavily bias away from killing the desktop environment.
 ManagedOOMPreference=avoid
 EOF
+
+# Clone the shield for UWSM
+cp "$tmp_session_slice" "$tmp_uwsm_slice"
 
 # --- 4. Dry Run Check ---
 if (( DRY_RUN == 1 )); then
@@ -110,8 +118,10 @@ if (( DRY_RUN == 1 )); then
     cat "$tmp_oomd"
     echo -e "\n${C_BOLD}[ ${USER_SVC_CONF} ]${C_RESET}"
     cat "$tmp_user_svc"
-    echo -e "\n${C_BOLD}[ ${USER_SLICE_CONF} ]${C_RESET}"
+    echo -e "\n${C_BOLD}[ ${USER_SLICE_CONF} (Legacy) ]${C_RESET}"
     cat "$tmp_session_slice"
+    echo -e "\n${C_BOLD}[ ${UWSM_SLICE_CONF} (Modern UWSM) ]${C_RESET}"
+    cat "$tmp_uwsm_slice"
     exit 0
 fi
 
@@ -135,12 +145,14 @@ install_file() {
 install_file "$tmp_oomd" "$OOMD_CONF"
 install_file "$tmp_user_svc" "$USER_SVC_CONF"
 install_file "$tmp_session_slice" "$USER_SLICE_CONF"
+install_file "$tmp_uwsm_slice" "$UWSM_SLICE_CONF"
 
 if (( CHANGED == 0 )); then
     log_success "No changes required. Existing systemd-oomd configuration is already optimal."
 else
     log_info "Reloading systemd daemon to ingest new policies..."
-    systemctl daemon-reload
+    # '|| true' prevents set -e from aborting the script if systemd is restricted (e.g., in a chroot/ISO build)
+    systemctl daemon-reload || log_warn "Global daemon-reload failed. Continuing..."
     
     log_info "Reloading active user managers to ingest session shield..."
     declare -a uids=()
@@ -154,28 +166,32 @@ else
         user="$(id -un "$uid" 2>/dev/null || true)"
         [[ -z "$user" ]] && continue
         
+        # Wrapped in || true to guarantee execution flow continues
         if systemctl --user --machine="${user}@.host" daemon-reload >/dev/null 2>&1; then
             log_success "Reloaded user manager for ${user}."
         elif command -v runuser >/dev/null 2>&1 && [[ -S "/run/user/${uid}/bus" ]]; then
             if runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/${uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" systemctl --user daemon-reload >/dev/null 2>&1; then
                 log_success "Reloaded user manager for ${user} (via runuser)."
             fi
-        fi
+        fi || true 
     done
     
     if systemctl -q is-active systemd-oomd.service >/dev/null 2>&1; then
         log_info "Restarting active systemd-oomd to apply new thresholds..."
-        systemctl restart systemd-oomd.service
+        systemctl restart systemd-oomd.service || log_warn "Failed to restart active systemd-oomd."
     fi
 fi
 
 # --- 6. Enable and Start ---
-if ! systemctl -q is-active systemd-oomd.service >/dev/null 2>&1; then
-    log_info "Enabling and starting systemd-oomd.service..."
-    systemctl enable --now systemd-oomd.service || die "Failed to start systemd-oomd."
-    log_success "systemd-oomd is now armed and active."
+log_info "Enabling and starting systemd-oomd.service..."
+# Force enable and start, ignoring errors to ensure we try our absolute hardest to arm it
+systemctl enable systemd-oomd.service || log_warn "Failed to enable systemd-oomd."
+systemctl start systemd-oomd.service || log_warn "Failed to start systemd-oomd."
+
+if systemctl -q is-active systemd-oomd.service >/dev/null 2>&1; then
+    log_success "systemd-oomd is fully armed, active, and shielding the Wayland session."
 else
-    log_success "systemd-oomd is already running and fully armed."
+    log_warn "systemd-oomd is NOT active. You may need to reboot or check 'systemctl status systemd-oomd'."
 fi
 
 exit 0
