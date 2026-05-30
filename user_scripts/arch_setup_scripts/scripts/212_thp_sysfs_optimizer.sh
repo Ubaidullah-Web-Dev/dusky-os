@@ -101,7 +101,7 @@ if [[ "$MODE" == "AGGRESSIVE" ]] || [[ "$MODE" == "AUTO" && SYSTEM_RAM_GB -ge 30
     EXPECTED_SHMEM="within_size"   # Hugepages for shmem only if perfectly sized
 else
     EXPECTED_MODE="DYNAMIC_EFFICIENCY (<32GB)"
-    EXPECTED_MAX_PTES=409          # Balanced THP creation (Matches CachyOS)
+    EXPECTED_MAX_PTES=300          # ~41% fill threshold. Excellent middle-ground for RAM savings vs TLB speed
     EXPECTED_ENABLED="always"      # Recovers RAM from Page Table overhead
     EXPECTED_DEFRAG="defer+madvise" # Prevents synchronous UI stutter
     EXPECTED_SHMEM="within_size"   # Safe shared memory scaling for Wayland
