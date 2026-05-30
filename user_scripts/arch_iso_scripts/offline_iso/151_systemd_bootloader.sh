@@ -50,7 +50,7 @@ if ! mountpoint -q "$ESP_MNT"; then
     exit 1
 fi
 
-ESP_FSTYPE=$(findmnt -n -o FSTYPE "$ESP_MNT" | head -n1 2>/dev/null || true)
+ESP_FSTYPE=$(findmnt -n -e -o FSTYPE "$ESP_MNT" | head -n1 2>/dev/null || true)
 if [[ ! "$ESP_FSTYPE" =~ ^(vfat|fat32|msdos)$ ]]; then
     log_error "$ESP_MNT is formatted as $ESP_FSTYPE, but systemd-boot requires FAT32."
     exit 1
@@ -65,11 +65,14 @@ pacman -S --needed --noconfirm efibootmgr gawk >/dev/null
 
 log_info "Analyzing filesystem topology..."
 
-# Safe extraction to prevent chroot multi-bind parsing failures
-RAW_ROOT_MNT=$(findmnt -n -e -o SOURCE -T / | head -n1)
-ROOT_BLK_DEV="${RAW_ROOT_MNT%%\[*}"
+# Safe extraction to prevent chroot multi-bind parsing failures.
+# The '-v' (--nofsroot) flag natively strips subvolume tags (e.g. [/@]),
+# making older bash string-slicing workarounds obsolete.
+ROOT_BLK_DEV=$(findmnt -n -v -e -o SOURCE -T / | head -n1)
 ROOT_UUID=$(findmnt -n -e -o UUID -T / | head -n1 || true)
 ROOT_FSTYPE=$(findmnt -n -e -o FSTYPE -T / | head -n1 2>/dev/null || true)
+
+[[ -z "$ROOT_BLK_DEV" ]] && { log_error "Could not resolve root block device."; exit 1; }
 
 if [[ -z "$ROOT_UUID" || "$ROOT_UUID" == "-" ]]; then
     ROOT_UUID=$(blkid -s UUID -o value "$ROOT_BLK_DEV" | head -n1)
