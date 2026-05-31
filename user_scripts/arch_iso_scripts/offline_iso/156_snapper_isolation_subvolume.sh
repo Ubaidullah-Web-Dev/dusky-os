@@ -19,11 +19,13 @@ declare -a ROLLBACK_CMDS=()
 ROLLBACK_ON_EXIT=false
 
 cleanup() {
-    local cmd mnt f
+    local cmd mnt f i
+    
+    # Execute rollbacks in LIFO (Last-In-First-Out) order to safely unwind dependencies
     if [[ "$ROLLBACK_ON_EXIT" == true ]] && (( ${#ROLLBACK_CMDS[@]} > 0 )); then
         warn "Executing transactional rollbacks..."
-        for cmd in "${ROLLBACK_CMDS[@]}"; do
-            eval "$cmd" 2>/dev/null || true
+        for (( i=${#ROLLBACK_CMDS[@]}-1; i>=0; i-- )); do
+            eval "${ROLLBACK_CMDS[i]}" 2>/dev/null || true
         done
     fi
 
@@ -200,10 +202,10 @@ path_is_btrfs_subvolume() {
     btrfs subvolume show "$1" >/dev/null 2>&1
 }
 
-# Pure Bash implementation optimized for newer btrfs-progs output (e.g. ro=true)
 btrfs_subvolume_is_ro() {
     local out
-    out="$(btrfs property get -ts "$1" ro 2>/dev/null || true)"
+    # Modern btrfs-progs v7.0: Use explicit '-t subvol' instead of deprecated '-ts' alias
+    out="$(btrfs property get -t subvol "$1" ro 2>/dev/null || true)"
     if [[ "$out" == *"ro=true"* ]]; then
         return 0
     fi
@@ -312,19 +314,20 @@ ensure_snapper_config() {
     fi
 
     # Check if ANY other config covers the path to prevent "subvolume already covered" error
-    for conf in /etc/snapper/configs/*; do
-        if [[ -f "$conf" ]]; then
-            if grep -q "^SUBVOLUME=\"${config_path}\"$" "$conf"; then
-                local conflicting_name
+    if test -d /etc/snapper/configs; then
+        local conf conflicting_name
+        while read -r -d '' conf; do
+            [[ -n "$conf" ]] || continue
+            if grep -q "^SUBVOLUME=\"${config_path}\"$" "$conf" 2>/dev/null; then
                 conflicting_name="$(basename "$conf")"
                 warn "Subvolume ${config_path} is already covered by '${conflicting_name}'. Purging conflict..."
                 rm -f "$conf"
-                if [[ -f "/etc/conf.d/snapper" ]]; then
+                if test -f "/etc/conf.d/snapper"; then
                     sed -i -E "s/[[:space:]]*\b${conflicting_name}\b//g" /etc/conf.d/snapper || true
                 fi
             fi
-        fi
-    done
+        done < <(find /etc/snapper/configs/ -mindepth 1 -maxdepth 1 -type f -print0 2>/dev/null || true)
+    fi
 
     if mountpoint -q "$snap_dir"; then
         warn "${snap_dir} is already mounted. Temporarily unmounting to allow Snapper to initialize..."
@@ -566,7 +569,7 @@ tune_snapper() {
 
     # CHROOT FIX: Inject --no-dbus
     # CUTTING-EDGE: Explicitly disable BACKGROUND_COMPARISON to guarantee zero background daemon overhead.
-    # Note: QGROUP is intentionally omitted here as Snapper defaults it to empty, natively disabling quota checks.
+    # Explicitly clear QGROUP to override any rogue system templates, enforcing zero Btrfs quota overhead.
     snapper --no-dbus -c "$cfg" set-config \
         TIMELINE_CREATE="no" \
         NUMBER_CLEANUP="yes" \
@@ -574,7 +577,8 @@ tune_snapper() {
         NUMBER_LIMIT_IMPORTANT="${strict_limit}" \
         SPACE_LIMIT="0.0" \
         FREE_LIMIT="0.0" \
-        BACKGROUND_COMPARISON="no"
+        BACKGROUND_COMPARISON="no" \
+        QGROUP=""
 }
 
 quiesce_snapper() {
@@ -623,22 +627,24 @@ enforce_flat_topology() {
 
         if [[ ! -e "$sv" ]]; then
             mkdir -p "$sv"
-            chmod 0755 "$sv"
+            chmod 0700 "$sv"
         fi
     done
 
     mkdir -p /etc/tmpfiles.d
 
-    if write_tmpfiles_override /etc/tmpfiles.d/systemd-nspawn.conf "d /var/lib/machines 0755 - - -"; then
+    if write_tmpfiles_override /etc/tmpfiles.d/systemd-nspawn.conf "d /var/lib/machines 0700 - - -"; then
         changed=true
     fi
 
-    if write_tmpfiles_override /etc/tmpfiles.d/portables.conf "d /var/lib/portables 0755 - - -"; then
+    if write_tmpfiles_override /etc/tmpfiles.d/portables.conf "d /var/lib/portables 0700 - - -"; then
         changed=true
     fi
 
     if [[ "$changed" == true ]]; then
-        info "Applied systemd tmpfiles overrides."
+        info "Applied systemd tmpfiles overrides to permanently enforce flat Btrfs topology."
+    else
+        info "Flat-topology tmpfiles overrides are already correct."
     fi
 }
 
@@ -646,6 +652,11 @@ enable_snapper_timers() {
     # Ensures that the system is ready to automatically purge snapshots based on NUMBER_LIMIT
     info "Enabling systemd snapper-cleanup.timer to enforce pruning..."
     systemctl enable snapper-cleanup.timer 2>/dev/null || true
+    
+    # Actively prevent systemd from firing timeline interrupts since we enforce TIMELINE_CREATE="no"
+    # (Note: '--now' is omitted because systemd is not actively running as PID 1 inside the chroot)
+    info "Disabling systemd snapper-timeline.timer to eliminate background wakeups..."
+    systemctl disable snapper-timeline.timer 2>/dev/null || true
 }
 
 preflight_checks() {

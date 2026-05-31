@@ -125,15 +125,6 @@ atomic_write() {
     sudo sync -f "$target_dir" 2>/dev/null || true
 }
 
-atomic_write_if_changed() {
-    local target="$1" src="$2"
-    if sudo test -f "$target" && sudo cmp -s "$src" "$target"; then
-        return 1
-    fi
-    atomic_write "$target" "$src"
-    return 0
-}
-
 load_mount_info() {
     local target="$1"
     [[ -v CACHE_MNT_SOURCE["$target"] ]] && return 0
@@ -216,7 +207,8 @@ path_is_btrfs_subvolume() {
 
 btrfs_subvolume_is_ro() {
     local out
-    out="$(sudo btrfs property get -ts "$1" ro 2>/dev/null || true)"
+    # Modern btrfs-progs v7.0: Use explicit '-t subvol' instead of deprecated '-ts' alias
+    out="$(sudo btrfs property get -t subvol "$1" ro 2>/dev/null || true)"
     if [[ "$out" == *"ro=true"* ]]; then
         return 0
     fi
@@ -575,7 +567,7 @@ tune_snapper() {
     info "Enforcing strict cleanup limits and zero background bloat for ${cfg}..."
 
     # CUTTING-EDGE: Explicitly disable BACKGROUND_COMPARISON to guarantee zero background daemon overhead.
-    # Note: QGROUP is intentionally omitted here as Snapper defaults it to empty, natively disabling quota checks.
+    # Explicitly clear QGROUP to override any rogue system templates, enforcing zero Btrfs quota overhead.
     sudo snapper -c "$cfg" set-config \
         TIMELINE_CREATE="no" \
         NUMBER_CLEANUP="yes" \
@@ -583,7 +575,8 @@ tune_snapper() {
         NUMBER_LIMIT_IMPORTANT="${strict_limit}" \
         SPACE_LIMIT="0.0" \
         FREE_LIMIT="0.0" \
-        BACKGROUND_COMPARISON="no"
+        BACKGROUND_COMPARISON="no" \
+        QGROUP=""
 }
 
 quiesce_snapper() {
@@ -656,6 +649,10 @@ enforce_flat_topology() {
 enable_snapper_timers() {
     info "Enabling systemd snapper-cleanup.timer to enforce pruning..."
     sudo systemctl enable --now snapper-cleanup.timer 2>/dev/null || true
+    
+    # Actively prevent systemd from firing timeline interrupts since we enforce TIMELINE_CREATE="no"
+    info "Disabling systemd snapper-timeline.timer to eliminate background wakeups..."
+    sudo systemctl disable --now snapper-timeline.timer 2>/dev/null || true
 }
 
 preflight_checks() {
