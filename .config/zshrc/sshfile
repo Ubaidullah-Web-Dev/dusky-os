@@ -1,0 +1,261 @@
+# sshfile - Ergonomic, frecency-based remote file puller
+# Requires: zsh, fzf (0.73+), rsync, awk
+
+# Load necessary Zsh modules
+zmodload zsh/datetime || print -u2 "Error: Could not load zsh/datetime module."
+
+export SSHFILE_BASE_DIR="${SSHFILE_BASE_DIR:-/mnt/zram1/sshfile}"
+export SSHFILE_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/dusky/settings/sshfiles"
+
+_sshfile_init_db() {
+    mkdir -p "$SSHFILE_CONFIG_DIR"/{data,scripts}
+    [[ -f "$SSHFILE_CONFIG_DIR/data/hosts.tsv" ]] || touch "$SSHFILE_CONFIG_DIR/data/hosts.tsv"
+    [[ -f "$SSHFILE_CONFIG_DIR/data/paths.tsv" ]] || touch "$SSHFILE_CONFIG_DIR/data/paths.tsv"
+
+    local tab_script="$SSHFILE_CONFIG_DIR/scripts/tab_transform.sh"
+    local hist_script="$SSHFILE_CONFIG_DIR/scripts/render_history.sh"
+
+    # --- HELPER 1: Renders Frecency History cleanly ---
+    cat << 'EOF' > "$hist_script"
+#!/usr/bin/env zsh
+host="$1"
+now="$2"
+hist_file="$3"
+awk -F'\t' -v h="$host" -v now="$now" '
+    $1 == h {
+        age = now - $3
+        score = ($4 * 10000) / ((age > 0 ? age : 1) + 3600)
+        if (age < 60) time_str = age "s ago"
+        else if (age < 3600) time_str = int(age/60) "m ago"
+        else if (age < 86400) time_str = int(age/3600) "h ago"
+        else time_str = int(age/86400) "d ago"
+        printf "%-12.2f\t%-50s\tlast used: %-10s\n", score, $2, time_str
+    }
+' "$hist_file" | sort -nr | awk -F'\t' '{printf "%s \033[90m│ %s\033[0m\n", $2, $3}'
+EOF
+    chmod +x "$hist_script"
+
+    # --- HELPER 2: FZF Tab Transformer (Remote SSH queries) ---
+    cat << 'EOF' > "$tab_script"
+#!/usr/bin/env zsh
+host="$1"
+socket="$2"
+query="$3"
+item="$4"
+hist_file="$5"
+now="$6"
+render_script="$7"
+
+# Extract actual path from the UI-formatted FZF item
+item_path=$(echo "$item" | awk '{print $1}')
+target="$query"
+
+# If the user highlighted a specific path that matches their query intent, navigate into it
+if [[ -n "$item_path" ]]; then
+    if [[ "$item_path" == "$query"* ]] || [[ -z "$query" ]]; then
+        target="$item_path"
+    fi
+fi
+
+# Generate FZF Action Payload
+if [[ -z "$target" ]]; then
+    # Empty query: Reload History
+    cmd="\"$render_script\" \"$host\" \"$now\" \"$hist_file\""
+else
+    # Fetch from Remote: Escape single quotes safely for the remote sh shell execution
+    safe_target="${target//\'/\'\\\'\'}"
+    cmd="ssh -o BatchMode=yes -S \"$socket\" \"$host\" \"sh -c 'ls -dp \\\"${safe_target}\\\"* 2>/dev/null'\""
+fi
+
+# Emit strictly formatted FZF 0.73+ actions to update the prompt and reload the list asynchronously
+echo "change-query[${target}]+reload[${cmd}]"
+EOF
+    chmod +x "$tab_script"
+}
+
+_sshfile_extract_history_hosts() {
+    # Extract robustly from Zsh history
+    fc -lnr 1 | awk '
+        /^[[:space:]]*ssh([[:space:]]|$)/ {
+            sub(/^[[:space:]]+/, "", $0)
+            for(i=2; i<=NF; i++) {
+                if ($i ~ /^-/) {
+                    if ($i ~ /^-[plJcbDEmOoWw]$/) i++; 
+                } else if ($i != "--") {
+                    print $i
+                    break
+                }
+            }
+        }
+    ' | sort -u
+}
+
+_sshfile_extract_config_hosts() {
+    # Extract from SSH config
+    local conf="${HOME}/.ssh/config"
+    [[ -f "$conf" ]] && awk 'tolower($1) == "host" && $2 !~ /[*?]/ {print $2}' "$conf"
+}
+
+_sshfile_update_frecency() {
+    local db_file="$1"
+    local key1="$2"
+    local key2="${3:-}" 
+    local tmp_file="${db_file}.tmp"
+
+    awk -F'\t' -v OFS='\t' -v k1="$key1" -v k2="$key2" -v ts="$EPOCHSECONDS" '
+        {
+            if (k2 == "") {
+                if ($1 == k1) { $2 = ts; $3++; found=1 }
+            } else {
+                if ($1 == k1 && $2 == k2) { $3 = ts; $4++; found=1 }
+            }
+            print $0
+        }
+        END {
+            if (!found) {
+                if (k2 == "") print k1, ts, 1
+                else print k1, k2, ts, 1
+            }
+        }
+    ' "$db_file" > "$tmp_file" && command mv -f "$tmp_file" "$db_file"
+}
+
+sshfile() {
+    emulate -L zsh
+    _sshfile_init_db
+
+    # --- 1. Host Selection ---
+    local host selected_host
+
+    selected_host=$(
+        (
+            _sshfile_extract_history_hosts | awk '{print $1 "\t0\t0"}'
+            _sshfile_extract_config_hosts | awk '{print $1 "\t0\t0"}'
+            cat "$SSHFILE_CONFIG_DIR/data/hosts.tsv"
+        ) | awk -F'\t' -v now="$EPOCHSECONDS" '
+            {
+                host = $1; ts = $2; count = $3;
+                if (ts > max_ts[host]) max_ts[host] = ts;
+                if (count > max_count[host]) max_count[host] = count;
+            }
+            END {
+                for (h in max_ts) {
+                    age = now - max_ts[h]
+                    score = (max_count[h] * 10000) / ((age > 0 ? age : 1) + 3600)
+                    if (max_ts[h] == 0) { time_str = "never"; score = -1 }
+                    else if (age < 60) time_str = age "s ago"
+                    else if (age < 3600) time_str = int(age/60) "m ago"
+                    else if (age < 86400) time_str = int(age/3600) "h ago"
+                    else time_str = int(age/86400) "d ago"
+                    
+                    printf "%-12.2f\t%-40s\tlast used: %-10s\t(uses: %d)\n", score, h, time_str, max_count[h]
+                }
+            }
+        ' | sort -nr | awk -F'\t' '{printf "%s \033[90m│ %s %s\033[0m\n", $2, $3, $4}' |
+        fzf --ansi --scheme=history \
+            --prompt="🌐 Select Host > " \
+            --border=rounded \
+            --border-label=" SSH Hosts " \
+            --info=inline-right \
+            --height=50% --layout=reverse \
+            --color='border:#89b4fa,label:#cba6f7,prompt:#a6e3a1'
+    ) || return 1
+
+    host=$(echo "$selected_host" | awk '{print $1}')
+    [[ -z "$host" ]] && return 1
+
+    # --- 2. SSH Multiplexing (Seamless background socket) ---
+    local socket_dir="${XDG_RUNTIME_DIR:-/tmp}/sshfile_sockets"
+    mkdir -p "$socket_dir"
+    chmod 700 "$socket_dir"
+    local socket="$socket_dir/${host//:/-}"
+
+    # Only spawn the connection if the socket is not already alive
+    if ! ssh -o ControlMaster=auto -o ControlPath="$socket" -O check "$host" 2>/dev/null; then
+        print -P "\n%F{blue}Establishing secure SSH master connection to $host (may prompt for auth)...%f"
+        # Spawns silently in the background and persists for 10 mins
+        ssh -o ControlMaster=auto -o ControlPath="$socket" -o ControlPersist=10m -f -N "$host" || {
+            print -P "%F{red}Error: Failed to connect or authenticate to $host.%f"
+            return 1
+        }
+    fi
+
+    # --- 3. Path Selection (Live FZF Tab Completion) ---
+    local remote_path selected_path_raw query_str key_pressed list_selection
+    
+    # Preload the initial history 
+    local initial_list=$("$SSHFILE_CONFIG_DIR/scripts/render_history.sh" "$host" "$EPOCHSECONDS" "$SSHFILE_CONFIG_DIR/data/paths.tsv")
+
+    selected_path_raw=$(
+        echo "$initial_list" |
+        fzf --ansi --print-query --expect=ctrl-y \
+            --prompt="📂 Path on $host > " \
+            --border=rounded \
+            --border-label=" Remote Paths (TAB: complete │ CTRL-Y: use query │ CTRL-R: history) " \
+            --info=inline-right \
+            --height=50% --layout=reverse \
+            --color='border:#f38ba8,label:#f9e2af,prompt:#a6e3a1' \
+            --bind "tab:transform(\"$SSHFILE_CONFIG_DIR/scripts/tab_transform.sh\" \"$host\" \"$socket\" {q} {} \"$SSHFILE_CONFIG_DIR/data/paths.tsv\" \"$EPOCHSECONDS\" \"$SSHFILE_CONFIG_DIR/scripts/render_history.sh\")" \
+            --bind "ctrl-r:reload(\"$SSHFILE_CONFIG_DIR/scripts/render_history.sh\" \"$host\" \"$EPOCHSECONDS\" \"$SSHFILE_CONFIG_DIR/data/paths.tsv\")+change-query[]"
+    ) || return 1
+
+    query_str=$(echo "$selected_path_raw" | sed -n '1p')
+    key_pressed=$(echo "$selected_path_raw" | sed -n '2p')
+    list_selection=$(echo "$selected_path_raw" | sed -n '3p' | awk '{print $1}')
+
+    # Resolve intent (Did they press Enter on an item or Ctrl-Y to bypass the list?)
+    if [[ "$key_pressed" == "ctrl-y" ]]; then
+        remote_path="$query_str"
+    elif [[ -n "$list_selection" ]]; then
+        remote_path="$list_selection"
+    else
+        remote_path="$query_str"
+    fi
+
+    [[ -z "$remote_path" ]] && return 1
+    remote_path="${remote_path%/}"
+
+    # --- 4. Bulletproof Validation (Base64 Injection via Multiplex Socket) ---
+    print -P "\n%F{blue}Verifying '$remote_path' on $host...%f"
+    local b64_path remote_stat
+    b64_path=$(printf "%s" "$remote_path" | base64 | tr -d '\n')
+    
+    # Executes immediately because the socket is already authenticated
+    remote_stat=$(ssh -o BatchMode=yes -S "$socket" -q "$host" "
+        p=\"\$(echo '$b64_path' | base64 -d)\"
+        if [ ! -e \"\$p\" ]; then echo 'missing'; exit 1; fi
+        if [ ! -r \"\$p\" ]; then echo 'unreadable'; exit 1; fi
+        if [ -d \"\$p\" ]; then echo 'dir'; else echo 'file'; fi
+    " 2>/dev/null)
+
+    if [[ -z "$remote_stat" || "$remote_stat" == "missing" ]]; then
+        print -P "%F{red}Error: Path '$remote_path' does not exist on $host.%f"
+        return 1
+    elif [[ "$remote_stat" == "unreadable" ]]; then
+        print -P "%F{red}Error: Permission denied reading '$remote_path' on $host.%f"
+        return 1
+    fi
+
+    # --- 5. Transfer Execution ---
+    local timestamp=$(strftime "%Y-%m-%d_%H-%M-%S" $EPOCHSECONDS)
+    local dest_dir="$SSHFILE_BASE_DIR/$host/$timestamp"
+    
+    command mkdir -p -- "$dest_dir" || {
+        print -P "%F{red}Error: Failed to create local destination $dest_dir.%f"
+        return 1
+    }
+
+    print -P "%F{green}Path verified ($remote_stat). Starting rsync to $dest_dir/...%f"
+    
+    # Notice we pass the -S socket path directly to Rsync's SSH command
+    if rsync -aP -s -e "ssh -S \"$socket\"" "$host:$remote_path" "$dest_dir/"; then
+        print -P "\n%F{green}✔ Transfer complete!%f"
+        
+        # Atomic Frecency Updates
+        _sshfile_update_frecency "$SSHFILE_CONFIG_DIR/data/hosts.tsv" "$host"
+        _sshfile_update_frecency "$SSHFILE_CONFIG_DIR/data/paths.tsv" "$host" "$remote_path"
+    else
+        print -P "\n%F{red}✘ Transfer failed during rsync phase.%f"
+        return 1
+    fi
+}
