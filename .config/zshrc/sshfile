@@ -28,7 +28,7 @@ now="$4"
 # Seed the default pull destination at the top with an unbeatable score
 if [[ "$target_type" == "LOCAL_PULL" ]]; then
     default_dir="${SSHFILE_BASE_DIR:-/mnt/zram1/sshfile}"
-    printf "9999999.0\t%s/\t\033[1;33m%s/\033[0m \033[90m│ %s\033[0m\n" "$default_dir" "$default_dir" "[Default]"
+    printf "9999999.0\t%s/\t\033[1;33m%s/\033[0m \033[1;33m│ %s\033[0m\n" "$default_dir" "$default_dir" "[Default]"
 fi
 
 awk -F'\t' -v type="$target_type" -v h="$host" -v now="$now" '
@@ -42,7 +42,8 @@ awk -F'\t' -v type="$target_type" -v h="$host" -v now="$now" '
         else if (age < 604800) { time_str = int(age/86400) "d ago"; score += 1000 }
         else { time_str = int(age/86400) "d ago" }
 
-        printf "%f\t%s\t\033[1;36m%s\033[0m \033[90m│ %s\033[0m\n", score, $2, $2, time_str
+        # Changed dark gray (90m) to Bright Yellow (1;33m) for maximum visibility
+        printf "%f\t%s\t\033[1;36m%s\033[0m \033[1;33m│ %s\033[0m\n", score, $2, $2, time_str
     }
 ' "$hist_file" | sort -k1,1nr | cut -f2-
 EOF
@@ -100,7 +101,8 @@ else
 fi
 
 # Instruct FZF to update input line and reload the list seamlessly
-echo "change-query[${target}]+reload[${cmd}]"
+# Using '!' delimiters safely bypasses FZF bracket parsing issues in filenames
+echo "change-query!${target}!+reload!${cmd}!"
 EOF
     chmod +x "$tab_script"
 }
@@ -179,10 +181,10 @@ _sshfile_pick_path() {
     local selected_path_raw
     selected_path_raw=$(
         echo "$initial_list" |
-        fzf --ansi --print-query --expect=ctrl-y \
+        fzf --ansi --print-query --expect=ctrl-y,enter \
             --prompt="$prompt_str" \
             --border=rounded \
-            --border-label=" $border_label (TAB: complete │ CTRL-Y: use query │ CTRL-R: history) " \
+            --border-label=" $border_label (TAB: complete │ ENTER: select/use query │ CTRL-R: history) " \
             --info=inline-right \
             --height=60% --layout=reverse \
             --delimiter='\t' --with-nth=2 \
@@ -196,18 +198,23 @@ _sshfile_pick_path() {
     # Perfectly extract Field 1 ensuring no ANSI codes or paddings ever leak into the command
     local list_selection=$(echo "$selected_path_raw" | sed -n '3p' | awk -F'\t' '{print $1}')
 
+    # Flawless fallback: if they hit ENTER but nothing was matched/selected, use what they typed.
     if [[ "$key_pressed" == "ctrl-y" ]]; then
         echo "$query_str"
-    elif [[ -n "$list_selection" ]]; then
-        echo "$list_selection"
+    elif [[ "$key_pressed" == "enter" ]]; then
+        if [[ -n "$list_selection" ]]; then
+            echo "$list_selection"
+        else
+            echo "$query_str"
+        fi
     else
         echo "$query_str"
     fi
 }
 
 _sshfile_pick_host() {
-    local selected_host
-    selected_host=$(
+    local selected_host_raw
+    selected_host_raw=$(
         (
             _sshfile_extract_history_hosts | awk '{print $1 "\t0\t0"}'
             _sshfile_extract_config_hosts | awk '{print $1 "\t0\t0"}'
@@ -229,19 +236,35 @@ _sshfile_pick_host() {
                         else if (age < 604800) { time_str = int(age/86400) "d ago"; score += 1000 }
                         else { time_str = int(age/86400) "d ago" }
                     }
-                    printf "%f\t%s\t\033[1;32m%s\033[0m \033[90m│ %s (uses: %d)\033[0m\n", score, h, h, time_str, max_count[h]
+                    # High Visibility Colors here too
+                    printf "%f\t%s\t\033[1;32m%s\033[0m \033[1;33m│ %s (uses: %d)\033[0m\n", score, h, h, time_str, max_count[h]
                 }
             }
         ' | sort -k1,1nr | cut -f2- |
-        fzf --ansi --scheme=history \
+        fzf --ansi --scheme=history --print-query --expect=ctrl-y,enter \
             --prompt=":: Select Host > " \
-            --border=rounded --border-label=" SSH Hosts " \
+            --border=rounded --border-label=" SSH Hosts (ENTER: select/use query) " \
             --info=inline-right \
             --height=50% --layout=reverse \
             --delimiter='\t' --with-nth=2 \
             --color='border:#89b4fa,label:#cba6f7,prompt:#a6e3a1,fg:#cdd6f4,fg+:#ffffff,hl:#f38ba8,hl+:#f38ba8'
-    )
-    echo "$selected_host" | awk -F'\t' '{print $1}'
+    ) || return 1
+
+    local query_str=$(echo "$selected_host_raw" | sed -n '1p')
+    local key_pressed=$(echo "$selected_host_raw" | sed -n '2p')
+    local list_selection=$(echo "$selected_host_raw" | sed -n '3p' | awk -F'\t' '{print $1}')
+
+    if [[ "$key_pressed" == "ctrl-y" ]]; then
+        echo "$query_str"
+    elif [[ "$key_pressed" == "enter" ]]; then
+        if [[ -n "$list_selection" ]]; then
+            echo "$list_selection"
+        else
+            echo "$query_str"
+        fi
+    else
+        echo "$query_str"
+    fi
 }
 
 # --- Core Engine ---
