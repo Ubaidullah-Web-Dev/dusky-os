@@ -3,6 +3,7 @@
 # Elite Arch Linux ZRAM Configurator
 # Target: Arch Linux Cutting-Edge (Kernel 7.0+, Bash 5.3+, systemd 260+)
 # Scope: Platinum Grade. Maximum Memory Efficiency via pure ZRAM & Tmpfs.
+# Updates: Integrated Kernel 7.0 Direct Writeback Pipeline
 # =============================================================================
 
 set -euo pipefail
@@ -41,6 +42,36 @@ log_critical_action() {
     printf '%s======================================================================%s\n' "${C_RED}${C_BOLD}" "${C_RESET}"
     printf '\n'
 }
+
+print_help() {
+    cat <<EOF
+${C_BOLD}Usage:${C_RESET} ${SCRIPT_NAME} [OPTIONS]
+
+  --writeback, -w <dev> Set physical block device for Kernel 7.0 ZRAM writeback 
+                        (e.g., /dev/disk/by-partuuid/xxxx)
+  --help, -h            Show this help menu
+EOF
+}
+
+usage_error() { log_error "$1"; print_help >&2; exit 2; }
+
+# --- CLI Parsing ---
+WRITEBACK_DEV=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --writeback|-w)
+            if [[ -n "${2:-}" ]]; then
+                WRITEBACK_DEV="$2"
+                shift 2
+            else
+                usage_error "Missing argument for $1"
+            fi
+            ;;
+        --help|-h) print_help; exit 0 ;;
+        *) usage_error "Unknown argument: $1" ;;
+    esac
+done
 
 # --- Privilege Escalation ---
 if [[ $EUID -ne 0 ]]; then
@@ -161,6 +192,41 @@ compression-algorithm = ${COMPRESSION_ALGORITHM}
 swap-priority = 100
 options = discard
 EOF
+
+# Integrate Kernel 7.0 Writeback if specified
+if [[ -n "$WRITEBACK_DEV" ]]; then
+    log_info "Integrating Kernel 7.0 Direct Writeback device: $WRITEBACK_DEV"
+    echo "writeback-device = $WRITEBACK_DEV" >> "$tmp_config"
+    
+    # Create the idle flush systemd timer
+    cat > "/etc/systemd/system/zram-writeback.service" <<EOF
+[Unit]
+Description=ZRAM Kernel 7.0 Idle Writeback Flush
+After=systemd-zram-setup@zram0.service
+
+[Service]
+Type=oneshot
+# Ensure writeback limits are respected, then trigger idle flush
+ExecStartPre=/usr/bin/bash -c 'echo 1 > /sys/block/zram0/writeback_limit_enable 2>/dev/null || true'
+ExecStart=/usr/bin/bash -c 'echo idle > /sys/block/zram0/writeback || true'
+EOF
+
+    cat > "/etc/systemd/system/zram-writeback.timer" <<EOF
+[Unit]
+Description=Daily ZRAM Writeback Flush (Idle Pages)
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now zram-writeback.timer >/dev/null 2>&1 || true
+    log_success "ZRAM Writeback timer configured and enabled."
+fi
 
 cat > "$tmp_mount" <<EOF
 # Managed by Elite Arch Linux ZRAM Configurator

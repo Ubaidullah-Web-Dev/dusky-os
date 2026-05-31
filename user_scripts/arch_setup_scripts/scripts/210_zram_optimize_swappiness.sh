@@ -3,7 +3,7 @@
 # Elite Arch Linux ZRAM & VM Policy Optimizer
 # Target: Arch Linux Cutting-Edge (Kernel 7.0+, Bash 5.3+)
 # Scope: Platinum Grade. Pure performance, robust CLI, strict safety checks.
-# Priority: Absolute Minimum RAM Footprint & Snappy File Caching.
+# Priority: Absolute Minimum RAM Footprint, BBR Networking, eBPF Hardening.
 # =============================================================================
 
 set -euo pipefail
@@ -112,26 +112,26 @@ declare -i EXPECTED_DIRTY_BG_BYTES
 # The 30 GB Demarcation Line
 if [[ "$MODE" == "AGGRESSIVE" ]] || [[ "$MODE" == "AUTO" && SYSTEM_RAM_GB -ge 30 ]]; then
     EXPECTED_MODE="PERFORMANCE_LEAN (32GB+)"
-    EXPECTED_SWAPPINESS=150        # High compression, but leaves some file cache.
-    EXPECTED_VFS_PRESSURE=50       # Retains file path caches for speed (RAM is abundant).
-    EXPECTED_SCALE_FACTOR=250      # Wakes up kswapd very early to prevent sudden CPU stutters.
-    EXPECTED_DIRTY_BYTES=1073741824 # 1GB dirty memory cap to prevent disk IO locks.
+    EXPECTED_SWAPPINESS=150
+    EXPECTED_VFS_PRESSURE=100      # Less aggressive dentry claim on huge RAM systems
+    EXPECTED_SCALE_FACTOR=100
+    EXPECTED_DIRTY_BYTES=1073741824
     EXPECTED_DIRTY_BG_BYTES=268435456
 else
     EXPECTED_MODE="STRICT_RAM_SAVINGS (<32GB)"
-    EXPECTED_SWAPPINESS=180        # Aggressively moves cold data to compressed ZRAM, freeing physical RAM.
-    EXPECTED_VFS_PRESSURE=100      # Allows kernel to clear filesystem caches dynamically. (Crucial for RAM savings).
-    EXPECTED_SCALE_FACTOR=125      # Wakes up kswapd early enough to avoid "direct reclaim" CPU lockups.
-    EXPECTED_DIRTY_BYTES=268435456 # 256MB dirty memory cap. Forces small, continuous disk writes instead of hoarding RAM.
+    EXPECTED_SWAPPINESS=180        # Force immediate compression of inactive RAM (Research Report)
+    EXPECTED_VFS_PRESSURE=150      # Aggressively reclaim directory/inode slabs (Research Report)
+    EXPECTED_SCALE_FACTOR=50       # Reduce RAM held in reserve for atomic operations (Research Report)
+    EXPECTED_DIRTY_BYTES=268435456 
     EXPECTED_DIRTY_BG_BYTES=67108864
 fi
 
-# Static Constants
+# Static Constants (Aligned with Research Report Matrices)
 readonly EXPECTED_PAGE_CLUSTER=0        # Disables swap readahead (critical for ZRAM speed).
 readonly EXPECTED_BOOST_FACTOR=0        # Disables sudden fragmentation CPU spikes.
 readonly EXPECTED_COMPACTION=0          # Disables idle background CPU memory compaction.
-readonly EXPECTED_MAX_MAP_COUNT=16777216
-readonly EXPECTED_MGLRU_TTL=1000        # Google Standard CPU Shield: 1 second. Prevents ZRAM thrash loops.
+readonly EXPECTED_MAX_MAP_COUNT=2147483 # Caps vm_area_struct bloat, high enough for gaming.
+readonly EXPECTED_MGLRU_TTL=300         # Google Standard CPU Shield reduced to 300ms for NVMe/ZRAM.
 
 # --- 5. Generation & Verification ---
 log_info "Initializing Platinum ZRAM & VM Policy Optimizer..."
@@ -165,7 +165,7 @@ trap 'rm -f "$tmpfile" "$tmpfile_mglru"' EXIT
 # --- SYSCTL Payload ---
 cat > "$tmpfile" <<EOF
 # Managed by ${SCRIPT_NAME}
-# Scope: Comprehensive ZRAM & Desktop Performance VM policy
+# Scope: Comprehensive ZRAM, Desktop Performance, & Network Matrix
 # Detected State: Layout=${SWAP_LAYOUT}, Desktop Mode=${EXPECTED_MODE}, RAM=${SYSTEM_RAM_GB}GB
 
 # --- SWAP CONFIGURATION ---
@@ -184,6 +184,15 @@ vm.compaction_proactiveness = ${EXPECTED_COMPACTION}
 
 # --- APPLICATION COMPATIBILITY ---
 vm.max_map_count = ${EXPECTED_MAX_MAP_COUNT}
+
+# --- MODERN NETWORK STACK (BBR + CAKE) ---
+net.ipv4.tcp_congestion_control = bbr
+net.core.default_qdisc = cake
+net.ipv4.tcp_rmem = 4096 65536 8388608
+net.ipv4.tcp_wmem = 4096 65536 8388608
+
+# --- eBPF SECURITY & MEMORY COMPACTION ---
+net.core.bpf_jit_harden = 2
 EOF
 
 # --- MGLRU Payload ---
