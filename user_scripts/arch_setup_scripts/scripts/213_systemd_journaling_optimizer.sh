@@ -3,7 +3,8 @@
 # Elite Arch Linux systemd-journald Optimizer
 # Target: Arch Linux Cutting-Edge (systemd 260+, Bash 5.3+)
 # Scope: Platinum Grade. Hard-caps logging memory to prevent silent RAM bloat.
-# Priority: Caps tmpfs RAM waste at 50MB, eliminates legacy CPU overhead.
+# Priority: Caps tmpfs RAM waste at 50MB, eliminates legacy CPU overhead, 
+#           and shields SSDs via IO batching and rate limiting.
 # =============================================================================
 
 set -euo pipefail
@@ -73,6 +74,7 @@ cat > "$tmp_config" <<EOF
 # Scope: Prevent systemd-journald from consuming massive amounts of RAM, Disk, and CPU.
 
 [Journal]
+# --- STORAGE LIMITS ---
 # Volatile Storage (RAM in /run/log/journal): Hard cap at 50MB.
 # Prevents the default behavior of eating up to 10% of total system RAM.
 RuntimeMaxUse=50M
@@ -84,16 +86,31 @@ SystemMaxUse=250M
 # Rotate files frequently to keep read times instantaneous.
 SystemMaxFileSize=50M
 
+# Housekeeping: Automatically discard anything older than 1 month.
+MaxRetentionSec=1month
+
+# --- PERFORMANCE & CPU SHIELDS ---
 # Compression: Force zstd compression on log payloads before writing.
 Compress=yes
 
-# Housekeeping: Automatically discard anything older than 1 month.
-MaxRetentionSec=1month
+# SSD Wear & Latency Shield: Batch disk writes every 5 minutes instead of continuously.
+SyncIntervalSec=5m
+
+# CPU/IO Shield: Disable kernel audit logging. Bypasses rate limits and spikes CPU.
+Audit=no
+
+# Verbosity Cap: Drop debug-level spam before it consumes RAM.
+MaxLevelStore=info
+
+# Anti-Crash Loop Spam: Drop logs if a crashing app writes >100 lines in 10s.
+RateLimitIntervalSec=10s
+RateLimitBurst=100
 
 # CPU Optimization: Disable legacy broadcast logging to save idle CPU cycles.
 ForwardToSyslog=no
 ForwardToWall=no
 ForwardToKMsg=no
+ForwardToConsole=no
 EOF
 
 # --- 4. Dry Run Check ---
@@ -127,6 +144,6 @@ log_info "Vacuuming current journals to enforce new limits immediately..."
 journalctl --vacuum-size=250M >/dev/null 2>&1 || true
 journalctl --vacuum-time=1months >/dev/null 2>&1 || true
 
-log_success "Logging topology is fully optimized for maximum RAM efficiency."
+log_success "Logging topology is fully optimized for maximum RAM efficiency and SSD protection."
 
 exit 0
