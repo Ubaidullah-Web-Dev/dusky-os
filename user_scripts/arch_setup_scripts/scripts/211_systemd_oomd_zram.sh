@@ -3,13 +3,12 @@
 # Elite Arch Linux systemd-oomd & UWSM Optimizer
 # Target: Arch Linux Cutting-Edge (systemd 255+, Bash 5.3+)
 # Scope: Platinum Grade. Arms oomd with surgical kill policies, shields Hyprland.
+# Priority: Recalibrated for aggressive ZRAM. Prevents premature application kills.
 # =============================================================================
 
 set -euo pipefail
 
 readonly SCRIPT_NAME="${0##*/}"
-
-# --- Strict Path Resolution ---
 readonly SELF_PATH="$(realpath -e -- "${BASH_SOURCE[0]}")"
 
 # --- Target Configurations ---
@@ -68,8 +67,8 @@ done
 
 # --- 2. Privilege Escalation ---
 if [[ $EUID -ne 0 && $DRY_RUN -eq 0 ]]; then
-    command -v sudo >/dev/null 2>&1 || die "'sudo' is not available."
     log_info "Root privileges required. Escalating..."
+    command -v sudo >/dev/null 2>&1 || die "'sudo' is not available."
     exec sudo -- /usr/bin/bash "$SELF_PATH" "$@"
 fi
 
@@ -82,14 +81,19 @@ tmp_session_slice="$(umask 077 && mktemp)"
 tmp_uwsm_slice="$(umask 077 && mktemp)"
 trap 'rm -f "$tmp_oomd" "$tmp_user_svc" "$tmp_session_slice" "$tmp_uwsm_slice"' EXIT
 
-# A. Global OOMD Limits (The Hair-Trigger)
+# A. Global OOMD Limits (The Recalibrated Hair-Trigger)
 cat > "$tmp_oomd" <<EOF
 # Managed by ${SCRIPT_NAME}
 [OOM]
-# ZRAM threshold: 90% swap usage means the physical compression pool is dangerously full.
-SwapUsedLimit=90%
-DefaultMemoryPressureLimit=60%
-DefaultMemoryPressureDurationSec=10s
+# ZRAM Architecture: High swap usage is expected and desired.
+# Pushed to 96% to prevent premature kills of healthy, heavily compressed systems.
+SwapUsedLimit=96%
+
+# Pressure Stall Information (PSI):
+# Increased limit (70%) and duration (20s) to allow CPU time to heavily compress
+# ZRAM memory during load spikes without triggering false-positive OOM kills.
+DefaultMemoryPressureLimit=70%
+DefaultMemoryPressureDurationSec=20s
 EOF
 
 # B. User Service Policy (The Fangs)
@@ -109,7 +113,7 @@ cat > "$tmp_session_slice" <<EOF
 ManagedOOMPreference=avoid
 EOF
 
-# Clone the shield for UWSM
+# Clone the shield for modern UWSM graphical sessions
 cp "$tmp_session_slice" "$tmp_uwsm_slice"
 
 # --- 4. Dry Run Check ---
@@ -152,10 +156,9 @@ if (( CHANGED == 0 )); then
     log_success "No changes required. Existing systemd-oomd configuration is already optimal."
 else
     log_info "Reloading systemd daemon to ingest new policies..."
-    # '|| true' prevents set -e from aborting the script if systemd is restricted (e.g., in a chroot/ISO build)
     systemctl daemon-reload || log_warn "Global daemon-reload failed. Continuing..."
     
-    log_info "Reloading active user managers to ingest session shield..."
+    log_info "Reloading active user managers to ingest session shields..."
     declare -a uids=()
     while read -r line; do
         if [[ "$line" =~ user@([0-9]+)\.service ]]; then
@@ -167,7 +170,6 @@ else
         user="$(id -un "$uid" 2>/dev/null || true)"
         [[ -z "$user" ]] && continue
         
-        # Wrapped in || true to guarantee execution flow continues
         if systemctl --user --machine="${user}@.host" daemon-reload >/dev/null 2>&1; then
             log_success "Reloaded user manager for ${user}."
         elif command -v runuser >/dev/null 2>&1 && [[ -S "/run/user/${uid}/bus" ]]; then
@@ -185,9 +187,8 @@ fi
 
 # --- 6. Enable and Start ---
 log_info "Enabling and starting systemd-oomd.service..."
-# Force enable and start, ignoring errors to ensure we try our absolute hardest to arm it
-systemctl enable systemd-oomd.service || log_warn "Failed to enable systemd-oomd."
-systemctl start systemd-oomd.service || log_warn "Failed to start systemd-oomd."
+systemctl enable systemd-oomd.service >/dev/null 2>&1 || log_warn "Failed to enable systemd-oomd."
+systemctl start systemd-oomd.service >/dev/null 2>&1 || log_warn "Failed to start systemd-oomd."
 
 if systemctl -q is-active systemd-oomd.service >/dev/null 2>&1; then
     log_success "systemd-oomd is fully armed, active, and shielding the Wayland session."

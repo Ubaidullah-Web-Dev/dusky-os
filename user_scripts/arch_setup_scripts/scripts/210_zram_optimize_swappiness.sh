@@ -3,6 +3,7 @@
 # Elite Arch Linux ZRAM & VM Policy Optimizer
 # Target: Arch Linux Cutting-Edge (Kernel 7.0+, Bash 5.3+)
 # Scope: Platinum Grade. Pure performance, robust CLI, strict safety checks.
+# Priority: Absolute Minimum RAM Footprint & Snappy File Caching.
 # =============================================================================
 
 set -euo pipefail
@@ -110,26 +111,27 @@ declare -i EXPECTED_DIRTY_BG_BYTES
 
 # The 30 GB Demarcation Line
 if [[ "$MODE" == "AGGRESSIVE" ]] || [[ "$MODE" == "AUTO" && SYSTEM_RAM_GB -ge 30 ]]; then
-    EXPECTED_MODE="ABSOLUTE_MAX (32GB+)"
-    EXPECTED_SWAPPINESS=150
-    EXPECTED_VFS_PRESSURE=50
-    EXPECTED_SCALE_FACTOR=125
-    EXPECTED_DIRTY_BYTES=4294967296
-    EXPECTED_DIRTY_BG_BYTES=1073741824
+    EXPECTED_MODE="PERFORMANCE_LEAN (32GB+)"
+    EXPECTED_SWAPPINESS=150        # High compression, but leaves some file cache.
+    EXPECTED_VFS_PRESSURE=50       # Retains file path caches for speed (RAM is abundant).
+    EXPECTED_SCALE_FACTOR=250      # Wakes up kswapd very early to prevent sudden CPU stutters.
+    EXPECTED_DIRTY_BYTES=1073741824 # 1GB dirty memory cap to prevent disk IO locks.
+    EXPECTED_DIRTY_BG_BYTES=268435456
 else
-    EXPECTED_MODE="DYNAMIC_EFFICIENCY (<32GB)"
-    EXPECTED_SWAPPINESS=150
-    EXPECTED_VFS_PRESSURE=50
-    EXPECTED_SCALE_FACTOR=10
-    EXPECTED_DIRTY_BYTES=268435456
+    EXPECTED_MODE="STRICT_RAM_SAVINGS (<32GB)"
+    EXPECTED_SWAPPINESS=180        # Aggressively moves cold data to compressed ZRAM, freeing physical RAM.
+    EXPECTED_VFS_PRESSURE=100      # Allows kernel to clear filesystem caches dynamically. (Crucial for RAM savings).
+    EXPECTED_SCALE_FACTOR=125      # Wakes up kswapd early enough to avoid "direct reclaim" CPU lockups.
+    EXPECTED_DIRTY_BYTES=268435456 # 256MB dirty memory cap. Forces small, continuous disk writes instead of hoarding RAM.
     EXPECTED_DIRTY_BG_BYTES=67108864
 fi
 
 # Static Constants
-readonly EXPECTED_PAGE_CLUSTER=0
-readonly EXPECTED_BOOST_FACTOR=0
+readonly EXPECTED_PAGE_CLUSTER=0        # Disables swap readahead (critical for ZRAM speed).
+readonly EXPECTED_BOOST_FACTOR=0        # Disables sudden fragmentation CPU spikes.
+readonly EXPECTED_COMPACTION=0          # Disables idle background CPU memory compaction.
 readonly EXPECTED_MAX_MAP_COUNT=16777216
-readonly EXPECTED_MGLRU_TTL=100  # CPU Shield: Prevents ZRAM from thrashing hot memory pages
+readonly EXPECTED_MGLRU_TTL=1000        # Google Standard CPU Shield: 1 second. Prevents ZRAM thrash loops.
 
 # --- 5. Generation & Verification ---
 log_info "Initializing Platinum ZRAM & VM Policy Optimizer..."
@@ -178,7 +180,7 @@ vm.dirty_background_bytes = ${EXPECTED_DIRTY_BG_BYTES}
 # --- MEMORY ALLOCATION & COMPACTION ---
 vm.watermark_scale_factor = ${EXPECTED_SCALE_FACTOR}
 vm.watermark_boost_factor = ${EXPECTED_BOOST_FACTOR}
-vm.compaction_proactiveness = 0
+vm.compaction_proactiveness = ${EXPECTED_COMPACTION}
 
 # --- APPLICATION COMPATIBILITY ---
 vm.max_map_count = ${EXPECTED_MAX_MAP_COUNT}
@@ -188,6 +190,7 @@ EOF
 cat > "$tmpfile_mglru" <<EOF
 # Managed by ${SCRIPT_NAME}
 # Scope: MGLRU ZRAM Thrash Protection (CPU Shield)
+# Description: Prevents hot pages from being repeatedly compressed/decompressed.
 w /sys/kernel/mm/lru_gen/min_ttl_ms - - - - ${EXPECTED_MGLRU_TTL}
 EOF
 
@@ -230,6 +233,8 @@ fi
 # --- Hardened Live Verification ---
 actual_swappiness="$(< /proc/sys/vm/swappiness)"
 actual_vfs="$(< /proc/sys/vm/vfs_cache_pressure)"
+actual_scale="$(< /proc/sys/vm/watermark_scale_factor)"
+actual_compaction="$(< /proc/sys/vm/compaction_proactiveness)"
 
 if [[ "$actual_swappiness" != "$EXPECTED_SWAPPINESS" ]]; then
     die "Verification failed: vm.swappiness is '${actual_swappiness}', expected '${EXPECTED_SWAPPINESS}'."
@@ -239,14 +244,24 @@ if [[ "$actual_vfs" != "$EXPECTED_VFS_PRESSURE" ]]; then
     die "Verification failed: vm.vfs_cache_pressure is '${actual_vfs}', expected '${EXPECTED_VFS_PRESSURE}'."
 fi
 
+if [[ "$actual_scale" != "$EXPECTED_SCALE_FACTOR" ]]; then
+    die "Verification failed: vm.watermark_scale_factor is '${actual_scale}', expected '${EXPECTED_SCALE_FACTOR}'."
+fi
+
+if [[ "$actual_compaction" != "$EXPECTED_COMPACTION" ]]; then
+    die "Verification failed: vm.compaction_proactiveness is '${actual_compaction}', expected '${EXPECTED_COMPACTION}'."
+fi
+
 log_success "Verified live kernel values:"
 log_success "  vm.swappiness = ${actual_swappiness}"
 log_success "  vm.vfs_cache_pressure = ${actual_vfs}"
+log_success "  vm.watermark_scale_factor = ${actual_scale}"
+log_success "  vm.compaction_proactiveness = ${actual_compaction}"
 
 if [[ -f "/sys/kernel/mm/lru_gen/min_ttl_ms" ]]; then
     actual_ttl="$(< /sys/kernel/mm/lru_gen/min_ttl_ms)"
     if [[ "$actual_ttl" == "$EXPECTED_MGLRU_TTL" ]]; then
-        log_success "  MGLRU min_ttl_ms = ${actual_ttl} (Thrash Protection Active)"
+        log_success "  MGLRU min_ttl_ms = ${actual_ttl} (CPU Thrash Protection Active)"
     else
         log_warn "  MGLRU min_ttl_ms verification failed. Read: ${actual_ttl}"
     fi
