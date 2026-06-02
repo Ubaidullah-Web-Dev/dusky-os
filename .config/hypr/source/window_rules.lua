@@ -1147,9 +1147,10 @@ hl.window_rule({
 
 --- Dusky_QuickPanal Script ---
 hl.window_rule({
-    name = "dusky_quickpanal.py",
+    name = "dusky_quickpanalpy",
     match = {
-        class = "^(org.dusky.quickpanal)$"
+        class = "^(dusky_quickpanal\\.py)$",
+        -- title = "^(dusky_quickpanal\\.py)$",
     },
     float = true,
     animation = "slide right",
