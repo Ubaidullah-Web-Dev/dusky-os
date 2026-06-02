@@ -31,7 +31,7 @@ try:
     gi.require_version("Gtk", "3.0")
     gi.require_version("Gdk", "3.0")
     gi.require_version("Pango", "1.0")
-    from gi.repository import Gdk, Gio, GLib, Gtk, Pango
+    from gi.repository import Gdk, Gio, GLib, GLibUnix, Gtk, Pango
 except (ImportError, ValueError) as exc:
     raise SystemExit(f"Failed to load GTK3: {exc}") from exc
 
@@ -523,6 +523,7 @@ class QuickPanalApp(Gtk.Application):
     @override
     def do_startup(self):
         Gtk.Application.do_startup(self)
+        GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, lambda *_: self.quit() or GLib.SOURCE_REMOVE)
         self.hold()
 
         config_data = load_or_create_config()

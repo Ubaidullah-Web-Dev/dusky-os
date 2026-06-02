@@ -48,9 +48,9 @@ OOMPolicy=kill
 
 # A Control Center parses CSS, grids, and directory paths, requiring more overhead than a simple panel.
 # We set a soft limit of 250MB. If it crosses this, the Arch kernel aggressively pushes idle pages to ZRAM (ZSTD).
-MemoryHigh=150M
+MemoryHigh=140M
 # Absolute hard limit. If a severe memory leak occurs, Systemd kills and restarts it before it takes down Hyprland.
-MemoryMax=550M
+MemoryMax=350M
 
 SyslogIdentifier=dusky
 
