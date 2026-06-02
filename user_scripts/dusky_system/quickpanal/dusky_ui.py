@@ -293,7 +293,6 @@ class NotificationRow(Gtk.ListBoxRow):
 
         self.add(main_box)
 
-
 class NotificationsPanel(Gtk.Box):
     def __init__(self, pool: RefreshPool):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -470,7 +469,15 @@ window.panel-window {
     background-color: alpha(@theme_bg_color, 0.95);
     border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 24px; box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
 }
+
+/* Hides native GTK3 scrollbar visually without breaking wheel scroll functions */
 scrolledwindow { background: transparent; }
+scrollbar, scrollbar trough, scrollbar slider, scrollbar button {
+    min-width: 0px; min-height: 0px; padding: 0px; margin: 0px;
+    background: transparent; background-color: transparent;
+    border: none; box-shadow: none; opacity: 0; color: transparent;
+}
+
 * { outline: none; }
 button { transition: background-color 200ms ease, opacity 200ms ease, box-shadow 200ms ease; }
 
@@ -500,8 +507,8 @@ button.quick-icon-toggle.dnd-active { background-color: alpha(#ff453a, 0.3); bor
 button.quick-icon-toggle.dnd-active image { color: #ff453a; }
 
 .notification-badge {
-    background-color: @theme_selected_bg_color; color: black; font-size: 10px; font-weight: 900; border-radius: 9px;
-    min-width: 18px; min-height: 18px; padding: 0 4px; margin: 2px; border: 1px solid rgba(255, 255, 255, 0.2); box-shadow: 0 2px 5px rgba(0,0,0,0.5);
+    background-color: @theme_selected_bg_color; color: black; font-size: 8px; font-weight: 800; border-radius: 7px;
+    min-width: 14px; min-height: 14px; padding: 0 2px; margin: 1px; border: 1px solid rgba(255, 255, 255, 0.2); box-shadow: 0 2px 4px rgba(0,0,0,0.5);
 }
 
 box.metric-pill { background-color: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 14px; padding: 8px 10px; transition: all 0.2s; }

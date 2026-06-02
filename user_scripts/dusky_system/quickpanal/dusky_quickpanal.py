@@ -173,6 +173,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         # Global scrolling to support endless notifications gracefully
         self.scrolled_main = Gtk.ScrolledWindow()
         self.scrolled_main.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.scrolled_main.set_overlay_scrolling(True) # Ensure scrollbar floats rather than pushing content
         self.scrolled_main.add(main_box)
         
         # CRITICAL UI FIX: Absolutely DO NOT let natural widths propagate and bloat the parent.
@@ -237,7 +238,8 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
             self.metrics_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
             self.metrics_row.set_homogeneous(True)
             self.pill_net = MetricPill(None, "Network Usage", small_text=True)
-            self.pill_ram = MetricPill("media-memory-symbolic", "RAM Usage\nLMB: Open zramctl", on_click="kitty --class zramctl --hold zramctl")
+            # Memory icon fixed to user preference
+            self.pill_ram = MetricPill("drive-harddisk-symbolic", "RAM Usage\nLMB: Open zramctl", on_click="kitty --class zramctl --hold zramctl")
             self.pill_cpu = MetricPill("cpu-symbolic", "CPU Usage\nLMB: Open btop", on_click="kitty --class btop btop")
             self.metrics_row.pack_start(self.pill_net, True, True, 0)
             self.metrics_row.pack_start(self.pill_ram, True, True, 0)
@@ -298,6 +300,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
             main_box.pack_start(self.power_container, False, False, 0)
 
         # --- Sliders ---
+        # Sliders restored as requested
         if self.layout_cfg.get("show_sliders", True):
             self.sliders_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
             _add_css_class(self.sliders_box, "sliders-container")
