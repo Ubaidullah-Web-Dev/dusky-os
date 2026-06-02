@@ -11,17 +11,20 @@ from typing import Any
 from python.frontend.core_types import BaseEngine
 
 # =============================================================================
-# [ WAYBAR ENGINE - v4.8.3 PARITY ]
+# [ WAYBAR ENGINE - v4.8.5 PARITY ]
 # Fully isolated Python process controller with UI-Cache synchronization.
+# Resolves Headless Async Destruction & AST Regex Position Mutators.
 # =============================================================================
 
 class WaybarEngine(BaseEngine):
-    def __init__(self, config_path: str = "~/.config/waybar/config.jsonc"):
-        # STRICT ROOT BINDING: main.py aggressively resolves symlinks before passing config_path.
-        # If the Waybar symlink is active, config_path points deep into the active theme's folder.
-        # We must explicitly lock the root to the base directory to prevent the engine from getting trapped.
-        self.config_root = Path("~/.config/waybar").expanduser().absolute()
-        self.config_path = self.config_root / "config.jsonc"
+    def __init__(self, config_path: str = "~/.config/waybar"):
+        self.config_path = Path(config_path).expanduser().absolute()
+        
+        if self.config_path.name == "config.jsonc":
+            self.config_root = self.config_path.parent
+        else:
+            self.config_root = self.config_path
+            self.config_path = self.config_root / "config.jsonc"
             
         self.style_path = self.config_root / "style.css"
         self.state_file = self.config_root / ".dusky_waybar_state.json"
@@ -36,29 +39,28 @@ class WaybarEngine(BaseEngine):
 
     @property
     def target_path(self) -> str:
-        """Fulfills BaseEngine contract to supply the UI with the file path."""
-        return str(self.config_path)
+        # CRITICAL FIX: We pass the DIRECTORY to the UI File Watcher, not the symlink.
+        # This guarantees that our asynchronous os.utime() trigger below successfully 
+        # forces the UI to reload and wipe the old "ON" states.
+        return str(self.config_root)
 
     def _refresh_themes(self) -> None:
-        """Emulates Bash globbing: candidates=("${CONFIG_ROOT}"/*/config.jsonc)"""
         themes = sorted(self.config_root.glob("*/config.jsonc"))
         self.theme_dirs = [t.parent for t in themes]
         self.theme_names = [t.parent.name for t in themes]
 
     def _get_theme_position(self, config_file: Path) -> str:
-        """Safely extracts the current 'position' from the jsonc file."""
         resolved_file = config_file.resolve()
         if not resolved_file.exists():
             return "unknown"
         try:
             content = resolved_file.read_text(encoding="utf-8")
             match = self.pos_regex.search(content)
-            return match.group(2) if match else "unknown"
+            return match.group(2).lower() if match else "unknown"
         except OSError:
             return "unknown"
 
     def _set_theme_position(self, config_file: Path, new_pos: str) -> bool:
-        """Safely mutates the 'position' attribute inside the underlying jsonc file."""
         resolved_file = config_file.resolve()
         if not resolved_file.exists():
             return False
@@ -67,21 +69,21 @@ class WaybarEngine(BaseEngine):
             if not self.pos_regex.search(content):
                 return False 
                 
-            new_content = self.pos_regex.sub(rf'\1"{new_pos}"', content)
+            # Safely replace only the FIRST occurrence (main bar), preserving module positions
+            # \g<1> safely backreferences the regex group in Python
+            new_content = self.pos_regex.sub(rf'\g<1>"{new_pos}"', content, count=1)
             resolved_file.write_text(new_content, encoding="utf-8")
             return True
         except OSError:
             return False
 
     def load_state(self) -> dict[str, Any]:
-        """Maps the current active symlink to its chronological array state."""
         self._refresh_themes()
         
         active_idx = -1
         active_name = ""
         current_pos = "unknown"
         
-        # 1. Determine active state from the physical symlink target
         if self.config_path.is_symlink():
             target = self.config_path.resolve()
             if target.parent in self.theme_dirs:
@@ -89,7 +91,6 @@ class WaybarEngine(BaseEngine):
                 active_name = self.theme_names[active_idx]
                 current_pos = self._get_theme_position(target)
                 
-        # 2. AUTO-HEALING: If symlinks are broken, restore them
         elif self.state_file.exists():
             try:
                 state_data = json.loads(self.state_file.read_text(encoding="utf-8"))
@@ -102,10 +103,20 @@ class WaybarEngine(BaseEngine):
             except (OSError, json.JSONDecodeError):
                 pass
         
+        # PREVENTING [Missing] STRIKETHROUGH:
+        # The engine must strictly tell the UI that these momentary push-buttons 
+        # default to 'False' so they can be securely bound to RAM.
         self.cache = {
             "active_theme_index": active_idx,
             "active_theme_name": active_name,
-            "waybar_position": current_pos,
+            "DEFAULT/active_theme_index": active_idx,
+            "DEFAULT/active_theme_name": active_name,
+            
+            "action_invert_pos": False,
+            "DEFAULT/action_invert_pos": False,
+            
+            "action_heal_state": False,
+            "DEFAULT/action_heal_state": False,
         }
         
         # Inject dynamic menu state variables for the radio-button list
@@ -155,14 +166,13 @@ class WaybarEngine(BaseEngine):
             stdin=subprocess.DEVNULL
         )
 
-        # --- CRITICAL UI CACHE SYNC (RADIO BUTTON FIX) ---
-        # The TUI masks mtime changes triggered by its own saves to prevent glitchy loops.
-        # By waiting slightly and touching the RESOLVED target file AFTER the mask concludes,
-        # we bypass the mask. The TUI detects this, rebuilds the cache natively, 
-        # and successfully turns OFF all the inactive radio buttons!
-        await asyncio.sleep(0.35)
+        # UI CACHE REFRESH TRIGGER
+        # Pauses slightly to let the UI's write mask expire, then artificially 
+        # bumps the directory mtime. This brilliantly forces the UI to reload the state natively,
+        # which clears the "Multiple ON" states and snaps the momentary push-buttons back to OFF!
+        await asyncio.sleep(0.5)
         try:
-            self.config_path.resolve().touch(exist_ok=True)
+            os.utime(self.config_root, None)
         except OSError:
             pass
 
@@ -201,17 +211,23 @@ class WaybarEngine(BaseEngine):
                 case "toggle_backward" if str_val == "true":
                     target_idx = (current_idx - 1 + len(self.theme_dirs)) % len(self.theme_dirs)
                     requires_restart = True
+                    
+                case "active_theme_index":
+                    try:
+                        target_idx = int(val)
+                        requires_restart = True
+                    except ValueError:
+                        return False, f"Invalid numeric index: {val}", ""
                         
-                case "toggle_position":
+                case "action_invert_pos" if str_val == "true":
                     resolved_target = self.theme_dirs[target_idx] / "config.jsonc"
                     current_pos = self._get_theme_position(resolved_target)
                     
-                    # Strictly flip inverted opposites (Spacebar parity)
                     if current_pos == "top": target_pos = "bottom"
                     elif current_pos == "bottom": target_pos = "top"
                     elif current_pos == "left": target_pos = "right"
                     elif current_pos == "right": target_pos = "left"
-                    else: target_pos = "top"
+                    else: target_pos = "bottom"
                     
                     if self._set_theme_position(resolved_target, target_pos):
                         requires_restart = True
@@ -220,9 +236,10 @@ class WaybarEngine(BaseEngine):
                     else:
                         return False, "Position key not found in target config.jsonc", ""
                         
-                case "restore_state" if str_val == "true":
+                case "action_heal_state" if str_val == "true":
                     requires_restart = True 
                     requires_detached = True
+                    status_msg = "State restored and symlinks healed."
 
         if target_idx < 0 or target_idx >= len(self.theme_dirs):
             return False, f"Index {target_idx} is out of bounds.", ""
@@ -241,10 +258,13 @@ class WaybarEngine(BaseEngine):
                 pass
             
             try:
-                if self._preview_task and not self._preview_task.done():
-                    self._preview_task.cancel()
-                    
-                self._preview_task = asyncio.create_task(self._async_restart_waybar(selected_dir, set_sid=requires_detached))
+                try:
+                    loop = asyncio.get_running_loop()
+                    if self._preview_task and not self._preview_task.done():
+                        self._preview_task.cancel()
+                    self._preview_task = loop.create_task(self._async_restart_waybar(selected_dir, set_sid=requires_detached))
+                except RuntimeError:
+                    asyncio.run(self._async_restart_waybar(selected_dir, set_sid=requires_detached))
                 
                 if not status_msg:
                     status_msg = f"Applied theme: {selected_name}"

@@ -10,7 +10,6 @@ This file serves a dual purpose:
 """
 import sys
 import os
-import shlex
 from pathlib import Path
 from python.frontend.core_types import ConfigItem
 
@@ -18,7 +17,7 @@ from python.frontend.core_types import ConfigItem
 # 1. CORE APPLICATION ROUTING
 # =============================================================================
 ENGINE_TYPE = "waybar"                     
-TARGET_FILE = "~/.config/waybar/config.jsonc" 
+TARGET_FILE = "~/.config/waybar" 
 APP_TITLE = "Waybar Master Control"               
 DEFAULT_MODE = "auto"                      
 THEME_FILE = "~/.config/matugen/generated/dusky_tui.json"
@@ -31,9 +30,7 @@ TABS = ["Theme Engine"]
 # =============================================================================
 # DYNAMIC THEME DISCOVERY
 # =============================================================================
-# CRITICAL FIX: Call .parent BEFORE .absolute(). 
-# Calling .resolve() first follows the symlink and traps us inside the active theme's folder!
-config_root = Path(TARGET_FILE).expanduser().parent.absolute()
+config_root = Path(TARGET_FILE).expanduser().resolve()
 theme_paths = sorted(config_root.glob("*/config.jsonc"))
 THEMES = [t.parent.name for t in theme_paths]
 
@@ -61,7 +58,7 @@ dynamic_theme_items = []
 for name in THEMES:
     dynamic_theme_items.append(
         ConfigItem(
-            label=name,
+            label=name,  # Clean label without the "Theme:" prefix
             key=f"__waybar_theme_{name}",
             scope="DEFAULT",
             type_="bool",
@@ -77,26 +74,24 @@ SCHEMA[0] = [SCHEMA[0][0]] + dynamic_theme_items
 # --- Inject Layout & Healing Actions ---
 SCHEMA[0].extend([
     ConfigItem(
-        label="Invert Waybar Screen Position",
+        label="Toggle Waybar Position",
         key="action_invert_pos",
         scope="DEFAULT",
-        type_="action",
-        # Elegantly routes the UI action back through this exact script's CLI!
-        default=f"python {shlex.quote(__file__)} --toggle-pos",
+        type_="bool", # Treated as a momentary push-button by the Engine!
+        default=False,
         group="Layout",
         extended_help="**Toggle Position**\n\nInstantly inverts the current screen position (Top becomes Bottom, Left becomes Right). Equivalent to pressing Spacebar in the old bash script."
     ),
     ConfigItem(
-        label="Force State Restore (Heal Symlinks)",
+        label="Heal Broken Symlinks",
         key="action_heal_state",
         scope="DEFAULT",
-        type_="action",
-        default=f"python {shlex.quote(__file__)} --heal",
+        type_="bool", # Treated as a momentary push-button by the Engine!
+        default=False,
         group="Layout",
         extended_help="**Heal Broken Configuration**\n\nIf your Waybar symlinks break, this action rebuilds the exact symlink paths needed and restarts Waybar automatically."
     )
 ])
-
 
 # =============================================================================
 # 3. STANDALONE CLI MODE (Replaces dusky_waybars.sh)
@@ -128,10 +123,14 @@ if __name__ == "__main__":
             sys.exit(1)
             
     # Behavior 2: If executed with flags, act as a headless mutator script
-    dusky_root = Path("~/user_scripts/dusky_tui").expanduser().resolve()
-    if str(dusky_root) not in sys.path:
-        sys.path.insert(0, str(dusky_root))
-        
+    _cwd = Path.cwd()
+    if (_cwd / "python" / "frontend").exists() and str(_cwd) not in sys.path:
+        sys.path.insert(0, str(_cwd))
+    else:
+        _fallback = Path("~/user_scripts/dusky_tui").expanduser().resolve()
+        if str(_fallback) not in sys.path:
+            sys.path.insert(0, str(_fallback))
+            
     try:
         from python.engines.waybar_engine import WaybarEngine
     except ImportError:
@@ -146,9 +145,9 @@ if __name__ == "__main__":
     elif args.back_toggle:
         changes.append(("toggle_backward", "DEFAULT", "true", "bool"))
     elif args.toggle_pos:
-        changes.append(("toggle_position", "DEFAULT", "true", "bool"))
+        changes.append(("action_invert_pos", "DEFAULT", "true", "bool"))
     elif args.heal:
-        changes.append(("restore_state", "DEFAULT", "true", "bool"))
+        changes.append(("action_heal_state", "DEFAULT", "true", "bool"))
         
     if changes:
         success, msg, _ = engine.write_batch(changes)
