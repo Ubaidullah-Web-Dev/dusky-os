@@ -635,6 +635,59 @@ cmd_move_preview() {
     printf 'change-preview-window(%s)\n' "$next"
 }
 
+cmd_resize_preview() {
+    local arrow="$1"
+    local current direction pct rest new_pct
+
+    current=$(read_state_value "PREVIEW_LAYOUT" "$USER_STATE_FILE") || current=""
+    [[ -n "$current" ]] || current="right,45%,~3,wrap-word"
+
+    [[ "$current" == "hidden" ]] && return 0
+
+    if [[ "$current" =~ ^([a-zA-Z]+),([0-9]+)%(.*)$ ]]; then
+        direction="${BASH_REMATCH[1]}"
+        pct="${BASH_REMATCH[2]}"
+        rest="${BASH_REMATCH[3]}"
+    else
+        return 0
+    fi
+
+    new_pct=$pct
+
+    case "$direction" in
+        right)
+            [[ "$arrow" == "left" ]] && (( new_pct += 5 ))
+            [[ "$arrow" == "right" ]] && (( new_pct -= 5 ))
+            ;;
+        left)
+            [[ "$arrow" == "right" ]] && (( new_pct += 5 ))
+            [[ "$arrow" == "left" ]] && (( new_pct -= 5 ))
+            ;;
+        up)
+            [[ "$arrow" == "down" ]] && (( new_pct += 5 ))
+            [[ "$arrow" == "up" ]] && (( new_pct -= 5 ))
+            ;;
+        down)
+            [[ "$arrow" == "up" ]] && (( new_pct += 5 ))
+            [[ "$arrow" == "down" ]] && (( new_pct -= 5 ))
+            ;;
+    esac
+
+    # Do nothing if an irrelevant axis key was pressed
+    if (( new_pct == pct )); then
+        return 0
+    fi
+
+    # Maintain sensible boundaries
+    (( new_pct < 10 )) && new_pct=10
+    (( new_pct > 90 )) && new_pct=90
+
+    local next="${direction},${new_pct}%${rest}"
+    write_state_value "PREVIEW_LAYOUT" "$next" "$USER_STATE_FILE" 2>/dev/null || :
+
+    printf 'change-preview-window(%s)\n' "$next"
+}
+
 cmd_toggle_vim() {
     local current
     current=$(read_state_value "VIM_MODE" "$USER_STATE_FILE") || current="false"
@@ -677,6 +730,7 @@ cmd_preview() {
             printf '  \e[33mCtrl-A\e[0m      : Select All\n\n'
             printf '  \e[36m[ PREVIEW & FILTERS ]\e[0m\n'
             printf '  \e[33mAlt-H/J/K/L\e[0m : Move Preview Panel (Left/Down/Up/Right)\n'
+            printf '  \e[33mAlt-Arrows\e[0m  : Resize Preview Panel\n'
             printf '  \e[33mAlt-V\e[0m       : Hide / Show Preview Panel\n'
             printf '  \e[33mAlt-T\e[0m       : Filter Text\n'
             printf '  \e[33mAlt-I\e[0m       : Filter Images Only\n'
@@ -693,6 +747,7 @@ cmd_preview() {
             printf '  \e[33mF1\e[0m          : Toggle this help menu\n'
             printf '  \e[33mAlt-M\e[0m       : Toggle Vim/Standard Keybinds\n\n'
             printf '  \e[33mAlt-H/J/K/L\e[0m : Move Preview (Left/Down/Up/Right)\n'
+            printf '  \e[33mAlt-Arrows\e[0m  : Resize Preview\n'
             printf '  \e[33mAlt-V\e[0m       : Hide / Show Preview\n\n'
             printf '  \e[33mAlt-A\e[0m       : Pin selected item(s)\n'
             printf '  \e[33mAlt-D\e[0m       : Delete selected item(s)\n'
@@ -998,6 +1053,11 @@ show_menu() {
             --bind="alt-l:bg-transform[${SELF@Q} --move-preview right]"
             --bind="alt-v:bg-transform[${SELF@Q} --move-preview hidden]"
             
+            --bind="alt-left:bg-transform[${SELF@Q} --resize-preview left]"
+            --bind="alt-right:bg-transform[${SELF@Q} --resize-preview right]"
+            --bind="alt-up:bg-transform[${SELF@Q} --resize-preview up]"
+            --bind="alt-down:bg-transform[${SELF@Q} --resize-preview down]"
+
             --bind="alt-t:change-query[!${ICON_IMG} !${ICON_PIN} !${ICON_BIN} ]"
             --bind="alt-i:change-query[$ICON_IMG ]"
             --bind="alt-p:change-query[$ICON_PIN ]"
@@ -1158,6 +1218,10 @@ main() {
         --move-preview)
             [[ $# -ge 2 ]] || exit 1
             cmd_move_preview "$2"
+            ;;
+        --resize-preview)
+            [[ $# -ge 2 ]] || exit 1
+            cmd_resize_preview "$2"
             ;;
         --toggle-vim)
             cmd_toggle_vim
