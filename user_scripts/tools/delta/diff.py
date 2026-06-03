@@ -12,40 +12,45 @@ import os
 import shlex
 from pathlib import Path
 
+# The absolute internal delimiter. \x1f (Unit Separator) guarantees zero collision 
+# with spaces, tabs, or standard path characters, while remaining safe for execve.
+DELIM = '\x1f'
+
 # ==========================================
 # 0. Internal FZF API (Tab Completion & File Explorer)
 # ==========================================
-# These functions intercept execution to act as instantaneous FZF backend workers.
 if len(sys.argv) > 1 and sys.argv[1].startswith("--_fzf_"):
 
     def load_frecency_fast() -> dict[str, int]:
         state_file = Path.home() / ".config" / "dusky" / "settings" / "neodiff" / "state.tsv"
         weights = {}
-        if state_file.exists():
-            try:
-                # Optimized native file reading for fast path
-                with open(state_file, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        parts = line.strip().split('\t')
-                        if len(parts) == 2 and parts[0].isdigit():
-                            weights[parts[1]] = int(parts[0])
-            except Exception:
-                pass
+        try:
+            # Optimized native file reading for fast path
+            with open(state_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    # Explicitly use rstrip to preserve trailing spaces in valid filenames
+                    parts = line.rstrip('\n').split(DELIM)
+                    if len(parts) == 2 and parts[0].isdigit():
+                        weights[parts[1]] = int(parts[0])
+        except OSError:
+            pass
         return weights
 
     def get_fzf_action(actions: list[tuple[str, str]]) -> str:
-        # Dynamically picks a safe delimiter for FZF actions to prevent shell injection breaks
+        # Dynamically picks a safe delimiter for FZF actions. 
+        # Excludes ':' as FZF treats it as an open-ended terminator.
         combined = "".join(arg for _, arg in actions if arg)
-        for delim in "!@#$%^&*|~;:/":
-            if delim not in combined:
+        for d in "!@#$%^&*|~/":
+            if d not in combined:
+                safe_delim = d
                 break
         else:
-            delim = "\x1f" # Extreme fallback (Unit Separator)
+            safe_delim = DELIM
         
         parts = []
         for action, arg in actions:
             if arg:
-                parts.append(f"{action}{delim}{arg}{delim}")
+                parts.append(f"{action}{safe_delim}{arg}{safe_delim}")
             else:
                 parts.append(action)
         return "+".join(parts)
@@ -58,10 +63,8 @@ if len(sys.argv) > 1 and sys.argv[1].startswith("--_fzf_"):
         if not query_str:
             query_str = "./"
 
-        # Delegate expansion natively to pathlib, dropping redundant string slicing
         p = Path(query_str).expanduser()
 
-        # Determine target directory to scan based on standard Unix shell logic
         if p.is_dir() and (query_str.endswith('/') or query_str in (".", "..", "~", "./", "../")):
             scan_dir = p
             prefix = query_str
@@ -81,22 +84,22 @@ if len(sys.argv) > 1 and sys.argv[1].startswith("--_fzf_"):
         items = []
         
         try:
-            # Inject ability to cleanly traverse UP a directory natively
             if scan_dir != Path("/"):
                 parent_prefix = prefix + "../" if prefix else "../"
                 items.append((9999999, parent_prefix, f"  \033[1;34m{parent_prefix}\033[0m"))
-                
-            for child in scan_dir.iterdir():
-                if child.name in (".git", ".svn", "node_modules", "__pycache__"):
+            
+            # Using os.scandir for high-performance C-level iteration without full object allocation
+            for entry in os.scandir(scan_dir):
+                if entry.name in {".git", ".svn", "node_modules", "__pycache__"}:
                     continue
                     
-                abs_path = str(child.resolve())
+                abs_path = os.path.abspath(entry.path)
                 w = weights.get(abs_path, 0)
                 score = w * 10
                 
-                display_path = prefix + child.name
+                display_path = prefix + entry.name
                 
-                if child.is_dir():
+                if entry.is_dir():
                     display_path += "/"
                     display = f"  \033[1;34m{display_path}\033[0m"
                     items.append((score + 10000, display_path, display))
@@ -104,14 +107,13 @@ if len(sys.argv) > 1 and sys.argv[1].startswith("--_fzf_"):
                     badge = f" \t\033[3;38;2;249;226;175m {w}\033[0m" if w > 0 else ""
                     display = f"  \033[1;36m{display_path}\033[0m{badge}"
                     items.append((score, display_path, display))
-        except (PermissionError, FileNotFoundError, NotADirectoryError):
+        except OSError:
             pass 
             
         items.sort(key=lambda x: (-x[0], x[1]))
         
-        # FZF Parsing Structure: Score \t RawPath \t DisplayString
         for score, raw_path, display in items:
-            print(f"{score}\t{raw_path}\t{display}")
+            print(f"{score}{DELIM}{raw_path}{DELIM}{display}")
         sys.exit(0)
 
     elif sys.argv[1] == "--_fzf_tab":
@@ -161,7 +163,7 @@ import argparse
 # ==========================================
 # 1. Dependency Management (Arch Native)
 # ==========================================
-def ensure_system_dependencies():
+def ensure_system_dependencies() -> None:
     missing_sys = []
     if not shutil.which("fzf"): missing_sys.append("fzf")
     if not shutil.which("delta"): missing_sys.append("git-delta")
@@ -174,7 +176,6 @@ def ensure_system_dependencies():
         print(f"[\033[93m*\033[0m] Missing Arch dependencies: {', '.join(missing)}")
         print(f"[\033[94m*\033[0m] Elevating to sudo to provision via pacman...")
         try:
-            # Added --needed to prevent redundant database locks and network IO
             subprocess.run(["sudo", "pacman", "-S", "--needed", "--noconfirm"] + missing, check=True)
             print(f"[\033[92m✔\033[0m] Dependencies installed successfully. Restarting engine...\n")
             os.execv(sys.executable, [sys.executable] + sys.argv)
@@ -199,10 +200,11 @@ def load_frecency() -> dict[str, int]:
     weights = {}
     if STATE_FILE.exists():
         try:
-            weights = {parts[1]: int(parts[0]) 
-                       for line in STATE_FILE.read_text(encoding='utf-8').splitlines() 
-                       if len(parts := line.split('\t')) == 2 and parts[0].isdigit()}
-        except Exception:
+            for line in STATE_FILE.read_text(encoding='utf-8').splitlines():
+                parts = line.split(DELIM)
+                if len(parts) == 2 and parts[0].isdigit():
+                    weights[parts[1]] = int(parts[0])
+        except OSError:
             pass
     return weights
 
@@ -215,17 +217,16 @@ def update_frecency(filepath: str) -> None:
     
     tmp_file = STATE_FILE.with_suffix(f".tmp.{os.getpid()}")
     try:
-        # Dropped blocking OS stat() calls for O(1) synchronous I/O writes
         with open(tmp_file, 'w', encoding='utf-8') as f:
             for path, weight in weights.items():
-                f.write(f"{weight}\t{path}\n")
+                f.write(f"{weight}{DELIM}{path}\n")
         tmp_file.replace(STATE_FILE)
-    except Exception as e:
+    except OSError:
         if tmp_file.exists():
             tmp_file.unlink()
 
 # ==========================================
-# 3. FZF Interface (God Mode UI)
+# 3. FZF Interface (Interactive God Mode)
 # ==========================================
 def fuzzy_find_file(prompt: str, border_label: str = " dusky fzf ") -> str | None:
     python_exec = shlex.quote(sys.executable)
@@ -239,8 +240,7 @@ def fuzzy_find_file(prompt: str, border_label: str = " dusky fzf ") -> str | Non
         "--header= 💡 TAB: Auto-Complete │ ENTER: Select/Dive │ ALT-C: Force Exact ",
         "--header-border=line",
         "--info=inline-right", "--tabstop=4",
-        "--delimiter=\t", "--with-nth=3..",
-        # Vibrant Catppuccin Schema matching the pkg reference exactly
+        f"--delimiter={DELIM}", "--with-nth=3..",
         "--color=bg+:#1e1e2e,bg:#11111b,spinner:#f5e0dc,hl:#f38ba8,hl+:#f38ba8",
         "--color=fg:#cdd6f4,fg+:#cdd6f4,header:#89b4fa,info:#cba6f7",
         "--color=pointer:#a6e3a1,marker:#f5e0dc,prompt:#cba6f7,query:#cdd6f4",
@@ -267,15 +267,16 @@ def fuzzy_find_file(prompt: str, border_label: str = " dusky fzf ") -> str | Non
     lines = result.stdout.splitlines()
     if not lines: return None
 
-    query_str = lines[0].strip() if len(lines) > 0 else ""
+    query_str = lines[0] if len(lines) > 0 else ""
     key_pressed = lines[1] if len(lines) > 1 else ""
     list_selection = lines[2] if len(lines) > 2 else ""
 
     actual_path = ""
     if list_selection:
-        parts = list_selection.split('\t')
+        parts = list_selection.split(DELIM)
         if len(parts) >= 2:
-            actual_path = parts[1].strip()
+            # Explicitly avoiding .strip() to preserve trailing spaces from the filesystem
+            actual_path = parts[1]
 
     if key_pressed in ("ctrl-y", "alt-c"):
         final_path = query_str
@@ -299,7 +300,6 @@ def fuzzy_find_file(prompt: str, border_label: str = " dusky fzf ") -> str | Non
 def extract_nvim_previous_state(filepath: str) -> list[str]:
     target_file = Path(filepath).resolve()
 
-    # Utilizes TemporaryDirectory to guarantee 100% leak-proof cleanup
     with tempfile.TemporaryDirectory() as tmpdir:
         lua_path = Path(tmpdir) / "extract.lua"
         dump_path = Path(tmpdir) / "dump.txt"
@@ -325,24 +325,20 @@ def extract_nvim_previous_state(filepath: str) -> list[str]:
         
         vim.cmd("qa!")
         """
-        # Modern pathlib atomic write bypasses the IO buffer race condition entirely
         lua_path.write_text(lua_code, encoding='utf-8')
     
         try:
-            # Replaced --clean with --noplugin. 
-            # This permits the user's undodir configuration to load, but blocks plugins from crashing headless mode.
             subprocess.run(
                 ["nvim", "--headless", "--noplugin", "-c", f"luafile {lua_path.as_posix()}", str(target_file)],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
             )
-            # C-level splitlines avoids double memory allocation of list comprehensions
             return dump_path.read_text(encoding='utf-8').splitlines()
         
         except subprocess.CalledProcessError:
             console.print("[bold red]Failed to execute Neovim API. Check if the file has an active undo history.[/]")
             Prompt.ask("Press Enter to continue", default="")
             return []
-        except FileNotFoundError:
+        except OSError:
             console.print("[bold red]Error:[/] Neovim failed to write the state dump.")
             Prompt.ask("Press Enter to continue", default="")
             return []
@@ -352,15 +348,17 @@ def read_file_lines(filepath: str) -> list[str]:
     if not p.exists() or not p.is_file():
         return []
     
-    # Graceful fallback logic utilizing contiguous C-level memory structures
     try:
         return p.read_text(encoding='utf-8').splitlines()
     except UnicodeDecodeError:
         try:
             return p.read_text(encoding='latin-1').splitlines()
-        except Exception:
-            console.print(f"[bold red]Error:[/] File could not be decoded as text: {filepath}")
+        except Exception as e:
+            console.print(f"[bold red]Error:[/] File could not be decoded as text: {filepath}\n{e}")
             return []
+    except PermissionError:
+        console.print(f"[bold red]Error:[/] Permission denied: {filepath}")
+        return []
 
 # ==========================================
 # 5. Delta Side-by-Side Rendering
@@ -404,7 +402,7 @@ def render_with_delta(old_lines: list[str], new_lines: list[str], title_old: str
 # ==========================================
 # 6. Interactive CLI Menu & Execution Loop
 # ==========================================
-def run_interactive():
+def run_interactive() -> None:
     menu_options = [
         "1. 󰋚  Neovim Undo History Diff (Time Travel)",
         "2. 󰑭  Standard Two-File Diff",
@@ -452,7 +450,7 @@ def run_interactive():
             new_lines = read_file_lines(file2)
             render_with_delta(old_lines, new_lines, file1, file2, file2)
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="NeoDiff - Advanced side-by-side diffing engine.")
     parser.add_argument("files", nargs="*", help="Files to compare (0, 1, or 2 files).")
     parser.add_argument("-n", "--nvim", action="store_true", help="Compare a file against its previous Neovim undo state.")
