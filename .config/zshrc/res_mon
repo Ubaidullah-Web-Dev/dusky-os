@@ -455,3 +455,6 @@ res_mon() {
     unset __RES_MON_DISPLAY
     unset __RES_MON_STATE
 }
+
+# The alias links 'r' directly to 'res_mon' so it behaves identically and passes all arguments
+alias r="res_mon"
