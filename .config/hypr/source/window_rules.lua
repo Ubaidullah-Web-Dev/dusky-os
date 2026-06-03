@@ -554,13 +554,14 @@ hl.window_rule({
     center = true
 })
 
---- 02_openssh_setup.sh ---
+--- ssh setup
 hl.window_rule({
-    name = "02_openssh_setup.sh",
-    match = { class = "^(02_openssh_setup.sh)$" },
+    name = "02_openssh_setup.py",
+    match = {
+        class = "^(02_openssh_setup\\.py)$",
+    },
     float = true,
-    size = {652, 576},
-    center = true
+    size = {945, 731},
 })
 
 --- Clipbard_persistance ---
