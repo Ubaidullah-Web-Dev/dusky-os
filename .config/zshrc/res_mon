@@ -152,9 +152,6 @@ res_mon() {
             } while ((getline line < state_file) > 0)
             close(state_file)
         }
-        
-        # Perfectly mathematically aligned headers mapped to the printf footprint below
-        print "\033[38;5;242mPID       CPU%    MEM%    RAM(MB)     TIME         FREQ     COMMAND\033[0m"
     }
     {
         # Reconstruct the full arguments string for visual payload
@@ -171,19 +168,19 @@ res_mon() {
             sub(/:$/, "", comm)
         }
         
-        # Geometry Formulation
-        vis_pid = "\033[38;5;246m" sprintf("%-8s", $1) "\033[0m"
-        vis_cpu = "\033[38;5;220m" sprintf("%6s", sprintf("%.1f%%", $2)) "\033[0m"
-        vis_mem = "\033[38;5;218m" sprintf("%6s", sprintf("%.1f%%", $3)) "\033[0m"
-        vis_ram = "\033[38;5;213m" sprintf("%10s", sprintf("%.1f", $4/1024.0)) "\033[0m"
-        vis_time = "\033[38;5;114m" sprintf("%11s", $5) "\033[0m"
+        # Geometry Formulation & Vibrant PKG Color Scheme Port
+        vis_pid = "\033[1;38;5;253m" sprintf("%-8s", $1) "\033[0m"
+        vis_cpu = "\033[38;5;208m" sprintf("%6s", sprintf("%.1f%%", $2)) "\033[0m"
+        vis_mem = "\033[38;5;220m" sprintf("%6s", sprintf("%.1f%%", $3)) "\033[0m"
+        vis_ram = "\033[38;5;114m" sprintf("%9s", sprintf("%.1f", $4/1024.0)) "\033[0m"
+        vis_time = "\033[38;5;141m" sprintf("%8s", $5) "\033[0m"
         
-        # SDF State Badge Logic (Matches exact width of 7 padding spaces)
+        # SDF State Badge Logic (Matches exact width of 5 padding spaces)
         w = weights[comm] ? weights[comm] : 0
         if (w > 0) {
-            badge = "\033[3;38;2;249;226;175m " sprintf("%-4d", w) "\033[0m "
+            badge = "\033[3;38;2;249;226;175m " sprintf("%-3d", w) "\033[0m"
         } else {
-            badge = "       "
+            badge = "     "
         }
         
         display_cmd = (ENVIRON["__RES_MON_DISPLAY"] == "clean") ? comm : args
@@ -193,8 +190,8 @@ res_mon() {
         # Allows for exact state mapping regardless of spacing/argument parsing
         pad = sprintf("%150s", "")
         
-        # 2 spaces between all columns perfectly aligns with the header
-        printf "%s  %s  %s  %s  %s  %s  %s%s__COMM__=%s\n", \
+        # Using exact vertical bar boundaries for PKG-style flawless grid alignment
+        printf "%s \033[38;5;238m│\033[0m %s \033[38;5;238m│\033[0m %s \033[38;5;238m│\033[0m %s \033[38;5;238m│\033[0m %s \033[38;5;238m│\033[0m %s \033[38;5;238m│\033[0m %s%s__COMM__=%s\n", \
             vis_pid, vis_cpu, vis_mem, vis_ram, vis_time, badge, vis_cmd, pad, comm
     }'
     
@@ -219,6 +216,11 @@ res_mon() {
             title_metric+=" | Filter: $target_pids"
         fi
 
+        # NEW: Mathematical Header Geometry Construction (Perfect FZF Auto-Alignment)
+        local visual_header=$(printf "\033[1;37mPID     \033[0m \033[38;5;238m│\033[0m \033[38;5;242m  CPU%%\033[0m \033[38;5;238m│\033[0m \033[38;5;242m  MEM%%\033[0m \033[38;5;238m│\033[0m \033[38;5;242m  RAM(MB)\033[0m \033[38;5;238m│\033[0m \033[38;5;242m    TIME\033[0m \033[38;5;238m│\033[0m \033[38;5;242mFREQ \033[0m \033[38;5;238m│\033[0m \033[38;5;242m COMMAND\033[0m")
+        local info_header=" ❯ Live Mode | Refresh: ${interval}s | [CTRL-L] Toggle Watch | [ENTER] Actions | [ESC] Quit/Back "
+        local full_header="${info_header}"$'\n'"${visual_header}"
+
         # Reset cursor to top-left to seamlessly paint 100% height over previous frames
         (( $+commands[tput] )) && tput cup 0 0
         
@@ -226,9 +228,9 @@ res_mon() {
             --ansi
             --no-sort                       # Respect ps sorting (top CPU/RAM stays top)
             --layout=reverse                # Prompt at the top, list below
-            --header-lines=1                # Pin the AWK column headers
-            --freeze-left=6                 # FZF 0.73+: Keeps metrics strictly pinned on horizontal scroll!
             --track --id-nth=1              # Lock the selection cursor to the PID as it moves!
+            --no-hscroll                    # Strictly prevent shattering horizontal scroll
+            --ellipsis=''                   # Cleanly cut off overgrown command strings
             --bind "start,every(${interval}):reload-sync:${data_cmd}"
             --bind "ctrl-r:reload-sync:${data_cmd}"
             
@@ -242,14 +244,17 @@ res_mon() {
             --header-border=horizontal
             --list-border=none
             --info=inline-right
-            --prompt=" ⚡ ${title_metric} > "
-            --header=" ❯ Live Mode | Refresh: ${interval}s | [CTRL-L] Toggle Watch | [ENTER] Actions | [ESC] Quit/Back "
-            --pointer="▶"
+            --prompt=" ⚡ ${title_metric} ❯ "
+            --header="$full_header"
+            --header-first
+            --pointer=""
             --marker="✓"
-            --color='bg+:#313244,bg:#1e1e2e,spinner:#f5e0dc,hl:#f38ba8'
-            --color='fg:#cdd6f4,info:#cba6f7,pointer:#f5e0dc'
-            --color='marker:#f5e0dc,fg+:#cdd6f4,prompt:#87d75f,hl+:#f38ba8'
-            --color='header:#87d75f,border:#585b70,label:#89b4fa'
+            
+            # Adopted exact PKG color schema (Darker BG, vibrant accents)
+            --color="bg+:#1e1e2e,bg:#11111b,spinner:#f5e0dc"
+            --color="fg:#cdd6f4,fg+:#cdd6f4,header:#89b4fa,info:#cba6f7"
+            --color="pointer:#a6e3a1,marker:#f5e0dc,prompt:#cba6f7"
+            --color="hl:#f38ba8,hl+:#f38ba8,border:#585b70,label:#a6e3a1"
             
             # Using 100% forces FZF to defer smcup/rmcup to our custom wrapper, preventing terminal flashing
             --height=100%
@@ -322,7 +327,10 @@ res_mon() {
                 --border-label=" 󰢱 Action: PID $target_pid ($target_comm) " \
                 --border-label-pos=center \
                 --prompt=" " \
-                --color='bg+:#313244,bg:#1e1e2e,hl:#f38ba8,fg+:#cdd6f4,header:#89b4fa' \
+                --color="bg+:#1e1e2e,bg:#11111b,spinner:#f5e0dc" \
+                --color="fg:#cdd6f4,fg+:#cdd6f4,header:#89b4fa,info:#cba6f7" \
+                --color="pointer:#a6e3a1,marker:#f5e0dc,prompt:#cba6f7" \
+                --color="hl:#f38ba8,hl+:#f38ba8,border:#585b70,label:#a6e3a1" \
                 --info=hidden \
                 --layout=reverse \
                 --height=100% \
