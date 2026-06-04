@@ -940,9 +940,11 @@ def launch_tui() -> None:
         for line in output_lines[1:]:
             # Strip ANSI escape sequences to reliably get the ID
             clean_line = re.sub(r'\x1b\[[0-9;]*m', '', line)
-            sid = clean_line.split()[0].strip()
-            if sid in snap_map:
-                selected_ids.append(sid)
+            parts = clean_line.split()
+            if parts:  # Defensively prevent IndexError against malformed/empty FZF returns
+                sid = parts[0].strip()
+                if sid in snap_map:
+                    selected_ids.append(sid)
 
         if not selected_ids:
             continue
