@@ -123,10 +123,10 @@ if [[ "$MODE" == "AGGRESSIVE" ]] || [[ "$MODE" == "AUTO" && SYSTEM_RAM_GB -ge 30
 else
     EXPECTED_MODE="STRICT_RAM_SAVINGS (<32GB)"
     EXPECTED_SWAPPINESS=180        # Force immediate compression of inactive RAM (User Override)
-    EXPECTED_VFS_PRESSURE=50       # Hoard metadata to prevent NVMe latency stalls (Forensic AI fix)
+    EXPECTED_VFS_PRESSURE=150      # Aggressively reclaim inode/dentry VFS caches to lower idle RAM
     EXPECTED_SCALE_FACTOR=50       # 0.5% Emergency Buffer (40MB on 8GB RAM). Prevents UI direct reclaim stall.
-    EXPECTED_DIRTY_BYTES=268435456 
-    EXPECTED_DIRTY_BG_BYTES=67108864
+    EXPECTED_DIRTY_BYTES=134217728 # 128MB max. Prevents massive file transfers from bloating RAM.
+    EXPECTED_DIRTY_BG_BYTES=33554432 # 32MB bg threshold. Flushes data to disk sooner to free memory.
     EXPECTED_MGLRU_TTL=250         # Perfect CPU/ZRAM thrash shield balance.
 fi
 
@@ -191,8 +191,9 @@ vm.max_map_count = ${EXPECTED_MAX_MAP_COUNT}
 # --- MODERN NETWORK STACK (BBR + CAKE) ---
 net.ipv4.tcp_congestion_control = bbr
 net.core.default_qdisc = cake
-net.ipv4.tcp_rmem = 4096 65536 8388608
-net.ipv4.tcp_wmem = 4096 65536 8388608
+net.ipv4.tcp_rmem = 4096 65536 4194304
+net.ipv4.tcp_wmem = 4096 65536 4194304
+net.core.netdev_max_backlog = 1000
 
 # --- eBPF SECURITY & MEMORY COMPACTION ---
 net.core.bpf_jit_enable = 1
@@ -272,7 +273,7 @@ fi
 
 log_success "Verified live kernel values:"
 log_success "  vm.swappiness = ${actual_swappiness} (Ideal ZRAM Reclaim)"
-log_success "  vm.vfs_cache_pressure = ${actual_vfs} (Slab Hoarding Active)"
+log_success "  vm.vfs_cache_pressure = ${actual_vfs} (Slab Reclaim Active)"
 log_success "  vm.watermark_scale_factor = ${actual_scale} (0.5% Safe Direct Reclaim Buffer)"
 log_success "  vm.compaction_proactiveness = ${actual_compaction}"
 log_success "  net.core.bpf_jit_harden = ${actual_bpf} (Security Disabled / RAM Recovered)"

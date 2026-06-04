@@ -110,9 +110,9 @@ if [[ "$MODE" == "AGGRESSIVE" ]] || [[ "$MODE" == "AUTO" && SYSTEM_RAM_GB -ge 30
     EXPECTED_MGLRU_TTL=1000
 else
     EXPECTED_MODE="STRICT_RAM_SAVINGS (<32GB)"
-    EXPECTED_MAX_PTES=206           # Enforces extreme density, killing RAM waste.
-    EXPECTED_SCAN_SLEEP=15000      # 15s wakeups. Perfect deep-sleep CPU balance.
-    EXPECTED_PAGES_TO_SCAN=12288   # 48MB burst defrag per cycle. No UI stutters.
+    EXPECTED_MAX_PTES=180          # Lower value results in better ram savings but at the cost of cpu.
+    EXPECTED_SCAN_SLEEP=60000      # 60s wakeups. Reduces idle CPU overhead to preserve resources.
+    EXPECTED_PAGES_TO_SCAN=4096    # Restrict daemon to limit aggressive zero-fill background overhead.
     EXPECTED_ENABLED="madvise"     # Only give THP to apps that explicitly ask.
     EXPECTED_DEFRAG="defer+madvise"
     EXPECTED_SHMEM="within_size"
@@ -154,9 +154,9 @@ w /sys/kernel/mm/transparent_hugepage/hugepages-256kB/shmem_enabled - - - - neve
 w /sys/kernel/mm/transparent_hugepage/hugepages-512kB/shmem_enabled - - - - never
 w /sys/kernel/mm/transparent_hugepage/hugepages-1024kB/shmem_enabled - - - - never
 
-# TIER 3: Legacy / Large Mappings (2MB Global Always Enabled)
+# TIER 3: Legacy / Large Mappings (Strict Madvise to Eradicate 2MB Base Bloat)
 w /sys/kernel/mm/transparent_hugepage/hugepages-128kB/enabled - - - - madvise
-w /sys/kernel/mm/transparent_hugepage/hugepages-2048kB/enabled - - - - always
+w /sys/kernel/mm/transparent_hugepage/hugepages-2048kB/enabled - - - - madvise
 w /sys/kernel/mm/transparent_hugepage/hugepages-128kB/shmem_enabled - - - - inherit
 w /sys/kernel/mm/transparent_hugepage/hugepages-2048kB/shmem_enabled - - - - inherit
 
@@ -254,7 +254,7 @@ verify_mthp 512 enabled never
 verify_mthp 1024 enabled never
 # Verify Tier 3
 verify_mthp 128 enabled madvise
-verify_mthp 2048 enabled always
+verify_mthp 2048 enabled madvise
 
 for sz in 16 32 256 512 1024; do verify_mthp "$sz" shmem_enabled never; done
 for sz in 64 128 2048; do verify_mthp "$sz" shmem_enabled inherit; done
@@ -279,8 +279,8 @@ log_success "  enabled = [${EXPECTED_ENABLED}]"
 log_success "  defrag = [${EXPECTED_DEFRAG}]"
 log_success "  shmem_enabled = [${EXPECTED_SHMEM}]"
 log_success "  max_ptes_none = ${actual_ptes} (Strict RAM Cap)"
-log_success "  scan_sleep_millisecs = ${actual_scan_sleep} (15s Deep Sleep CPU Wakeups)"
-log_success "  pages_to_scan = ${actual_pages_to_scan} (48MB Optimized Defag Burst)"
+log_success "  scan_sleep_millisecs = ${actual_scan_sleep} (Deep Sleep CPU Wakeups)"
+log_success "  pages_to_scan = ${actual_pages_to_scan} (Optimized Defag Burst)"
 log_success "  MGLRU enabled = 0x0007 (Hardware Lock Active)"
 log_success "  MGLRU min_ttl_ms = ${EXPECTED_MGLRU_TTL} (ZRAM Thrash Shield)"
 log_success "  mTHP Matrix = Exhaustively verified across all 8 supported hardware tiers."
