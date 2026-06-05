@@ -1,19 +1,13 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Arch Linux: Universal Wayland SSO Master (Platinum Edition)
+# Arch Linux: Universal Wayland SSO Master (Platinum Edition v2)
 # Target: Hyprland, UWSM, Greetd, Tuigreet, GNOME Keyring, Udiskie
 # Kernel: 7.0.10+ | Systemd: 260+ | Bash: 5.3.9+
 # ==============================================================================
 
 set -euo pipefail
 
-# --- 1. Privilege Escalation (Preserving Arguments) ---
-if [[ "${EUID}" -ne 0 ]]; then
-    echo "CRITICAL: This script requires root privileges. Elevating..."
-    exec sudo "$0" "$@"
-fi
-
-# --- 2. CLI Argument Parsing ---
+# --- 1. Pre-Flight Help Scanner (No Root Required) ---
 show_help() {
     cat << EOF
 Usage: ${0##*/} [OPTIONS]
@@ -34,13 +28,39 @@ Example:
 EOF
 }
 
+for arg in "$@"; do
+    if [[ "$arg" == "-h" || "$arg" == "--help" ]]; then
+        show_help
+        exit 0
+    fi
+done
+
+# --- 2. Privilege Escalation (Preserving Arguments) ---
+if [[ "${EUID}" -ne 0 ]]; then
+    echo "CRITICAL: This script requires root privileges. Elevating..."
+    exec sudo "$0" "$@"
+fi
+
+# --- 3. Hardened CLI Argument Parsing ---
 MODE="auto"
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
-        -m|--mode) MODE="$2"; shift ;;
-        -h|--help) show_help; exit 0 ;;
-        *) echo "FATAL: Unknown parameter passed: $1"; show_help; exit 1 ;;
+        -m|--mode) 
+            # Safely check if the next argument exists and doesn't start with '-'
+            if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
+                MODE="$2"
+                shift
+            else
+                echo "FATAL: --mode requires a valid argument (auto, unencrypted, luks, autologin)."
+                exit 1
+            fi
+            ;;
+        *) 
+            echo "FATAL: Unknown parameter passed: $1"
+            show_help
+            exit 1 
+            ;;
     esac
     shift
 done
@@ -50,7 +70,7 @@ if [[ "$MODE" != "auto" && "$MODE" != "unencrypted" && "$MODE" != "luks" && "$MO
     exit 1
 fi
 
-# --- 3. Environment Validation ---
+# --- 4. Environment Validation ---
 REAL_USER="${SUDO_USER:-}"
 if [[ -z "$REAL_USER" ]] || [[ "$REAL_USER" == "root" ]]; then
     REAL_USER=$(awk -F: '$3 >= 1000 && $3 < 60000 {print $1; exit}' /etc/passwd)
@@ -64,7 +84,7 @@ fi
 USER_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
 echo "Targeting user configuration for: $REAL_USER"
 
-# --- 4. Topology & Encryption Auto-Detection ---
+# --- 5. Topology & Encryption Auto-Detection ---
 # Safely strips BTRFS subvolume tags (e.g., [/@]) to prevent lsblk parsing crashes
 is_root_encrypted() {
     local root_dev raw_dev
@@ -90,7 +110,7 @@ else
     fi
 fi
 
-# --- 5. Core Dependency Enforcement ---
+# --- 6. Core Dependency Enforcement ---
 echo "Verifying core Wayland and SSO dependencies..."
 pacman -S --needed --noconfirm greetd greetd-tuigreet uwsm udiskie libsecret gnome-keyring
 
@@ -102,7 +122,9 @@ if [[ "$ACTIVE_MODE" == "luks" ]]; then
         BUILD_DIR="${USER_HOME}/.cache/aur-build-pam"
         rm -rf "$BUILD_DIR"
         mkdir -p "$BUILD_DIR"
-        chown "$REAL_USER:$REAL_USER" "$BUILD_DIR"
+        
+        # POSIX compliant automatic primary group resolution
+        chown -R "$REAL_USER": "$BUILD_DIR"
         
         # Demote privileges purely to compile the source code safely
         sudo -u "$REAL_USER" bash -c "
@@ -118,7 +140,7 @@ if [[ "$ACTIVE_MODE" == "luks" ]]; then
     fi
 fi
 
-# --- 6. Architecting UWSM & Tuigreet ---
+# --- 7. Architecting UWSM & Tuigreet ---
 echo "Deploying Greetd, Tuigreet, and UWSM Wrappers..."
 
 mkdir -p /usr/local/bin
@@ -165,7 +187,7 @@ if getent passwd greeter >/dev/null; then
     chown -R greeter:greeter /etc/greetd
 fi
 
-# --- 7. The Platinum PAM Stack ---
+# --- 8. The Platinum PAM Stack ---
 echo "Configuring PAM stack for automated Keyring decryption..."
 cp /etc/pam.d/greetd "/etc/pam.d/greetd.bak.$(date +%s)" 2>/dev/null || true
 
@@ -200,7 +222,7 @@ session    optional     pam_gnome_keyring.so auto_start
 EOF
 fi
 
-# --- 8. Systemd Service Overrides ---
+# --- 9. Systemd Service Overrides ---
 echo "Applying Systemd overrides for Kernel Keyring inheritance..."
 mkdir -p /etc/systemd/system/greetd.service.d
 cat > /etc/systemd/system/greetd.service.d/keyringmode.conf << 'EOF'
@@ -208,7 +230,7 @@ cat > /etc/systemd/system/greetd.service.d/keyringmode.conf << 'EOF'
 KeyringMode=inherit
 EOF
 
-# --- 9. Automating Udiskie for External Drives ---
+# --- 10. Automating Udiskie for External Drives ---
 echo "Writing udiskie YAML configuration..."
 mkdir -p "${USER_HOME}/.config/udiskie"
 cat > "${USER_HOME}/.config/udiskie/config.yml" << 'EOF'
@@ -218,9 +240,10 @@ program_options:
   notify: true
   tray: auto
 EOF
-chown -R "$REAL_USER":"$REAL_USER" "${USER_HOME}/.config/udiskie"
+# POSIX compliant automatic primary group resolution
+chown -R "$REAL_USER": "${USER_HOME}/.config/udiskie"
 
-# --- 10. Service Enablement ---
+# --- 11. Service Enablement ---
 echo "Enabling boot services..."
 if systemd-detect-virt -q --chroot; then
     systemctl enable greetd.service --force
