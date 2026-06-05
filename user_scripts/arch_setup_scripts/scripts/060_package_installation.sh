@@ -80,7 +80,7 @@ declare -ar pkgs_productivity=(
 
 # Group 14: Limine and snapshot
 declare -ar pkgs_btrfs_snapshot=(
- "snapper" "tuned"
+ "snapper"
 )
 
 declare -ar GROUP_LABELS=(
