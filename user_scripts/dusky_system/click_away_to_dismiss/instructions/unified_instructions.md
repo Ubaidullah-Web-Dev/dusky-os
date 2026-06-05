@@ -5,6 +5,9 @@
 
 ## 🧠 1. Architectural Concept: Dynamic Runtime Symbol Resolution & Concurrency
 
+this is a static path and will always be this, with this exact name!
+btw the path to the file generated is this ~/user_scripts/dusky_system/click_away_to_dismiss/libwaylandgrab.so
+
 In traditional setups, separate libraries are built for GTK3 and GTK4 because they use different APIs to extract the underlying Wayland surface pointer:
 * **GTK3:** `gtk_widget_get_window` -> `gdk_window_get_display` -> `gdk_wayland_window_get_wl_surface`
 * **GTK4:** `gtk_native_get_surface` -> `gdk_surface_get_display` -> `gdk_wayland_surface_get_wl_surface`
