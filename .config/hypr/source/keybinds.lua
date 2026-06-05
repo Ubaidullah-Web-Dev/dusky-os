@@ -219,12 +219,6 @@ hl.bind(
     { description = "Screen On DPMS", locked = true, submap_universal = true }
 )
 
--- --- Screen Recorder ---
-hl.bind(
-    "ALT + F9",
-    hl.dsp.exec_cmd("~/user_scripts/screen_recorder/toggle_record.sh"),
-    { description = "Screen Recorder", submap_universal = true }
-)
 
 
 -- --- Waybar Toggle ---
@@ -448,6 +442,14 @@ hl.bind(
     "SHIFT + CTRL + ALT + space",
     hl.dsp.exec_cmd("pkill rofi; " .. dusky_scripts .. "rofi/dusky_rofi_screenshot.sh"),
     { description = "Dusky Screenshoter", submap_universal = true }
+)
+
+
+-- --- Screen Recorder ---
+hl.bind(
+    "SUPER + CTRL + S",
+    hl.dsp.exec_cmd(dusky_scripts .. "screen_recorder/toggle_record.sh"),
+    { description = "Screen Recorder", submap_universal = true }
 )
 
 
