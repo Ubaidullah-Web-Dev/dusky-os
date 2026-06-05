@@ -2,6 +2,7 @@
 """
 ===============================================================================
 DUSKY TUI: GPU SCREEN RECORDER SCHEMA (NATIVE INI)
+Targets: Pure Wayland | Arch Linux | GPU Screen Recorder 5.13+
 ===============================================================================
 """
 
@@ -21,6 +22,14 @@ DEFAULT_MODE        = "auto"
 THEME_FILE          = "~/.config/matugen/generated/dusky_tui.json"
 ENABLE_USER_PRESETS = True
 USER_PRESETS_TAB    = "Profiles"
+
+GLOBAL_POPUP = {
+    "title": "Pure Wayland Mode",
+    "message": "This configuration is strictly optimized for Hyprland/Wayland. Legacy X11 capture methods have been removed.",
+    "level": "info",
+    "require_confirm": False,
+    "cancel_quits": False
+}
 
 # =============================================================================
 # 3. TABS (STRICTLY ONE WORD)
@@ -47,10 +56,10 @@ SCHEMA = {
             key="window",
             scope="DEFAULT",
             type_="cycle",
-            default="screen",
-            options=["screen", "portal", "region", "focused"],
+            default="region",
+            options=["screen", "portal", "region"],
             group="Target",
-            extended_help="**Capture Target** (`-w`)\n\n`screen` captures the primary Wayland output. `portal` uses the native Wayland picker. `region` freezes the screen to capture a specific area. `focused` is strictly for XWayland or X11."
+            extended_help="**Capture Target** (`-w`)\n\n`screen` captures the primary Wayland output. `portal` uses the native Wayland picker (xdg-desktop-portal). `region` utilizes Slurp to draw a custom capture area on your monitor."
         ),
         ConfigItem(
             label="Region",
@@ -59,7 +68,7 @@ SCHEMA = {
             type_="string",
             default="",
             group="Target",
-            extended_help="**Region String**\n\nSpecify the exact coordinates (e.g., `1280x720+100+50`) when Source is set to `region`. If left blank, Slurp will automatically draw on screen."
+            extended_help="**Region String**\n\nSpecify exact coordinates (e.g., `1280x720+100+50`) when Source is set to `region`. If left completely blank, Slurp will automatically execute allowing you to draw the capture zone on your screen."
         ),
         ConfigItem(
             label="FPS",
@@ -69,9 +78,9 @@ SCHEMA = {
             default=60,
             min_val=1,
             max_val=360,
-            step=5,
+            step=1,
             group="Playback",
-            extended_help="**Frame Rate** (`-f`)\n\nTarget maximum frames per second for the recording."
+            extended_help="**Frame Rate** (`-f`)\n\nTarget maximum frames per second for the video recording."
         ),
         ConfigItem(
             label="Cursor",
@@ -81,7 +90,7 @@ SCHEMA = {
             default="yes",
             options=["yes", "no"],
             group="Playback",
-            extended_help="**Show Cursor** (`-cursor`)\n\nToggle whether the mouse cursor is visible in the final video output."
+            extended_help="**Show Cursor** (`-cursor`)\n\nToggle whether your mouse cursor is visible in the final output file."
         ),
     ],
 
@@ -97,7 +106,17 @@ SCHEMA = {
             default="gpu",
             options=["gpu", "cpu"],
             group="Hardware",
-            extended_help="**Encoder Device** (`-encoder`)\n\n`gpu` uses NVENC/VAAPI/AMF for zero-overhead capture. `cpu` forces software encoding (only compatible with H264)."
+            extended_help="**Encoder Device** (`-encoder`)\n\n`gpu` strictly forces NVENC/VAAPI/AMF for zero-overhead capture. `cpu` falls back to software encoding (only compatible with the H264 codec)."
+        ),
+        ConfigItem(
+            label="Power",
+            key="low_power",
+            scope="DEFAULT",
+            type_="cycle",
+            default="no",
+            options=["yes", "no"],
+            group="Hardware",
+            extended_help="**Low Power Mode** (`-low-power`)\n\n(AMD GPUs Only) Allows the GPU to enter a lower power state during recording. Best used alongside the 'content' Timing mode."
         ),
         ConfigItem(
             label="Codec",
@@ -118,17 +137,17 @@ SCHEMA = {
                 "Vulkan HEVC 10-bit", "Vulkan AV1 10-bit", "Vulkan AV1 HDR"
             ],
             group="Format",
-            extended_help="**Video Codec** (`-k`)\n\nVulkan codecs are highly recommended for NVIDIA users to prevent the 'cuda p2 state' bug where the GPU is heavily downclocked during gaming."
+            extended_help="**Video Codec** (`-k`)\n\nVulkan codecs are highly recommended for NVIDIA Wayland users to prevent the 'cuda p2 state' bug where the GPU heavily downclocks during gaming."
         ),
         ConfigItem(
             label="Quality",
             key="quality",
             scope="DEFAULT",
-            type_="cycle",
+            type_="string",
             default="very_high",
-            options=["ultra", "very_high", "high", "medium", "low"],
+            options=["ultra", "very_high", "high", "medium", "low", "40000", "80000"],
             group="Format",
-            extended_help="**Quality Preset** (`-q`)\n\nSets the visual fidelity target. Ultra uses drastically more storage space."
+            extended_help="**Quality / Bitrate** (`-q`)\n\nIf Bitrate is 'auto/vbr', select a text preset (e.g., 'very_high'). If Bitrate is 'cbr', you MUST type a raw numeric value in kbps (e.g., '40000')."
         ),
         ConfigItem(
             label="Bitrate",
@@ -138,7 +157,7 @@ SCHEMA = {
             default="auto",
             options=["auto", "qp", "vbr", "cbr"],
             group="Format",
-            extended_help="**Bitrate Mode** (`-bm`)\n\nCBR (Constant Bitrate) is strongly recommended when using the Replay Buffer to maintain predictable RAM usage."
+            extended_help="**Bitrate Mode** (`-bm`)\n\n`cbr` (Constant Bitrate) is heavily recommended when using the Replay Buffer to strictly govern RAM usage and prevent OOM crashes."
         ),
         ConfigItem(
             label="Timing",
@@ -148,8 +167,8 @@ SCHEMA = {
             default="vfr",
             options=["vfr", "cfr", "content"],
             group="Format",
-            warning_msg="Content mode requires X11 or Source set to 'portal' on Wayland.",
-            extended_help="**Frame Rate Mode** (`-fm`)\n\n`content` syncs the video to captured content updates to minimize idle resource usage, but only natively functions on X11."
+            warning_msg="Content mode natively requires X11 or Source set to 'portal' on Wayland.",
+            extended_help="**Frame Rate Mode** (`-fm`)\n\n`content` syncs the video exactly to captured screen updates to minimize idle resource usage, but requires 'portal' on Wayland."
         ),
         ConfigItem(
             label="Container",
@@ -159,7 +178,7 @@ SCHEMA = {
             default="mp4",
             options=["mp4", "mkv", "flv", "webm"],
             group="Output",
-            extended_help="**Container Format** (`-c`)\n\nMKV is safer against crashes/corruption. MP4 has broader compatibility."
+            extended_help="**Container Format** (`-c`)\n\n`mkv` is fundamentally safer against system crashes and file corruption. `mp4` possesses broader drag-and-drop web compatibility."
         ),
         ConfigItem(
             label="Directory",
@@ -168,7 +187,7 @@ SCHEMA = {
             type_="string",
             default="~/Videos",
             group="Output",
-            extended_help="**Output Directory** (`-o` / `-ro`)\n\nDestination folder for the final saved video files."
+            extended_help="**Output Directory** (`-o`)\n\nThe absolute destination folder. The backend shell wrapper will automatically enforce tilde (`~`) expansion."
         ),
     ],
 
@@ -183,7 +202,7 @@ SCHEMA = {
             type_="string",
             default="default_output",
             group="Source",
-            extended_help="**Audio Input** (`-a`)\n\nUse `default_output` for desktop audio, or `default_input` for microphone. You can pipe them together (`default_output|default_input`) for multitrack recording."
+            extended_help="**Audio Routing** (`-a`)\n\nUse `default_output` for desktop audio, or `default_input` for microphone. You can pipe them together (`default_output|default_input`) for multitrack."
         ),
         ConfigItem(
             label="Codec",
@@ -193,21 +212,24 @@ SCHEMA = {
             default="opus",
             options=["opus", "aac", "flac"],
             group="Encoding",
-            extended_help="**Audio Codec** (`-ac`)\n\nOpus is the default and most efficient codec for MP4/MKV containers."
+            extended_help="**Audio Codec** (`-ac`)\n\n`opus` is the modern default and vastly superior codec for MP4/MKV containers."
         ),
         ConfigItem(
             label="Kbps",
             key="audio_bitrate",
             scope="DEFAULT",
-            type_="string",
-            default="128",
+            type_="int",
+            default=128,
+            min_val=0,
+            max_val=512,
+            step=32,
             group="Encoding",
-            extended_help="**Audio Bitrate** (`-ab`)\n\nBitrate in kbps. Use `0` for automatic."
+            extended_help="**Audio Bitrate** (`-ab`)\n\nBitrate in kbps. Use `0` to allow the encoder to select the optimal automatic bitrate."
         ),
     ],
 
     # -------------------------------------------------------------------------
-    # TAB 3: REPLAY (HYBRID FOLDER IMPLEMENTATION)
+    # TAB 3: REPLAY (HYBRID FOLDER)
     # -------------------------------------------------------------------------
     3: [
         ConfigItem(
@@ -222,7 +244,7 @@ SCHEMA = {
             is_parent=True,
             expanded=True,
             group="Buffer",
-            extended_help="**Replay Buffer Size** (`-r`)\n\nRolling buffer duration in seconds. Set to `0` to disable Instant Replay."
+            extended_help="**Replay Buffer Size** (`-r`)\n\nRolling buffer duration in seconds. Set to `0` to completely disable the Instant Replay daemon."
         ),
         ConfigItem(
             label="Storage",
@@ -232,7 +254,7 @@ SCHEMA = {
             default="ram",
             options=["ram", "disk"],
             parent_ref="replay_buffer",
-            extended_help="**Storage Medium** (`-replay-storage`)\n\nStoring in RAM is faster but consumes system memory. Storing on disk saves RAM but constantly writes to your SSD."
+            extended_help="**Storage Medium** (`-replay-storage`)\n\nRAM is significantly faster but eats system memory. Disk saves RAM but continuously thrashes your SSD lifespan."
         ),
         ConfigItem(
             label="Restart",
@@ -242,7 +264,7 @@ SCHEMA = {
             default="no",
             options=["yes", "no"],
             parent_ref="replay_buffer",
-            extended_help="**Restart On Save** (`-restart-replay-on-save`)\n\nIf 'yes', clears the rolling buffer immediately after a clip is saved."
+            extended_help="**Restart On Save** (`-restart-replay-on-save`)\n\nIf enabled, completely clears the rolling buffer immediately after a clip is dumped to storage."
         ),
         ConfigItem(
             label="Folders",
@@ -252,7 +274,7 @@ SCHEMA = {
             default="no",
             options=["yes", "no"],
             parent_ref="replay_buffer",
-            extended_help="**Organize By Date** (`-df`)\n\nPlaces saved replays into date-based subdirectories."
+            extended_help="**Organize By Date** (`-df`)\n\nForces saved replays into dynamically generated date-based subdirectories."
         ),
     ],
 
@@ -261,12 +283,12 @@ SCHEMA = {
     # -------------------------------------------------------------------------
     4: [
         ConfigItem(
-            label="Vulkan",
+            label="Nvidia",
             key="preset_vulkan",
             scope="DEFAULT",
             type_="preset",
             default=None,
-            group="System",
+            group="Overrides",
             preset_payload={
                 "encoder": "gpu",
                 "codec": "hevc_vulkan",
@@ -274,7 +296,24 @@ SCHEMA = {
                 "bitrate_mode": "auto",
                 "frame_mode": "vfr"
             },
-            extended_help="**Vulkan Override**\n\nInstantly configures the settings to use the experimental Vulkan HEVC codec, circumventing the NVIDIA CUDA downclocking bug."
+            popup_message="Vulkan override applied. Verify compatibility with your Nvidia drivers.",
+            extended_help="**Vulkan Override**\n\nInstantly configures the pipeline to use the experimental Vulkan HEVC codec, bypassing the notorious Nvidia CUDA downclock bug."
+        ),
+        ConfigItem(
+            label="Replay",
+            key="preset_replay_safe",
+            scope="DEFAULT",
+            type_="preset",
+            default=None,
+            group="Overrides",
+            preset_payload={
+                "quality": "40000",
+                "bitrate_mode": "cbr",
+                "replay_buffer": 60,
+                "replay_storage": "ram"
+            },
+            warning_msg="This will force CBR (Constant Bitrate) and modify your buffer sizes.",
+            extended_help="**Stable Replay Preset**\n\nConfigures the application for predictable Instant Replay usage by forcing Constant Bitrate (CBR) to strictly manage RAM consumption."
         ),
         ConfigItem(
             label="Reset",
@@ -283,11 +322,11 @@ SCHEMA = {
             type_="preset",
             default=None,
             group="System",
-            confirm_message="Are you sure you want to reset all GPU Screen Recorder settings back to default?",
+            confirm_message="Are you absolutely sure you want to purge all configuration data and factory reset?",
             preset_payload={
                 "__ALL_DEFAULTS__": True
             },
-            extended_help="**Factory Reset**\n\nReverts all modifications and restores default values across all tabs."
+            extended_help="**Nuclear Factory Reset**\n\nReverts every single configuration key across all tabs back to its programmed default state."
         ),
     ]
 }
