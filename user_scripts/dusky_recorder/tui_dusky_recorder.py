@@ -6,6 +6,7 @@ Targets: Pure Wayland | Arch Linux | GPU Screen Recorder 5.13+
 ===============================================================================
 """
 
+import subprocess
 from python.frontend.core_types import ConfigItem
 
 # =============================================================================
@@ -22,10 +23,50 @@ DEFAULT_MODE        = "auto"
 THEME_FILE          = "~/.config/matugen/generated/dusky_tui.json"
 ENABLE_USER_PRESETS = True
 USER_PRESETS_TAB    = "Profiles"
-# NOTE: GLOBAL_POPUP completely removed per user request for strict Wayland use.
 
 # =============================================================================
-# 3. TABS (STRICTLY ONE WORD)
+# 3. DYNAMIC HARDWARE DISCOVERY
+# =============================================================================
+def fetch_audio_devices():
+    """Polls gpu-screen-recorder for active hardware to populate TUI Pickers."""
+    out_opts = ["none", "default_output"]
+    out_hints = ["No Output", "Default Desktop Audio"]
+    in_opts = ["none", "default_input"]
+    in_hints = ["No Input", "Default Microphone"]
+    
+    try:
+        # Run command with strict timeout to prevent UI blocking if GSR hangs
+        res = subprocess.run(
+            ["gpu-screen-recorder", "--list-audio-devices"], 
+            capture_output=True, text=True, timeout=1.5, check=False
+        )
+        
+        for line in res.stdout.strip().split('\n'):
+            if '|' not in line: 
+                continue
+                
+            dev_id, dev_desc = line.split('|', 1)
+            
+            if not dev_id or dev_id in ('default_output', 'default_input'): 
+                continue
+            if not dev_desc:
+                dev_desc = dev_id
+                
+            if 'output' in dev_id:
+                out_opts.append(dev_id)
+                out_hints.append(dev_desc)
+            elif 'input' in dev_id:
+                in_opts.append(dev_id)
+                in_hints.append(dev_desc)
+    except Exception:
+        pass # Gracefully fall back to 'none' and 'default' if parsing fails
+        
+    return out_opts, out_hints, in_opts, in_hints
+
+OUT_OPTS, OUT_HINTS, IN_OPTS, IN_HINTS = fetch_audio_devices()
+
+# =============================================================================
+# 4. TABS (STRICTLY ONE WORD)
 # =============================================================================
 TABS = [
     "Capture",
@@ -36,7 +77,7 @@ TABS = [
 ]
 
 # =============================================================================
-# 4. SCHEMA DEFINITION
+# 5. SCHEMA DEFINITION
 # =============================================================================
 SCHEMA = {
 
@@ -214,17 +255,30 @@ SCHEMA = {
     ],
 
     # -------------------------------------------------------------------------
-    # TAB 2: AUDIO
+    # TAB 2: AUDIO (DYNAMIC ROUTING)
     # -------------------------------------------------------------------------
     2: [
         ConfigItem(
-            label="Input",
-            key="audio",
+            label="Output",
+            key="audio_output",
             scope="DEFAULT",
-            type_="string",
+            type_="picker",
             default="default_output",
-            group="Source",
-            extended_help="**Audio Routing** (`-a`)\n\nUse `default_output` for desktop audio, or `default_input` for microphone. You can pipe them together (`default_output|default_input`)."
+            options=OUT_OPTS,
+            hints=OUT_HINTS,
+            group="Routing",
+            extended_help="**Desktop Audio**\n\nSelect the output device to capture desktop audio. 'Default Desktop Audio' automatically tracks the system-wide fallback sink."
+        ),
+        ConfigItem(
+            label="Input",
+            key="audio_input",
+            scope="DEFAULT",
+            type_="picker",
+            default="none",
+            options=IN_OPTS,
+            hints=IN_HINTS,
+            group="Routing",
+            extended_help="**Microphone Audio**\n\nSelect the input device to capture microphone audio. 'Default Microphone' automatically tracks the system-wide fallback source."
         ),
         ConfigItem(
             label="Codec",
