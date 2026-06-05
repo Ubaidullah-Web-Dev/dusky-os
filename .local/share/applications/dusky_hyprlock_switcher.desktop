@@ -9,3 +9,4 @@ Terminal=false
 Categories=Settings;DesktopSettings;Utility;
 Keywords=dusky;hyprland;hyprlock;theme;config;
 StartupNotify=false
+NoDisplay=true

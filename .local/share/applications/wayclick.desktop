@@ -7,3 +7,4 @@ Terminal=false
 Categories=keyboard;sounds;
 Icon=preferences-desktop-theme
 StartupNotify=true
+NoDisplay=true

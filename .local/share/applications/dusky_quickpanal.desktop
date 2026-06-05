@@ -11,3 +11,4 @@ Keywords=dusky;quickpanal;sliders;brightness;nightlight;hyprsunset;display;volum
 Icon=preferences-system
 StartupNotify=true
 StartupWMClass=org.dusky.quickpanal
+NoDisplay=true

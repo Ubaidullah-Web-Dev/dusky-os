@@ -10,3 +10,4 @@ Terminal=false
 Categories=System;Utility;Development;
 Keywords=hyprland;window;rules;bash;tui;
 StartupNotify=true
+NoDisplay=true

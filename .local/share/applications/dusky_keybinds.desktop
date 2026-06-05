@@ -9,3 +9,4 @@ Terminal=false
 Categories=System;Settings;Utility;
 Keywords=dusky;keybinds;hyprland;config;tui;bind;shortcut;
 StartupNotify=true
+NoDisplay=true
