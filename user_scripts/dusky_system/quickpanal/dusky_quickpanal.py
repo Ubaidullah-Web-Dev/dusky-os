@@ -161,6 +161,7 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         self.connect("show", self._on_show)
         self.connect("hide", self._on_hide)
         self.connect("map", self._on_map)
+        self.connect("unmap", self._on_unmap)
         self.connect("key-press-event", self._on_key_pressed)
 
         self._grab_cb = CB_TYPE(self._on_grab_cleared) if LIBGRAB else None
@@ -487,13 +488,23 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
         if cmd := self.power_cmds.get(profile_name): execute_cmd(cmd)
 
     def _on_map(self, *args):
-        if LIBGRAB and self.get_visible() and self._grab_cb and not getattr(self, "_grab_active", False):
+        if LIBGRAB and self.get_visible() and self._grab_cb and not self._grab_active:
             self._grab_active = True
             ptr_val = hash(self)
             if ptr_val < 0: ptr_val += 1 << (ctypes.sizeof(ctypes.c_void_p) * 8)
             LIBGRAB.init_wayland_grab(ctypes.c_void_p(ptr_val), self._grab_cb)
 
-    def _on_grab_cleared(self): GLib.idle_add(self.hide)
+    def _on_unmap(self, *args):
+        if LIBGRAB and self._grab_active:
+            LIBGRAB.destroy_wayland_grab()
+            self._grab_active = False
+
+    def _on_grab_cleared(self): 
+        def safe_hide():
+            self.hide()
+            return GLib.SOURCE_REMOVE
+        GLib.idle_add(safe_hide)
+
     def _on_delete_event(self, _window, _event): self.hide(); return True 
     def _on_key_pressed(self, widget, event):
         if event.keyval == Gdk.KEY_Escape: self.hide(); return True
@@ -507,10 +518,6 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
             self._timer_id = GLib.timeout_add(2000, self._update_ui_state)
 
     def _on_hide(self, *args):
-        if LIBGRAB and getattr(self, "_grab_active", False):
-            LIBGRAB.destroy_wayland_grab()
-            self._grab_active = False
-            
         if self._timer_id is not None:
             GLib.source_remove(self._timer_id); self._timer_id = None
             
