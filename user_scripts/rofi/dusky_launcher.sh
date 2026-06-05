@@ -9,12 +9,20 @@
 if [[ "$1" == "--rofi-mode" ]]; then
     # ROFI_RETV state: 0 = Initial load, 1 = User selected an item
     if [[ -z "$ROFI_RETV" || "$ROFI_RETV" -eq 0 ]]; then
-        # Find all .desktop files with "dusky" in the name
-        find ~/.local/share/applications /usr/share/applications -type f -iname "*dusky*.desktop" 2>/dev/null | while read -r file; do
-            # Extract attributes
-            name=$(grep -m1 -i '^Name=' "$file" | cut -d'=' -f2)
-            desc=$(grep -m1 -i '^GenericName=' "$file" | cut -d'=' -f2)
-            icon=$(grep -m1 -i '^Icon=' "$file" | cut -d'=' -f2)
+        
+        # Pure Bash globbing (Zero-Fork: eliminates the 'find' sub-process)
+        shopt -s nullglob nocaseglob
+        for file in ~/.local/share/applications/*dusky*.desktop /usr/share/applications/*dusky*.desktop; do
+            name="" desc="" icon=""
+            
+            # Pure Bash file reading (Zero-Fork: eliminates 3x 'grep' and 3x 'cut' per file)
+            while IFS='=' read -r key value; do
+                case "$key" in
+                    Name) [[ -z "$name" ]] && name="$value" ;;
+                    GenericName) [[ -z "$desc" ]] && desc="$value" ;;
+                    Icon) [[ -z "$icon" ]] && icon="$value" ;;
+                esac
+            done < "$file"
             
             # Format text: "Name (Description)" using Pango markup
             if [[ -n "$desc" ]]; then
@@ -26,11 +34,23 @@ if [[ "$1" == "--rofi-mode" ]]; then
             # Send to Rofi: Display Text + Icon payload + Hidden File Path (info)
             echo -e "${display_text}\0icon\x1f${icon}\x1finfo\x1f${file}"
         done
+        shopt -u nullglob nocaseglob
+
     elif [[ "$ROFI_RETV" -eq 1 ]]; then
         # The user hit enter. Extract the hidden file path from ROFI_INFO
         if [[ -n "$ROFI_INFO" ]]; then
-            # Extract the execution command and strip out standard XDG flags like %U or %f
-            exec_cmd=$(grep -m1 -i '^Exec=' "$ROFI_INFO" | cut -d'=' -f2 | sed 's/ %[a-zA-Z]//g')
+            
+            # Pure Bash extraction of Exec command (Zero-Fork: eliminates 'grep' and 'cut')
+            exec_cmd=""
+            while IFS='=' read -r key value; do
+                if [[ "$key" == "Exec" ]]; then
+                    exec_cmd="$value"
+                    break
+                fi
+            done < "$ROFI_INFO"
+            
+            # Clean XDG execution flags using native parameter expansion (Zero-Fork: eliminates 'sed')
+            exec_cmd="${exec_cmd// \%[UuFfcik]/}"
             
             # Execute cleanly and detach from the script
             bash -c "$exec_cmd" >/dev/null 2>&1 &
@@ -79,7 +99,8 @@ listview {
 '
 
 # Execute Rofi with strictly scoped configurations leveraging the latest architecture
-# -no-sort is explicitly required so Rofi respects History frequency over string length
+# -no-sort guarantees History tracking takes priority over the fzf string-length score
+# -drun-use-desktop-cache forces Rofi to use an internal memory cache to speed up launches
 rofi -show combi \
      -modes "drun,combi,Dusky:${SCRIPT_PATH} --rofi-mode" \
      -combi-modes "drun,Dusky" \
@@ -92,6 +113,7 @@ rofi -show combi \
      -no-sort \
      -sorting-method fzf \
      -cache-dir "$CACHE_DIR" \
+     -drun-use-desktop-cache \
      -no-disable-history \
      -max-history-size 1000 \
      -no-fixed-num-lines \
