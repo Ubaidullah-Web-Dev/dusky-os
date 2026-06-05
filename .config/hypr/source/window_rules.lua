@@ -490,6 +490,17 @@ hl.window_rule({
     center = true
 })
 
+
+--- 055_pacman_reflector.sh ---
+hl.window_rule({
+    name = "055_pacman_reflector.sh",
+    match = { class = "^(055_pacman_reflector.sh)$" },
+    float = true,
+    size = {752, 576},
+    center = true
+})
+
+
 --- ftp_setup_arch.sh ---
 hl.window_rule({
     name = "ftp_setup_arch.sh",
