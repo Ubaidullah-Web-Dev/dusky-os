@@ -39,7 +39,7 @@ configuration {
     /* ─────────────────────────────────────────────────────────────────────
        Frecency-aware search
        ───────────────────────────────────────────────────────────────────── */
-    sort:                   false;
+    sort:                   true;
     matching:               "fuzzy";
     drun-match-fields:      "name,generic,exec,keywords";
     /* ─────────────────────────────────────────────────────────────────────
@@ -206,6 +206,7 @@ element-text {
     highlight:          bold underline;
     cursor:             inherit;
     horizontal-align:   0;
+    markup:             true;
 }
 
 /* =====================================================================

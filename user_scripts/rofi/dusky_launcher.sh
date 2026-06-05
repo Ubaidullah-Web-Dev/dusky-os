@@ -129,7 +129,7 @@ rofi -show combi \
      -drun-match-fields "name,generic,exec,categories,keywords" \
      -tokenize \
      -matching fuzzy \
-     -no-sort \
+     -sort \
      -no-disable-history \
      -max-history-size 200 \
      -no-fixed-num-lines \
