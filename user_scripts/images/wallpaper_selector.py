@@ -872,6 +872,22 @@ class WallpaperApp:
         stack, scrolledwindow, viewport {
             background-color: @theme_base_color;
         }
+
+        /* THEME THE OVERSCROLL "RUBBER BAND" GLOW */
+        scrolledwindow overshoot.top {
+            background-image: radial-gradient(farthest-side at top, alpha(@theme_selected_bg_color, 0.2), transparent);
+        }
+        scrolledwindow overshoot.bottom {
+            background-image: radial-gradient(farthest-side at bottom, alpha(@theme_selected_bg_color, 0.2), transparent);
+        }
+
+        /* REMOVE THE STATIC UNDERSHOOT "DASHED LINE" IF PRESENT */
+        scrolledwindow undershoot.top,
+        scrolledwindow undershoot.bottom {
+            background-image: none;
+            background-color: transparent;
+        }
+
         flowbox {
             background-color: transparent;
             padding: 12px;
