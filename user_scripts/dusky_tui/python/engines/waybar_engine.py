@@ -11,7 +11,7 @@ from typing import Any
 from python.frontend.core_types import BaseEngine
 
 # =============================================================================
-# [ WAYBAR ENGINE - v4.8.6 PARITY ]
+# [ WAYBAR ENGINE - v4.8.7 PARITY ]
 # Fully isolated Python process controller with UI-Cache synchronization.
 # Resolves Headless Async Destruction & AST Regex Position Mutators.
 # =============================================================================
@@ -27,7 +27,11 @@ class WaybarEngine(BaseEngine):
             self.config_path = self.config_root / "config.jsonc"
             
         self.style_path = self.config_root / "style.css"
-        self.state_file = self.config_root / ".dusky_waybar_state.json"
+        
+        # --- NEW STATE FILE LOCATION ---
+        state_dir = Path("~/.config/dusky/settings/waybar").expanduser().resolve()
+        state_dir.mkdir(parents=True, exist_ok=True)
+        self.state_file = state_dir / ".dusky_waybar_state.json"
         
         self.cache: dict[str, Any] = {}
         self.theme_dirs: list[Path] = []
@@ -90,17 +94,22 @@ class WaybarEngine(BaseEngine):
                 active_idx = self.theme_dirs.index(target.parent)
                 active_name = self.theme_names[active_idx]
                 
-        elif self.state_file.exists():
+        # Critical patch: Check the state file if symlink failed to match (e.g., folder was renamed).
+        # We DO NOT apply symlinks here. We simply recover the index so the UI knows where we left off.
+        # This stops the "automatic symlink changing" behavior and allows the manual "Heal" action to do its job.
+        if active_idx == -1 and self.state_file.exists():
             try:
                 state_data = json.loads(self.state_file.read_text(encoding="utf-8"))
-                saved_name = state_data.get("active_theme_name")
-                if saved_name in self.theme_names:
-                    active_name = saved_name
-                    active_idx = self.theme_names.index(saved_name)
-                    self._apply_symlinks_sync(self.theme_dirs[active_idx])
+                saved_idx = state_data.get("active_theme_index", -1)
+                
+                if 0 <= saved_idx < len(self.theme_names):
+                    active_name = self.theme_names[saved_idx]
+                    active_idx = saved_idx
             except (OSError, json.JSONDecodeError):
                 pass
         
+        active_number = active_idx + 1 if active_idx >= 0 else 1
+
         # PREVENTING [Missing] STRIKETHROUGH:
         # We explicitly lock the momentary push-button states to False on every load.
         # This brilliantly ensures the UI Preset engine never thinks they are "Active"
@@ -108,8 +117,10 @@ class WaybarEngine(BaseEngine):
         self.cache = {
             "active_theme_index": active_idx,
             "active_theme_name": active_name,
+            "active_theme_number": active_number,
             "DEFAULT/active_theme_index": active_idx,
             "DEFAULT/active_theme_name": active_name,
+            "DEFAULT/active_theme_number": active_number,
             
             "action_invert_pos": False,
             "DEFAULT/action_invert_pos": False,
@@ -155,32 +166,18 @@ class WaybarEngine(BaseEngine):
             
         await asyncio.sleep(0.2)
         
-        try:
-            uid = os.getuid()
-            Path(f"/run/user/{uid}/uwsm-app.lock").unlink(missing_ok=True)
-        except OSError:
-            pass
-        
+        # Removed uwsm-app wrapper to prevent supervisor respawning bugs that freeze waybar_toggle.sh.
+        # Launch waybar exactly identically to how it runs manually in the terminal.
         try:
             subprocess.Popen(
-                ["uwsm-app", "--", "waybar"],
+                ["waybar"],
                 start_new_session=set_sid,       
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL
             )
         except OSError:
-            try:
-                # Fallback directly to native waybar if uwsm-app is missing
-                subprocess.Popen(
-                    ["waybar"],
-                    start_new_session=set_sid,       
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    stdin=subprocess.DEVNULL
-                )
-            except OSError:
-                pass
+            pass
 
         # UI CACHE REFRESH TRIGGER
         # Pauses slightly to let the UI's write mask expire, then artificially 
@@ -215,6 +212,17 @@ class WaybarEngine(BaseEngine):
             str_val = str(val).lower()
             
             match key:
+                case "active_theme_number":
+                    try:
+                        target_idx = int(val) - 1
+                        if 0 <= target_idx < len(self.theme_dirs):
+                            requires_restart = True
+                            requires_detached = True
+                        else:
+                            return False, f"Theme number {val} is out of bounds.", ""
+                    except ValueError:
+                        return False, f"Invalid theme number: {val}", ""
+
                 case "active_theme_name":
                     target_name = str(val)
                     if target_name in self.theme_names:
@@ -222,7 +230,16 @@ class WaybarEngine(BaseEngine):
                         requires_restart = True
                         requires_detached = True  # Survives terminal closure
                     else:
-                        return False, f"Theme '{target_name}' not found.", ""
+                        # Fallback parsing to allow chronological index passing directly via strings (e.g., CLI --apply 10)
+                        try:
+                            target_idx = int(target_name) - 1
+                            if 0 <= target_idx < len(self.theme_dirs):
+                                requires_restart = True
+                                requires_detached = True
+                            else:
+                                return False, f"Theme number '{val}' out of bounds.", ""
+                        except ValueError:
+                            return False, f"Theme '{target_name}' not found.", ""
                         
                 case "toggle_forward" if str_val == "true":
                     target_idx = (current_idx + 1) % len(self.theme_dirs)

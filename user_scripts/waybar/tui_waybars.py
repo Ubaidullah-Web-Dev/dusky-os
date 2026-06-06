@@ -45,13 +45,15 @@ SCHEMA = {
     0: [
         ConfigItem(
             label="Active Theme Target",
-            key="active_theme_name",
+            key="active_theme_number",
             scope="DEFAULT",
-            type_="string",
-            default="unknown",
-            options=THEMES, 
+            type_="int",
+            default=1,
+            min_val=1,
+            max_val=len(THEMES) if THEMES else 1,
+            step=1,
             group="Themes",
-            extended_help="**System Theme Tracker**\n\nThis strictly tracks the currently applied Waybar theme folder in memory. You can manually type a theme name here, or simply hit 'Apply' on the presets below."
+            extended_help="**System Theme Tracker**\n\nThis strictly tracks the currently applied Waybar theme chronologically. You can adjust the number here to directly switch themes."
         ),
         ConfigItem(
             label="Available Themes (Live Preview)",
@@ -69,7 +71,7 @@ SCHEMA = {
 
 # --- Inject dynamic menu items contiguous to the parent folder ---
 dynamic_theme_items = []
-for name in THEMES:
+for i, name in enumerate(THEMES):
     dynamic_theme_items.append(
         ConfigItem(
             label=name,
@@ -80,7 +82,7 @@ for name in THEMES:
             parent_ref="active_theme_folder",
             group="Themes",
             preset_payload={
-                "active_theme_name": name
+                "active_theme_number": i + 1
             },
             extended_help=f"**Apply {name}**\n\nHit Enter to instantly apply this layout. It will automatically symlink and restart Waybar."
         )
@@ -110,7 +112,7 @@ SCHEMA[0].extend([
         default=False,
         options=["trigger"], 
         group="Layout",
-        extended_help="**Heal Broken Configuration**\n\nIf your Waybar symlinks break, this action rebuilds the exact symlink paths needed and restarts Waybar automatically."
+        extended_help="**Heal Broken Configuration**\n\nIf your Waybar symlinks break, this action rebuilds the exact symlink paths needed and restarts Waybar automatically based on your chronologically saved index."
     )
 ])
 
@@ -131,7 +133,7 @@ if __name__ == "__main__":
     parser.add_argument("--toggle-pos", action="store_true", help="Invert current Waybar position (Top↔Bottom, Left↔Right)")
     parser.add_argument("--heal", action="store_true", help="Force state restore / heal broken symlinks")
     parser.add_argument("--first", action="store_true", help="Apply the first Waybar theme alphabetically")
-    parser.add_argument("--apply", type=str, metavar="THEME", help="Apply a specific Waybar theme by name")
+    parser.add_argument("--apply", type=str, metavar="THEME", help="Apply a specific Waybar theme by name or chronological number")
     parser.add_argument("-h", "--help", action="help", default=argparse.SUPPRESS, help="Show this help message and exit")
     
     args = parser.parse_args()
