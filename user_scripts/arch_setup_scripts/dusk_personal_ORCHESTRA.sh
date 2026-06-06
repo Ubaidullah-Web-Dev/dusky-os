@@ -144,7 +144,7 @@ INSTALL_SEQUENCE=(
     "S | 395_intel_media_sdk_check.sh"
     "U | 400_firefox_matugen_pywalfox.sh"
     "U | 405_spicetify_matugen_setup.sh"
-    "U | 410_waybar_swap_config.sh"
+    "U | 410_waybar_swap_config.py --set waybar=15"
     "U | 415_mpv_setup.sh"
     "S | 430_btrfs_zstd_compression_stats.sh"
     "U | 434_wayclick_soundpacks_download.sh --auto"

@@ -236,13 +236,13 @@ hl.bind(
 
 hl.bind(
     "SUPER + ALT + W",
-    hl.dsp.exec_cmd(dusky_scripts .. "waybar/dusky_waybars.sh --toggle"),
+    hl.dsp.exec_cmd(dusky_scripts .. "waybar/wrapper_waybar_swapper.py --next"),
     { description = "Waybar Swap Configs", submap_universal = true }
 )
 
 hl.bind(
     "SUPER + ALT + SHIFT + W",
-    hl.dsp.exec_cmd(dusky_scripts .. "waybar/dusky_waybars.sh --back_toggle"),
+    hl.dsp.exec_cmd(dusky_scripts .. "waybar/wrapper_waybar_swapper.py --prev"),
     { description = "Waybar Swap Configs", submap_universal = true }
 )
 
