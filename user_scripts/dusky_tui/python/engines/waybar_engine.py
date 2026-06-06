@@ -5,15 +5,17 @@ import time
 import re
 import asyncio
 import subprocess
+import fcntl
 from pathlib import Path
 from typing import Any
 
 from python.frontend.core_types import BaseEngine
 
 # =============================================================================
-# [ WAYBAR ENGINE - v4.8.7 PARITY ]
+# [ WAYBAR ENGINE - v4.8.8 PARITY ]
 # Fully isolated Python process controller with UI-Cache synchronization.
-# Resolves Headless Async Destruction & AST Regex Position Mutators.
+# Resolves Headless Async Destruction, AST Regex Position Mutators,
+# and Double-Waybar Concurrency Race Conditions.
 # =============================================================================
 
 class WaybarEngine(BaseEngine):
@@ -144,51 +146,86 @@ class WaybarEngine(BaseEngine):
     async def _async_restart_waybar(self, target_dir: Path, set_sid: bool = True):
         self._apply_symlinks_sync(target_dir)
         
-        try:
-            proc = await asyncio.create_subprocess_exec("pkill", "-x", "waybar", stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-            await proc.wait()
-        except OSError:
-            pass
+        # --- PREVENT DOUBLE WAYBARS CONCURRENCY LOCK ---
+        lock_file = Path(f"/tmp/dusky_waybar_restart_{os.getuid()}.lock")
+        fd = open(lock_file, "w")
         
-        for _ in range(15):
-            try:
-                check_proc = await asyncio.create_subprocess_exec("pgrep", "-x", "waybar", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                await check_proc.wait()
-                if check_proc.returncode != 0:
+        try:
+            # Poll for the lock asynchronously to prevent overlapping restarts
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
-            except OSError:
-                break
-            await asyncio.sleep(0.1)
-            
-        try:
-            proc = await asyncio.create_subprocess_exec("pkill", "-9", "-x", "waybar", stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-            await proc.wait()
-        except OSError:
-            pass
-            
-        await asyncio.sleep(0.2)
-        
-        # Removed uwsm-app wrapper to prevent supervisor respawning bugs that freeze waybar_toggle.sh.
-        # Launch waybar exactly identically to how it runs manually in the terminal.
-        try:
-            subprocess.Popen(
-                ["waybar"],
-                start_new_session=set_sid,       
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL
-            )
-        except OSError:
-            pass
+                except BlockingIOError:
+                    await asyncio.sleep(0.1)
+                    
+            # Check if another process (e.g. rapid --next presses) superseded our target symlink
+            # while we were waiting for the lock. If so, abort and let the newer process handle 
+            # the restart to avoid redundant flashing.
+            if self.config_path.is_symlink():
+                try:
+                    current_symlink = self.config_path.resolve()
+                    target_symlink = (target_dir / "config.jsonc").resolve()
+                    if current_symlink != target_symlink:
+                        return
+                except OSError:
+                    pass
 
-        # UI CACHE REFRESH TRIGGER
-        # Pauses slightly to let the UI's write mask expire, then artificially 
-        # bumps the directory mtime. This brilliantly forces the UI to reload the state natively.
-        await asyncio.sleep(0.5)
-        try:
-            os.utime(self.config_root, None)
-        except OSError:
-            pass
+            # 1. Standard Termination
+            try:
+                proc = await asyncio.create_subprocess_exec("pkill", "-x", "waybar", stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+                await proc.wait()
+            except OSError:
+                pass
+            
+            # 2. Replicate Bash pgreg Verification Loop
+            for _ in range(15):
+                try:
+                    check_proc = await asyncio.create_subprocess_exec("pgrep", "-x", "waybar", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    await check_proc.wait()
+                    if check_proc.returncode != 0:
+                        break
+                except OSError:
+                    break
+                await asyncio.sleep(0.1)
+                
+            # 3. SIGKILL Failsafe
+            try:
+                proc = await asyncio.create_subprocess_exec("pkill", "-9", "-x", "waybar", stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+                await proc.wait()
+            except OSError:
+                pass
+                
+            await asyncio.sleep(0.2)
+            
+            # 4. Launch Waybar exactly as manual CLI execution
+            try:
+                subprocess.Popen(
+                    ["waybar"],
+                    start_new_session=set_sid,       
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL
+                )
+            except OSError:
+                pass
+
+            # UI CACHE REFRESH TRIGGER
+            # Pauses slightly to let the UI's write mask expire, then artificially 
+            # bumps the directory mtime. This brilliantly forces the UI to reload the state natively.
+            await asyncio.sleep(0.5)
+            try:
+                os.utime(self.config_root, None)
+            except OSError:
+                pass
+
+        finally:
+            # Release lock
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                fd.close()
+            except OSError:
+                pass
 
     def write_value(self, target_key: str, target_scope: str, new_value: str, item_type: str = "string") -> tuple[bool, str, str]:
         return self.write_batch([(target_key, target_scope, new_value, item_type)])
