@@ -11,29 +11,43 @@
 export GIT_DIR="$HOME/dusky/"
 export GIT_WORK_TREE="$HOME"
 
+# CRITICAL FIX: Lock the session PID. FZF subshells have different PIDs,
+# so relying on '$$' inside the exported functions breaks stash recovery!
+export DUSKY_SESSION_ID="$$"
+
+# Guarantee UTF-8 character width mapping for Awk length() calculations
+export LC_ALL=en_US.UTF-8
+
+# Purge any global FZF options that might disable mouse support natively
+unset FZF_DEFAULT_OPTS
+
 # Clean up the session stash flag when the script completely exits
-trap 'rm -f /tmp/dusky_time_machine_stash_$$' EXIT
+trap 'rm -f "/tmp/dusky_time_machine_stash_${DUSKY_SESSION_ID}"' EXIT
+
 
 # 2. Native Bash Functions for FZF Execution Payloads
 _dusky_git_help() {
     clear
     printf "\n\n  \033[1;38;5;81m󰏖 Dusky Time Machine - Keyboard Shortcuts\033[0m\n"
     printf "  \033[38;5;238m──────────────────────────────────────────────\033[0m\n"
-    printf "  \033[1;33m[ENTER]\033[0m   Time Travel (Force Checkout selected commit)\n"
-    printf "  \033[1;33m[CTRL-R]\033[0m  Return to Present (Force Checkout default branch)\n"
-    printf "  \033[1;33m[CTRL-W]\033[0m  Wipe Changes (Hard Reset to current HEAD)\n"
-    printf "  \033[1;33m[ALT-C]\033[0m   Copy current Commit Hash to Clipboard\n"
-    printf "  \033[1;33m[F1]\033[0m      Show this Help Menu\n"
-    printf "  \033[1;33m[ESC]\033[0m     Exit Time Machine\n\n"
+    printf "  \033[1;33m[ENTER]\033[0m          Time Travel (Force Checkout selected commit)\n"
+    printf "  \033[1;33m[DOUBLE-CLICK]\033[0m   Time Travel via Mouse\n"
+    printf "  \033[1;33m[CTRL-R]\033[0m         Return to Present (Force Checkout default branch)\n"
+    printf "  \033[1;33m[CTRL-W]\033[0m         Wipe Changes (Hard Reset to current HEAD)\n"
+    printf "  \033[1;33m[ALT-C]\033[0m          Copy current Commit Hash to Clipboard\n"
+    printf "  \033[1;33m[F1 / CTRL-O]\033[0m    Show this Help Menu\n"
+    printf "  \033[1;33m[ESC]\033[0m            Exit Time Machine\n\n"
     printf "  \033[38;5;242mPress any key to return...\033[0m"
-    read -rsn1
+    
+    # Read the first keypress to exit the menu
+    read -rsn1 < /dev/tty
+    # CRITICAL FIX: Drain the terminal input buffer of any remaining bytes.
+    # (Prevents multi-byte escape sequences like F1/^[OP from bleeding into the search prompt)
+    while read -rsn1 -t 0.01 < /dev/tty; do :; done
 }
 export -f _dusky_git_help
 
 _dusky_git_list() {
-    # Force UTF-8 locale so awk's length() accurately measures multi-byte characters
-    export LC_ALL=en_US.UTF-8
-    
     # Using %x1f (Unit Separator byte) to cleanly divide data fields.
     git log --all --graph --color=always \
         --format="%x1f%h%x1f%cd%x1f%an%x1f%C(auto)%d%x1f%s" \
@@ -55,7 +69,7 @@ _dusky_git_list() {
                 pad = sprintf("%*s", pad_len, "")
                 
                 # Formats precisely to match the standard layout borders
-                printf "\x1f \033[38;5;242m     \033[0m \033[38;5;238m│\033[0m %s%s  \033[38;5;238m│\033[0m\n", graph, pad
+                printf "\x1f \033[38;5;242m      \033[0m \033[38;5;238m│\033[0m %s%s \033[38;5;238m│\033[0m\n", graph, pad
             } else {
                 graph = $1
                 hash = $2
@@ -64,8 +78,8 @@ _dusky_git_list() {
                 refs = $5
                 msg = $6
                 
-                # Strict truncation for column integrity (no dots added)
-                if (length(author) > 12) author = substr(author, 1, 12)
+                # Strict truncation for column integrity
+                if (length(author) > 15) author = substr(author, 1, 15)
                 gsub(/\|/, "│", msg)
                 if (length(refs) > 0) refs = refs " "
                 
@@ -88,10 +102,10 @@ _dusky_git_list() {
                 if (pad_len < 0) pad_len = 0
                 pad = sprintf("%*s", pad_len, "")
                 
+                # Mathematical Alignment:
                 # Field 1 (Hidden index): hash
-                # Field 2 (Visible grid): Space │ Date │ Pipe │ Graph + Refs + Msg │ Pad │ Pipe │ Author
-                # Note the "  " (2 spaces) placed deliberately after pad to guarantee breathing room before the pipe!
-                printf "%s\x1f \033[1;38;5;114m%-5s\033[0m \033[38;5;238m│\033[0m %s%s  \033[38;5;238m│\033[0m \033[1;38;5;203m%-12s\033[0m\n", hash, date, mid, pad, author
+                # Field 2 (Visible grid): Space(1) + Date(6) + Space(1) + Pipe(1) + Space(1) + Gr/Msg(60) + Space(1) + Pipe(1) + Space(1) + Author(15)
+                printf "%s\x1f \033[1;38;5;114m%-6s\033[0m \033[38;5;238m│\033[0m %s%s \033[38;5;238m│\033[0m \033[1;38;5;203m%-15s\033[0m\n", hash, date, mid, pad, author
             }
         }
     '
@@ -103,9 +117,10 @@ _dusky_git_preview() {
     
     # Intercept pure graph lines and show a stylized, perfectly measured ghost pane
     if [[ -z "$hash" || "$hash" == " " ]]; then
-        printf "\n\n  \033[1;38;5;242m╭──────────────────────────────────────╮\033[0m"
+        # 40 Dashes to perfectly match the 38 inner text characters + 2 padding spaces
+        printf "\n\n  \033[1;38;5;242m╭────────────────────────────────────────╮\033[0m"
         printf "\n  \033[1;38;5;242m│\033[0m \033[3;38;5;238mGraph connection line. No commit here.\033[0m \033[1;38;5;242m│\033[0m"
-        printf "\n  \033[1;38;5;242m╰──────────────────────────────────────╯\033[0m\n"
+        printf "\n  \033[1;38;5;242m╰────────────────────────────────────────╯\033[0m\n"
         exit 0
     fi
 
@@ -122,10 +137,11 @@ _dusky_git_checkout() {
     [[ -z "$hash" ]] && exit 0
     
     # SAFETY SHIELD: If leaving a working branch, auto-stash uncommitted changes
+    # (Maintains --include-untracked as per user requirement, fixed $$ identifier)
     if git symbolic-ref -q HEAD >/dev/null; then
         if ! git diff-index --quiet HEAD -- || [[ -n "$(git ls-files --exclude-standard --others)" ]]; then
             git stash push --include-untracked -m "DUSKY_AUTO_STASH" >/dev/null 2>&1
-            touch "/tmp/dusky_time_machine_stash_$$"
+            touch "/tmp/dusky_time_machine_stash_${DUSKY_SESSION_ID}"
         fi
     fi
     
@@ -151,9 +167,9 @@ _dusky_git_return() {
         git checkout -f "$main_branch" >/dev/null 2>&1
         
         # RESTORE SHIELD: Auto-pop the exact stash we created when leaving the present
-        if [[ -f "/tmp/dusky_time_machine_stash_$$" ]]; then
+        if [[ -f "/tmp/dusky_time_machine_stash_${DUSKY_SESSION_ID}" ]]; then
             git stash pop >/dev/null 2>&1
-            rm -f "/tmp/dusky_time_machine_stash_$$"
+            rm -f "/tmp/dusky_time_machine_stash_${DUSKY_SESSION_ID}"
         fi
     fi
 }
@@ -183,10 +199,12 @@ main() {
 
     # Mathematically aligned visual header.
     # The 3 leading spaces account EXACTLY for: FZF Pointer (2 spaces) + List Start Buffer (1 space).
-    local -r visual_header=$(printf "   \033[1;37m%-5s\033[0m \033[38;5;238m│\033[0m \033[1;37m%-60s\033[0m  \033[38;5;238m│\033[0m \033[1;37m%-12s\033[0m" "DATE" "GRAPH / REFS / MESSAGE" "AUTHOR")
+    # Widths map 1:1 to the Row Generator: %-6s | %-60s | %-15s
+    local -r visual_header=$(printf "   \033[1;37m%-6s\033[0m \033[38;5;238m│\033[0m \033[1;37m%-60s\033[0m \033[38;5;238m│\033[0m \033[1;37m%-15s\033[0m" "DATE" "GRAPH / REFS / MESSAGE" "AUTHOR")
 
-    # Launch FZF with the absolute Unit Separator (\x1f) delimiter
-    bash -c "_dusky_git_list" | fzf --ansi \
+    # Launch FZF, bypassing Zsh interpolation by hard-binding to bash subprocesses
+    _dusky_git_list | fzf --ansi \
+        --with-shell="bash -c" \
         --delimiter=$'\x1f' \
         --with-nth=2 \
         --tiebreak=index \
@@ -198,21 +216,23 @@ main() {
         --marker="✓" \
         --layout=reverse \
         --border=rounded \
-        --border-label=" 󰏖 Dusky Time Machine [F1: Help] " \
+        --border-label=" 󰏖 Dusky Time Machine [F1 / Ctrl-O: Help] " \
         --border-label-pos=3 \
         --info=hidden \
         --header="$visual_header" \
         --header-first \
-        --bind="enter:execute-silent(bash -c '_dusky_git_checkout {1}')+transform-prompt( [[ -n \"{1}\" ]] && echo \" :: Traveled to {1} ❯ \" || echo \" :: Time Machine ❯ \" )+reload-sync(bash -c '_dusky_git_list')" \
-        --bind="ctrl-r:execute-silent(bash -c '_dusky_git_return')+change-prompt( :: Returned to Present ❯ )+reload-sync(bash -c '_dusky_git_list')" \
-        --bind="ctrl-w:execute-silent(bash -c '_dusky_git_restore')+change-prompt( :: Restored (Hard Reset) ❯ )+reload-sync(bash -c '_dusky_git_list')" \
-        --bind="alt-c:execute-silent(bash -c '_dusky_git_copy {1}')+transform-prompt( [[ -n \"{1}\" ]] && echo \" :: Copied {1} ❯ \" || echo \" :: Time Machine ❯ \" )" \
-        --bind="f1:execute(bash -c '_dusky_git_help')" \
+        --bind="enter:execute-silent(_dusky_git_checkout {1})+transform-prompt( [ -n \"{1}\" ] && echo \" :: Traveled to {1} ❯ \" || echo \" :: Time Machine ❯ \" )+reload-sync(_dusky_git_list)" \
+        --bind="double-click:execute-silent(_dusky_git_checkout {1})+transform-prompt( [ -n \"{1}\" ] && echo \" :: Traveled to {1} ❯ \" || echo \" :: Time Machine ❯ \" )+reload-sync(_dusky_git_list)" \
+        --bind="ctrl-r:execute-silent(_dusky_git_return)+change-prompt( :: Returned to Present ❯ )+reload-sync(_dusky_git_list)" \
+        --bind="ctrl-w:execute-silent(_dusky_git_restore)+change-prompt( :: Restored (Hard Reset) ❯ )+reload-sync(_dusky_git_list)" \
+        --bind="alt-c:execute-silent(_dusky_git_copy {1})+transform-prompt( [ -n \"{1}\" ] && echo \" :: Copied {1} ❯ \" || echo \" :: Time Machine ❯ \" )" \
+        --bind="f1:execute(_dusky_git_help)" \
+        --bind="ctrl-o:execute(_dusky_git_help)" \
         --color="bg+:#1e1e2e,bg:#11111b,spinner:#f5e0dc" \
         --color="fg:#cdd6f4,fg+:#cdd6f4,header:#89b4fa,info:#cba6f7" \
         --color="pointer:#a6e3a1,marker:#f5e0dc,prompt:#cba6f7" \
         --color="hl:#f38ba8,hl+:#f38ba8,border:#585b70,label:#a6e3a1" \
-        --preview="bash -c '_dusky_git_preview {1}'" \
+        --preview="_dusky_git_preview {1}" \
         --preview-window="right,65%,border-left,wrap"
 
     # Clean exit payload
