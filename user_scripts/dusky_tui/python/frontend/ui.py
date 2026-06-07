@@ -250,6 +250,39 @@ class AlertDialog(ModalScreen[None]):
         if event.control is self:
             self.dismiss(None)
 
+class PasswordScreen(ModalScreen[str | None]):
+    BINDINGS = [
+        Binding("escape", "dismiss_modal", "Cancel"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="modal-dialog"):
+            yield Label("SUDO AUTHENTICATION REQUIRED", id="modal-title", classes="-warning")
+            yield Markdown("Enter your sudo password to execute system-level actions. The session will be kept alive automatically.", id="alert-message")
+            yield Input(placeholder="Password...", password=True, id="password-input")
+            with Horizontal(classes="modal-btn-container"):
+                yield Label(" Cancel ", classes="modal-cancel-btn", id="btn-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one(Input).focus()
+
+    @on(Input.Submitted)
+    def handle_submit(self, event: Input.Submitted) -> None:
+        event.stop()
+        self.dismiss(event.value)
+
+    def action_dismiss_modal(self) -> None:
+        self.dismiss(None)
+
+    @on(events.Click, "#btn-cancel")
+    def on_cancel_click(self) -> None:
+        self.dismiss(None)
+
+    @on(events.Click)
+    def on_background_click(self, event: events.Click) -> None:
+        if event.control is self:
+            self.dismiss(None)
+
 class HybridInputScreen(ModalScreen[str | None]):
     BINDINGS = [
         Binding("down,j", "focus_list", "Focus List"),
@@ -1012,7 +1045,7 @@ class DuskyTUI(App):
     #file-link { padding: 0 1; background: transparent; }
     #file-link:hover { text-style: bold; color: $foreground; background: $primary 25%; }
 
-    HybridInputScreen, PickerScreen, SearchScreen, DiffScreen, ShortcutsInfoScreen, ConfirmDialog, AlertDialog { align: center middle; background: rgba(0, 0, 0, 0.75); }
+    HybridInputScreen, PickerScreen, SearchScreen, DiffScreen, ShortcutsInfoScreen, ConfirmDialog, AlertDialog, PasswordScreen { align: center middle; background: rgba(0, 0, 0, 0.75); }
 
     #picker-dialog { width: 60; height: 70%; background: $background; border: solid $primary; padding: 1 2; }
     #search-dialog { width: 60; height: 80%; background: $background; border: solid $primary; padding: 1 2; }
@@ -2126,12 +2159,30 @@ class DuskyTUI(App):
 
         success, msg, _ = engine.write_value(item.key, item.scope, val_str, item_type=item.type_)
         if success:
-            # FIX: Sync internal mtime to prevent false external modification detections from our own saves
             try:
                 ekey = self._get_item_engine_info(item)
                 self.last_target_mtimes[ekey] = Path(engine.target_path).expanduser().resolve().stat().st_mtime
             except OSError: pass
             self.notify_status(f"Updated {item.label}")
+        elif msg == "AUTH_REQUIRED" or "AUTH_REQUIRED" in msg:
+            def on_pwd(pwd: str | None) -> None:
+                if pwd:
+                    # Validate password and refresh the system-level sudo ticket
+                    auth_res = subprocess.run(["sudo", "-S", "-v"], input=(pwd + "\n").encode(), capture_output=True)
+                    if auth_res.returncode == 0:
+                        self.notify_status("Sudo authenticated. Retrying...")
+                        # Start background keep-alive to permanently hold the ticket open for the TUI session
+                        if not hasattr(self, "_sudo_keepalive"):
+                            self._sudo_keepalive = self.set_interval(60.0, lambda: subprocess.run(["sudo", "-n", "-v"], capture_output=True))
+                        self._do_auto_save(tab_idx, item_idx, item, val_str, old_val)
+                    else:
+                        self.notify_status("Incorrect sudo password.")
+                        item.value = old_val
+                        self._refresh_single_ui(tab_idx, item_idx, item)
+                else:
+                    item.value = old_val
+                    self._refresh_single_ui(tab_idx, item_idx, item)
+            self.push_screen(PasswordScreen(), on_pwd)
         else:
             self.notify_status(f"Error: {msg}")
 
@@ -2194,6 +2245,7 @@ class DuskyTUI(App):
         final_success = True
         success_count = 0
         error_msgs = []
+        auth_required_detected = False
 
         for ekey, batch in batches.items():
             engine = self.engine_pool[ekey]
@@ -2207,7 +2259,10 @@ class DuskyTUI(App):
                 try: self.last_target_mtimes[ekey] = Path(engine.target_path).expanduser().resolve().stat().st_mtime
                 except OSError: pass
             else:
-                # REPAIRED: Accurately count fallback successes to prevent false failure reports
+                if "AUTH_REQUIRED" in msg:
+                    auth_required_detected = True
+                    break
+                    
                 engine_success_count = 0
                 for (key, scope, val_str, itype), commit in batch:
                     ok, item_msg, _ = engine.write_value(key, scope, val_str, item_type=itype)
@@ -2218,11 +2273,33 @@ class DuskyTUI(App):
                         try: self.last_target_mtimes[ekey] = Path(engine.target_path).expanduser().resolve().stat().st_mtime
                         except OSError: pass
                     else:
+                        if "AUTH_REQUIRED" in item_msg:
+                            auth_required_detected = True
+                            break
                         error_msgs.append(item_msg)
                 
-                # If the fallback perfectly swept the failures, DO NOT mark final_success as False
+                if auth_required_detected:
+                    break
+                
                 if engine_success_count != len(changes):
                     final_success = False
+
+        if auth_required_detected:
+            def on_pwd_batch(pwd: str | None) -> None:
+                if pwd:
+                    auth_res = subprocess.run(["sudo", "-S", "-v"], input=(pwd + "\n").encode(), capture_output=True)
+                    if auth_res.returncode == 0:
+                        self.notify_status("Sudo authenticated. Retrying batch...")
+                        if not hasattr(self, "_sudo_keepalive"):
+                            self._sudo_keepalive = self.set_interval(60.0, lambda: subprocess.run(["sudo", "-n", "-v"], capture_output=True))
+                        # Retry the batch completely now that the ticket is active
+                        self.action_save_batch()
+                    else:
+                        self.notify_status("Incorrect sudo password. Batch aborted.")
+                else:
+                    self.notify_status("Sudo authentication cancelled.")
+            self.push_screen(PasswordScreen(), on_pwd_batch)
+            return False
 
         if final_success:
             self.notify_status(f"Batched {success_count} commits successfully.")

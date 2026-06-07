@@ -1,5 +1,3 @@
-import os
-import shutil
 import subprocess
 from typing import Any
 from python.frontend.core_types import BaseEngine
@@ -16,21 +14,8 @@ class SystemdEngine(BaseEngine):
         self._sys_auth_prefix = self._determine_auth_method()
 
     def _determine_auth_method(self) -> list[str]:
-        """Critically evaluates the safest privilege escalation method."""
-        # 1. Non-interactive check (Catches NOPASSWD visudo or active sudo tickets)
-        try:
-            if subprocess.run(["sudo", "-n", "true"], capture_output=True, stdin=subprocess.DEVNULL, timeout=2).returncode == 0:
-                return ["sudo"]
-        except Exception:
-            pass
-
-        # 2. GUI Polkit (Best for Wayland/X11)
-        has_display = bool(os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"))
-        if has_display and shutil.which("pkexec"):
-            return ["pkexec"]
-
-        # 3. Safe Fallback 
-        return ["sudo"]
+        """Forces sudo non-interactive to deliberately fail fast so the TUI can catch it and prompt safely."""
+        return ["sudo", "-n"]
 
     @property
     def target_path(self) -> str:
@@ -72,17 +57,19 @@ class SystemdEngine(BaseEngine):
         cmd.extend([action, "--now", target_key])
 
         try:
-            # 15s timeout protects against dead GUI polkit agents
+            # 15s timeout protects against dead execution
             res = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=15)
             if res.returncode == 0:
                 return True, f"{action.capitalize()}d {target_key}", res.stdout
             else:
                 err_msg = res.stderr.strip()
-                if not err_msg or "polkit" in err_msg.lower() or "terminal is required" in err_msg.lower():
-                    err_msg = "Authentication failed (No GUI Polkit agent running?)."
+                err_lower = err_msg.lower()
+                # Catch sudo rejections explicitly
+                if "password is required" in err_lower or "sudo:" in err_lower or "polkit" in err_lower or "terminal is required" in err_lower:
+                    return False, "AUTH_REQUIRED", res.stderr
                 return False, f"Failed: {err_msg}", res.stderr
         except subprocess.TimeoutExpired:
-            return False, "Failed: Action timed out (Polkit agent hung?)", ""
+            return False, "Failed: Action timed out", ""
         except Exception as e:
             return False, f"Execution Error: {str(e)}", str(e)
 
@@ -118,8 +105,9 @@ class SystemdEngine(BaseEngine):
                 if res.returncode == 0: return True, "", res.stdout
                 
                 err_msg = res.stderr.strip()
-                if not err_msg or "polkit" in err_msg.lower() or "terminal is required" in err_msg.lower():
-                    err_msg = "Auth failed (No GUI agent)."
+                err_lower = err_msg.lower()
+                if "password is required" in err_lower or "sudo:" in err_lower or "polkit" in err_lower or "terminal is required" in err_lower:
+                    return False, "AUTH_REQUIRED", res.stderr
                 return False, err_msg, res.stderr
             except subprocess.TimeoutExpired:
                 return False, "Action timed out", ""
