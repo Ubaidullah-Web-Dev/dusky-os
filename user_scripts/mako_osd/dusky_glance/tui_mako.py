@@ -212,6 +212,15 @@ SCHEMA = {
     # -------------------------------------------------------------------------
     1: [
         ConfigItem(
+            label="Font",
+            key="font",
+            scope="app-name=dusky-glance",       
+            type_="string",
+            default="monospace 10",
+            group="Elements",
+            extended_help="**Typography & Size**\n\nDefines the font family and size for the Glance widget (e.g., `monospace 10`, `Ubuntu 12`)."
+        ),
+        ConfigItem(
             label="Background",
             key="background-color",
             scope="app-name=dusky-glance",       
@@ -372,6 +381,15 @@ SCHEMA = {
     # TAB 3: ALERTUI (Colors, Formatting, & Triggers for System Alerts)
     # -------------------------------------------------------------------------
     3: [
+        ConfigItem(
+            label="Font",
+            key="font",
+            scope="app-name=dusky-glance-alert",       
+            type_="string",
+            default="monospace 12",
+            group="Elements",
+            extended_help="**Typography & Size**\n\nDefines the font family and size for the System Alert widget (e.g., `monospace 12`)."
+        ),
         ConfigItem(
             label="Background",
             key="background-color",
