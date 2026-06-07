@@ -115,19 +115,19 @@ declare -i EXPECTED_MGLRU_TTL
 if [[ "$MODE" == "AGGRESSIVE" ]] || [[ "$MODE" == "AUTO" && SYSTEM_RAM_GB -ge 30 ]]; then
     EXPECTED_MODE="PERFORMANCE_LEAN (32GB+)"
     EXPECTED_SWAPPINESS=150
-    EXPECTED_VFS_PRESSURE=100      
+    EXPECTED_VFS_PRESSURE=100
     EXPECTED_SCALE_FACTOR=100
     EXPECTED_DIRTY_BYTES=1073741824
     EXPECTED_DIRTY_BG_BYTES=268435456
-    EXPECTED_MGLRU_TTL=300
+    EXPECTED_MGLRU_TTL=3000
 else
     EXPECTED_MODE="STRICT_RAM_SAVINGS (<32GB)"
-    EXPECTED_SWAPPINESS=180        # Force immediate compression of inactive RAM (User Override)
-    EXPECTED_VFS_PRESSURE=150      # Aggressively reclaim inode/dentry VFS caches to lower idle RAM
+    EXPECTED_SWAPPINESS=190        # Force immediate compression of inactive RAM (User Override)
+    EXPECTED_VFS_PRESSURE=200      # Aggressively reclaim inode/dentry VFS caches to lower idle RAM
     EXPECTED_SCALE_FACTOR=50       # 0.5% Emergency Buffer (40MB on 8GB RAM). Prevents UI direct reclaim stall.
     EXPECTED_DIRTY_BYTES=134217728 # 128MB max. Prevents massive file transfers from bloating RAM.
     EXPECTED_DIRTY_BG_BYTES=33554432 # 32MB bg threshold. Flushes data to disk sooner to free memory.
-    EXPECTED_MGLRU_TTL=250         # Perfect CPU/ZRAM thrash shield balance.
+    EXPECTED_MGLRU_TTL=2000         # Perfect CPU/ZRAM thrash shield balance.
 fi
 
 # Static Constants
