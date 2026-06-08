@@ -233,7 +233,7 @@ main() {
     fi
 
     # Mathematically Aligned Header (6 | 55 | 15 | 12)
-    local -r visual_header=$(printf "   \033[1;37m%-6s\033[0m \033[38;5;238m│\033[0m \033[1;37m%-55s\033[0m \033[38;5;238m│\033[0m \033[1;37m%-15s\033[0m \033[38;5;238m│\033[0m \033[1;37m%-12s\033[0m" "DATE" "GRAPH / REFS / MESSAGE" "AUTHOR" "TIME AGO")
+    local -r visual_header=$(printf " \033[1;37m%-6s\033[0m \033[38;5;238m│\033[0m \033[1;37m%-55s\033[0m \033[38;5;238m│\033[0m \033[1;37m%-15s\033[0m \033[38;5;238m│\033[0m \033[1;37m%-12s\033[0m" "DATE" "GRAPH / REFS / MESSAGE" "AUTHOR" "TIME AGO")
 
     # Launch FZF subprocess mapping
     _dusky_git_list | fzf --ansi \
