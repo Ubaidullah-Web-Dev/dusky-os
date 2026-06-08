@@ -86,10 +86,15 @@ def run_passthrough(cmd: list[str]) -> int:
 
 
 def get_btrfs_device(mountpoint: str) -> str:
-    result = run_cmd(["findmnt", "--fstab", "--evaluate", "-n", "-o", "SOURCE", "--target", mountpoint])
+    # Use live mount info (-T) instead of fstab to natively support LUKS2 and LVM.
+    # The -v (--nofsroot) flag cleanly strips the Btrfs subvolume brackets (e.g., [/var/log]).
+    # The -e (--evaluate) flag safely resolves UUIDs/labels to raw block device paths.
+    result = run_cmd(["findmnt", "-n", "-v", "-e", "-o", "SOURCE", "-T", mountpoint])
     device = result.stdout.strip()
+    
     if not device.startswith("/dev/"):
         fail(f"[!] Fatal: Could not resolve physical block device for {mountpoint}. Found: {device}")
+    
     return os.path.realpath(device)
 
 
@@ -164,7 +169,7 @@ class PreparedRestore:
     spec: RestoreSpec
     source_snapshot: Path
     target_path: Path
-    backup_path: Path
+    temp_delete_path: Path
     staging_path: Path
     staging_created: bool = False
     active_moved: bool = False
@@ -197,14 +202,14 @@ def resolve_restore_spec(config: str, snap_id: str) -> RestoreSpec:
 def prepare_restore(spec: RestoreSpec, top_mnt: Path, timestamp: str) -> PreparedRestore:
     target_path = top_mnt / spec.active_subvol
     source_snapshot = top_mnt / spec.snapshots_subvol / spec.snap_id / "snapshot"
-    backup_path = target_path.with_name(f"{target_path.name}_backup_{timestamp}")
+    temp_delete_path = target_path.with_name(f"{target_path.name}_to_delete_{timestamp}")
     staging_path = target_path.with_name(f"{target_path.name}_restore_{spec.snap_id}_{timestamp}")
 
     return PreparedRestore(
         spec=spec,
         source_snapshot=source_snapshot,
         target_path=target_path,
-        backup_path=backup_path,
+        temp_delete_path=temp_delete_path,
         staging_path=staging_path,
     )
 
@@ -224,7 +229,7 @@ def ensure_no_nested_subvolumes(plan: PreparedRestore) -> None:
             f"\n[!] CRITICAL HALT: Nested subvolumes detected physically inside "
             f"'{plan.spec.active_subvol}' for config '{plan.spec.config}'!\n\n"
             f"Offending subvolumes:\n{nested_output}\n\n"
-            f"[!] An atomic rollback would trap these inside the backup subvolume.\n"
+            f"[!] An atomic rollback would trap these inside the subvolume slated for deletion.\n"
             f"[!] Please check what these are. You may need to flatten your Btrfs topology "
             f"(e.g., move Docker to a separate top-level subvolume)."
         )
@@ -243,9 +248,9 @@ def rollback_prepared_restores(plans: list[PreparedRestore], original_exc: Excep
                 )
 
     for plan in reversed(plans):
-        if plan.active_moved and plan.backup_path.exists() and not plan.target_path.exists():
+        if plan.active_moved and plan.temp_delete_path.exists() and not plan.target_path.exists():
             try:
-                plan.backup_path.rename(plan.target_path)
+                plan.temp_delete_path.rename(plan.target_path)
             except OSError as exc:
                 rollback_errors.append(
                     f"{plan.spec.config}: failed to restore original active subvolume: {exc}"
@@ -287,10 +292,10 @@ def apply_prepared_restores(plans: list[PreparedRestore]) -> None:
                 f"[!] Fatal: Active subvolume path does not exist for config "
                 f"'{plan.spec.config}': {plan.target_path}"
             )
-        if plan.backup_path.exists():
+        if plan.temp_delete_path.exists():
             fail(
-                f"[!] Fatal: Backup path already exists for config "
-                f"'{plan.spec.config}': {plan.backup_path}"
+                f"[!] Fatal: Deletion path already exists for config "
+                f"'{plan.spec.config}': {plan.temp_delete_path}"
             )
         if plan.staging_path.exists():
             fail(
@@ -313,10 +318,9 @@ def apply_prepared_restores(plans: list[PreparedRestore]) -> None:
 
         for plan in plans:
             print(
-                f"\033[1;38;5;81m[*] Moving active subvolume for '{plan.spec.config}' to "
-                f"{plan.backup_path.name}...\033[0m"
+                f"\033[1;38;5;81m[*] Unlinking current active subvolume for '{plan.spec.config}'...\033[0m"
             )
-            plan.target_path.rename(plan.backup_path)
+            plan.target_path.rename(plan.temp_delete_path)
             plan.active_moved = True
 
         for plan in plans:
@@ -326,6 +330,15 @@ def apply_prepared_restores(plans: list[PreparedRestore]) -> None:
             )
             plan.staging_path.rename(plan.target_path)
             plan.activated = True
+            
+        # Clean-up Phase: Zero Backup Retention Rule
+        for plan in plans:
+            print(
+                f"\033[1;38;5;81m[*] Permanently deleting previous system state for '{plan.spec.config}'...\033[0m"
+            )
+            del_res = run_cmd(["btrfs", "subvolume", "delete", str(plan.temp_delete_path)], check=False)
+            if del_res.returncode != 0:
+                print(f"\033[1;38;5;220m[!] Warning: Failed to cleanly delete old subvolume. You may need to delete it manually: {error_text(del_res)}\033[0m", file=sys.stderr)
 
     except (OSError, RuntimeError) as exc:
         rollback_prepared_restores(plans, exc)
