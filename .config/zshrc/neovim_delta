@@ -10,13 +10,14 @@ typeset -g DUSKY_DIFF_ENGINE="$HOME/user_scripts/tools/delta/neovim_delta.py"
 _d_execute() {
     local -a run_args=("$@")
     
-    # We explicitly redirect stdin to /dev/tty so any interactive prompts inside Python 
-    # (like 'Press Enter to continue') work perfectly and don't steal/freeze terminal states.
-    "$DUSKY_DIFF_ENGINE" "${run_args[@]}" < /dev/tty
+    # Automatically pipe an empty newline into the engine. This instantly satisfies the 
+    # Python "Press Enter to continue" prompt in the background, guaranteeing your 
+    # terminal cursor returns immediately to the prompt without freezing/hanging!
+    echo "" | "$DUSKY_DIFF_ENGINE" "${run_args[@]}"
     
-    # Force reset terminal color and ensure a clean newline if python exited abruptly via Ctrl+C
-    print -n "\e[0m"
-    return $?
+    # Force reset terminal color and ensure strict prompt restoration
+    print -P "%b%f%k"
+    return 0
 }
 
 # 2. The Zero-Cost Proxy
@@ -100,7 +101,7 @@ di() {
 
     local selected
     
-    # Ultra-modern full-screen interface using FZF 0.73.1 independent borders & Catppuccin transparency
+    # Ultra-modern full-screen interface using FZF 0.73.1 independent borders & Catppuccin Surface2 Palette
     selected=$(fzf \
         --height=100% \
         --style=full \
@@ -115,15 +116,15 @@ di() {
         --padding=1,2 \
         --margin=1 \
         --prompt="   " \
-        --pointer=" " \
-        --marker=" " \
+        --pointer=" " \
+        --marker=" ✓" \
         --info=inline-right \
         --header="Select a previous diff target to re-run (Enter to run, Esc to abort)" \
         --header-first \
         --scheme=history \
         --wrap \
         --tac \
-        --color="bg:-1,bg+:#313244,fg:#cdd6f4,fg+:#cdd6f4,prompt:#cba6f7,pointer:#f38ba8,hl:#f9e2af,hl+:#f9e2af,border:#89b4fa,header:#94e2d5,info:#cba6f7,marker:#b4befe,spinner:#f5e0dc,list-border:#89b4fa,input-border:#89b4fa" \
+        --color="bg:-1,bg+:#1e1e2e,spinner:#f5e0dc,fg:#cdd6f4,fg+:#cdd6f4,header:#89b4fa,info:#cba6f7,pointer:#a6e3a1,marker:#f5e0dc,prompt:#cba6f7,hl:#f38ba8,hl+:#f38ba8,border:#585b70,label:#a6e3a1,list-border:#585b70,input-border:#585b70,list-label:#a6e3a1,input-label:#a6e3a1" \
         < "$DUSKY_DIFF_HISTORY"
     )
 
