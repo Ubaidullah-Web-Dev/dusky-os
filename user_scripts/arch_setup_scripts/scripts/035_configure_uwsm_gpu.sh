@@ -222,8 +222,10 @@ detect_topology() {
         [[ -r "$card_path/device/boot_vga" ]] && boot_vga=$(<"$card_path/device/boot_vga")
 
         kernel_driver='unknown'
-        if driver_symlink=$(readlink -f -- "$card_path/device/driver" 2>/dev/null); then
-            kernel_driver="${driver_symlink##*/}"
+        if [[ -e "$card_path/device/driver" ]]; then
+            # Bulletproof readlink execution ensuring inherit_errexit is never tripped
+            driver_symlink=$(readlink -f -- "$card_path/device/driver" 2>/dev/null || true)
+            [[ -n $driver_symlink ]] && kernel_driver="${driver_symlink##*/}"
         fi
 
         by_path_link="/dev/dri/by-path/pci-${pci_address}-card"
@@ -454,7 +456,7 @@ generate_config() {
                 fi
                 ;;
             0x10de)
-                case $kernel_driver in
+                case "${kernel_driver}" in
                     nvidia)
                         printf '# NVIDIA Primary Session (Proprietary)\n'
                         printf 'export GBM_BACKEND=nvidia-drm\n'
