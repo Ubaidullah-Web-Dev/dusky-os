@@ -97,7 +97,7 @@ if TYPE_CHECKING:
 # =============================================================================
 APP_ID: Final[str] = "com.github.dusky.controlcenter"
 APP_TITLE: Final[str] = "Dusky Control Center"
-CONFIG_FILENAME: Final[str] = "dusky_config.yaml"
+CONFIG_FILENAME: Final[str] = "dusky_config.toml"
 CSS_FILENAME: Final[str] = "dusky_style.css"
 SCRIPT_DIR: Final[Path] = Path(__file__).resolve().parent
 

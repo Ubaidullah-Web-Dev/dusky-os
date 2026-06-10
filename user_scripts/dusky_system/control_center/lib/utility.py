@@ -14,6 +14,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tomllib
 import tempfile
 import threading
 from collections.abc import Callable
@@ -160,8 +161,9 @@ def get_cache_dir() -> Path:
 # =============================================================================
 # CONFIGURATION LOADER
 # =============================================================================
+
 def load_config(config_path: Path) -> dict[str, object]:
-    """Load and parse YAML configuration safely."""
+    """Load and parse TOML configuration safely."""
     try:
         content = config_path.read_text(encoding="utf-8")
     except (FileNotFoundError, OSError) as e:
@@ -169,13 +171,13 @@ def load_config(config_path: Path) -> dict[str, object]:
         return {}
 
     try:
-        data = yaml.safe_load(content)
-    except yaml.YAMLError as e:
-        log.error("YAML syntax error in %s: %s", config_path, e)
+        # tomllib parses TOML natively into a standard Python dict
+        data = tomllib.loads(content)
+    except tomllib.TOMLDecodeError as e:
+        log.error("TOML syntax error in %s: %s", config_path, e)
         return {}
 
     return data if isinstance(data, dict) else {}
-
 
 # =============================================================================
 # UWSM-COMPLIANT COMMAND RUNNER
