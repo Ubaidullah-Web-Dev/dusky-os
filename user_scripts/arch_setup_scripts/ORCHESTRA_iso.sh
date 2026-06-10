@@ -52,6 +52,7 @@ INSTALL_SEQUENCE=(
 # ------ Setup SCRIPTS -------
 
     "U | 005_hypr_custom_config_setup.sh --force"
+    "U | 006_animation_default.sh"
     "U | 010_package_removal.sh --auto"
     "U | 015_set_thunar_terminal.py -t foot"
 #    "U | 020_desktop_apps_username_setter.sh"
@@ -90,7 +91,6 @@ INSTALL_SEQUENCE=(
     "U | 155_blur_shadow_opacity.sh"
     "U | 160_theme_ctl.sh"
     "U | 165_qtct_config.sh"
-    "U | 175_animation_default.sh"
     "S | 180_udev_usb_notify.sh"
     "U | 185_terminal_default.py -t foot"
 #    "S | 190_dusk_fstab.sh"

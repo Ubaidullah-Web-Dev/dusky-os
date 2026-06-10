@@ -195,6 +195,7 @@ declare -ra UPDATE_SEQUENCE=(
 #    "U | 002_pre_generated_colors.sh"
 #    "U | 003_network_connect.sh"
     "U | 005_hypr_custom_config_setup.sh"
+    "U | 006_animation_default.sh"
     "U | 005_hypr_custom_config_setup.sh --force --workspace_rules"
     "U | 010_package_removal.sh --auto"
 
@@ -237,7 +238,6 @@ declare -ra UPDATE_SEQUENCE=(
 #    "U | 155_blur_shadow_opacity.sh"
 #    "U | ignore-fail | 160_theme_ctl.sh"
 #    "U | 165_qtct_config.sh"
-#    "U | 175_animation_default.sh"
 #    "S | 180_udev_usb_notify.sh"
 #    "U | 185_terminal_default.sh"
 #    "S | 190_dusk_fstab.sh"

@@ -5,7 +5,7 @@
  UNIVERSAL DRIVE MANAGER (PLATINUM EDITION)
  ------------------------------------------------------------------------------
  Architecture updated to strict, cutting-edge standards based on the latest 
- util-linux and cryptsetup man pages.
+ util-linux (2.42+) and cryptsetup (2.8+) man pages.
  
  Features:
   - Native UUID= tagging for cryptsetup and mount mechanisms
@@ -13,6 +13,8 @@
   - Deprecated luksOpen syntax replaced with `open --type luks`
   - Zero-dependency TOML parsing (Python 3.11+ tomllib)
   - Arch Linux Auto-Bootstrapper for required UI/Sec dependencies
+  - Kernel-level findmnt --evaluate tag resolution
+  - Pre-emptive `sudo -v` credential priming to prevent stdin pipe collision
 ==============================================================================
 """
 
@@ -105,6 +107,19 @@ def prevent_root_execution():
         console.print("The script will securely request sudo permissions internally when needed.")
         sys.exit(1)
 
+def prime_sudo():
+    """
+    Primes the sudo credential cache. 
+    CRITICAL: If sudo prompts for a password via stdin while we are simultaneously piping 
+    a LUKS password to `subprocess.run`, sudo will swallow the LUKS password, fail, and hang.
+    This guarantees the TTY prompt occurs cleanly before piped operations begin.
+    """
+    try:
+        subprocess.run(["sudo", "-v"], check=True)
+    except subprocess.CalledProcessError:
+        err("Sudo authentication failed. Cannot proceed.")
+        sys.exit(1)
+
 def acquire_lock():
     """Acquires a kernel-level exclusive file lock to prevent concurrent executions."""
     global lock_fd
@@ -146,9 +161,14 @@ def wait_for_device(uuid: str, timeout: int) -> bool:
     return False
 
 def get_mount_info(target_dir: Path) -> dict[str, Any] | None:
-    """Uses findmnt JSON output to safely detect if a directory is mounted.
-       Utilizes --mountpoint to strictly evaluate the directory node itself."""
-    res = subprocess.run(["findmnt", "--json", "--mountpoint", str(target_dir)], capture_output=True, text=True)
+    """
+    Uses findmnt JSON output to safely detect if a directory is mounted.
+    - `--mountpoint`: strictly evaluates the directory node itself to prevent parent bleed.
+    - `--evaluate`: converts all kernel UUID=/LABEL= tags back to /dev/ paths for true 1:1 validation.
+    """
+    cmd = ["findmnt", "--json", "--evaluate", "--mountpoint", str(target_dir)]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    
     if res.returncode == 0:
         try:
             data = json.loads(res.stdout)
@@ -161,10 +181,12 @@ def get_mount_info(target_dir: Path) -> dict[str, Any] | None:
 def get_crypt_mapper_name(outer_uuid: str) -> str | None:
     """
     Uses lsblk to find the /dev/mapper/ NAME attached to the physical encrypted drive.
-    Returns just the name (e.g., 'luks-xxx') to comply with modern `cryptsetup close <name>` spec.
+    - `--tree`: Enforced per lsblk.md to guarantee `children[]` population.
+    Returns just the basename (e.g., 'luks-xxx') per modern `cryptsetup close <name>` spec.
     """
-    cmd = ["lsblk", f"/dev/disk/by-uuid/{outer_uuid}", "--json", "-o", "NAME,TYPE"]
+    cmd = ["lsblk", f"/dev/disk/by-uuid/{outer_uuid}", "--json", "--tree", "-o", "NAME,TYPE"]
     res = subprocess.run(cmd, capture_output=True, text=True)
+    
     if res.returncode == 0:
         try:
             data = json.loads(res.stdout)
@@ -177,13 +199,19 @@ def get_crypt_mapper_name(outer_uuid: str) -> str | None:
     return None
 
 def run_sudo_cmd(cmd: list[str], stdin_data: str | None = None) -> bool:
-    """Helper to run a sudo command securely and reliably."""
+    """Helper to run a sudo command securely, surfacing internal stderr logs if it fails."""
     try:
         if stdin_data is not None:
             res = subprocess.run(cmd, input=stdin_data, text=True, capture_output=True)
+            if res.returncode != 0:
+                if res.stderr:
+                    err(f"Subprocess kernel error: {res.stderr.strip()}")
+                return False
+            return True
         else:
+            # Without stdin_data, let standard streams flow naturally (stdout/stderr to console)
             res = subprocess.run(cmd)
-        return res.returncode == 0
+            return res.returncode == 0
     except Exception as e:
         err(f"Command execution failed: {e}")
         return False
@@ -257,13 +285,15 @@ def show_status(drives: dict[str, Drive]):
         is_mounted = False
 
         if mount_info:
-            actual_source = Path(mount_info.get("source", "")).resolve()
-            expected_dev = resolve_device(target_uuid)
-            
-            if expected_dev and expected_dev == actual_source:
-                is_mounted = True
-            elif target_uuid and target_uuid.lower() in str(actual_source).lower():
-                 is_mounted = True
+            source_str = mount_info.get("source")
+            if source_str:
+                actual_source = Path(source_str).resolve()
+                expected_dev = resolve_device(target_uuid)
+                
+                if expected_dev and expected_dev == actual_source:
+                    is_mounted = True
+                elif target_uuid and target_uuid.lower() in source_str.lower():
+                     is_mounted = True
 
         if is_mounted:
             table.add_row(f"[bold green]●[/] {name}", drive.type, "[bold green]Mounted[/]", str(drive.mountpoint))
@@ -276,6 +306,7 @@ def show_status(drives: dict[str, Drive]):
 
 def do_unlock(drive: Drive):
     """Unlocks and mounts the drive using latest kernel semantics."""
+    prime_sudo()
     log(f"Starting unlock sequence for '{drive.name}'...")
 
     target_uuid = drive.inner_uuid if drive.type == "PROTECTED" else drive.outer_uuid
@@ -283,7 +314,8 @@ def do_unlock(drive: Drive):
 
     # 1. Check if occupied
     if mount_info:
-        actual_source = Path(mount_info.get("source", "")).resolve()
+        source_str = mount_info.get("source", "")
+        actual_source = Path(source_str).resolve() if source_str else Path()
         expected_dev = resolve_device(target_uuid)
 
         if expected_dev and expected_dev == actual_source:
@@ -312,6 +344,7 @@ def do_unlock(drive: Drive):
             
             if pwd:
                 log("Password found in secure keyring. Supplying to cryptsetup...")
+                # "--key-file -" explicitly maps to stdin reading
                 cmd = base_cmd + ["--key-file", "-"]
                 if not run_sudo_cmd(cmd, stdin_data=pwd):
                     err("Decryption failed. Keyring password might be incorrect.")
@@ -348,6 +381,7 @@ def do_unlock(drive: Drive):
 
 def do_lock(drive: Drive):
     """Unmounts and locks the crypt device securely."""
+    prime_sudo()
     log(f"Starting lock sequence for '{drive.name}'...")
 
     mount_info = get_mount_info(drive.mountpoint)
@@ -356,7 +390,7 @@ def do_lock(drive: Drive):
     if mount_info:
         log(f"Unmounting {drive.mountpoint}...")
         # As per umount.md: umount inherently flushes buffers for the targeted filesystem.
-        # Calling global os.sync() here is an archaic anti-pattern.
+        # Calling global os.sync() here is an archaic anti-pattern and has been removed.
         if not run_sudo_cmd(["sudo", "umount", str(drive.mountpoint)]):
             err(f"Failed to unmount. A process might be locking the filesystem (check 'lsof +f -- {drive.mountpoint}').")
             sys.exit(1)
@@ -376,7 +410,7 @@ def do_lock(drive: Drive):
         time.sleep(1)
         subprocess.run(["udevadm", "settle", "--timeout=5"], capture_output=True)
 
-        # As per cryptsetup.md: `cryptsetup close <name>` expects just the mapper name, not the path.
+        # As per cryptsetup.md: `cryptsetup close <name>` expects just the basename.
         mapper_name = get_crypt_mapper_name(drive.outer_uuid)
         if mapper_name:
             log(f"Locking crypt node: {mapper_name}...")
