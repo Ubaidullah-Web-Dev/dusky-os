@@ -283,12 +283,11 @@ post_hook   = '''
 '''
 
 [templates.firefox_websites]
-input_path  = '~/.config/matugen/templates/firefox_websites.css'
+input_path = '~/.config/matugen/templates/firefox_websites.css'
 output_path = '~/.config/matugen/generated/firefox_websites.css'
-post_hook   = '''
-  ln -nfs "$HOME/.config/matugen/generated/firefox_websites.css" "$HOME/.config/mozilla/firefox/wu6aqtcl.dev-edition-default/chrome/colors.css" || :
-  ln -nfs "$HOME/.config/matugen/generated/firefox_websites.css" "$HOME/.config/mozilla/firefox/tox6bnxb.default-release/chrome/colors.css" || :
-  ln -nfs "$HOME/.config/matugen/generated/firefox_websites.css" "$HOME/.config/mozilla/firefox/ppp27s9b.default/chrome/colors.css" || :
+post_hook = '''
+    ln -nfs "$HOME/.config/matugen/generated/firefox_websites.css" "/home/dusk/.config/mozilla/firefox/90mfjbn9.default-release/chrome/colors.css" || :
+    ln -nfs "$HOME/.config/matugen/generated/firefox_websites.css" "/home/dusk/.config/mozilla/firefox/gzx592cf.default/chrome/colors.css" || :
 '''
 
 
