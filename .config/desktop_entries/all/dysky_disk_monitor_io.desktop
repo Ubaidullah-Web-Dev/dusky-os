@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=IO Monitor
-GenericName=Disk IO Usage
+Name=Dusky Disk Monitor
+GenericName=Disk IO Monitor
 Comment=Real-time Disk I/O Monitoring
-Exec=uwsm-app -- kitty --class io_monitor.sh -e /home/dusk/user_scripts/drives/io_monitor.sh
+Exec=uwsm-app -- kitty --class dysky_disk_monitor_io.py -e /home/dusk/user_scripts/drives/dysky_disk_monitor_io.py
 Terminal=false
 Categories=System;Monitor;
 Keywords=disk;io;read;write;monitor;

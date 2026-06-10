@@ -629,12 +629,12 @@ hl.window_rule({
     center = true
 })
 
---- io_monitor.sh ---
+--- dysky_disk_monitor_io.py ---
 hl.window_rule({
-    name = "io_monitor.sh",
-    match = { class = "^(io_monitor.sh)$" },
+    name = "dysky_disk_monitor_io.py",
+    match = { class = "^(dysky_disk_monitor_io.py)$" },
     float = true,
-    size = {960, 300},
+    size = {880, 618},
     center = true
 })
 
