@@ -10,12 +10,13 @@
  Features:
   - Native UUID= tagging for cryptsetup and mount mechanisms
   - Atomic directory creation via mount --mkdir
-  - Deprecated luksOpen syntax replaced with `open --type luks`
+  - Dynamic LUKS/BitLocker auto-detection (no hardcoded --type)
   - Zero-dependency TOML parsing (Python 3.11+ tomllib)
   - Arch Linux Auto-Bootstrapper for required UI/Sec dependencies
   - Kernel-level findmnt --evaluate tag resolution
   - Pre-emptive `sudo -v` credential priming to prevent stdin pipe collision
-  - Hybrid Ghost-Mapper resolution (maintains 3rd-party interoperability)
+  - Interactive Busy Process Resolver (Intelligent PID Tracking + Forensics)
+  - Triple-Tier Teardown (udisksctl -> cryptsetup -> deferred async closure)
 ==============================================================================
 """
 
@@ -41,6 +42,7 @@ try:
     from rich.console import Console
     from rich.table import Table
     from rich.panel import Panel
+    from rich.prompt import Prompt
 except ImportError:
     print("\n[INFO] Missing required Python libraries: 'keyring' and/or 'rich'.")
     print("[INFO] Attempting to auto-install via pacman...")
@@ -138,7 +140,7 @@ def acquire_lock():
 
 def check_dependencies():
     """Ensures necessary OS binaries exist."""
-    deps = ["mount", "umount", "findmnt", "lsblk", "udevadm", "sudo", "cryptsetup"]
+    deps = ["mount", "umount", "findmnt", "lsblk", "udevadm", "sudo", "cryptsetup", "lsof", "blockdev"]
     missing = [cmd for cmd in deps if shutil.which(cmd) is None]
     if missing:
         err(f"Missing required commands: {', '.join(missing)}")
@@ -164,8 +166,6 @@ def wait_for_device(uuid: str, timeout: int) -> bool:
 def get_mount_info(target_dir: Path) -> dict[str, Any] | None:
     """
     Uses findmnt JSON output to safely detect if a directory is mounted.
-    - `--mountpoint`: strictly evaluates the directory node itself to prevent parent bleed.
-    - `--evaluate`: converts all kernel UUID=/LABEL= tags back to /dev/ paths for true 1:1 validation.
     """
     cmd = ["findmnt", "--json", "--evaluate", "--mountpoint", str(target_dir)]
     res = subprocess.run(cmd, capture_output=True, text=True)
@@ -182,8 +182,6 @@ def get_mount_info(target_dir: Path) -> dict[str, Any] | None:
 def get_crypt_mapper_name(outer_uuid: str) -> str | None:
     """
     Uses lsblk to find the /dev/mapper/ NAME attached to the physical encrypted drive.
-    - `--tree`: Enforced per lsblk.md to guarantee `children[]` population.
-    Returns just the basename (e.g., 'luks-xxx') per modern `cryptsetup close <name>` spec.
     """
     cmd = ["lsblk", f"/dev/disk/by-uuid/{outer_uuid}", "--json", "--tree", "-o", "NAME,TYPE"]
     res = subprocess.run(cmd, capture_output=True, text=True)
@@ -210,20 +208,108 @@ def run_sudo_cmd(cmd: list[str], stdin_data: str | None = None) -> bool:
                 return False
             return True
         else:
-            # Without stdin_data, let standard streams flow naturally (stdout/stderr to console)
             res = subprocess.run(cmd)
             return res.returncode == 0
     except Exception as e:
         err(f"Command execution failed: {e}")
         return False
 
+def is_process_alive(pid: str) -> bool:
+    """Checks if a process is still alive by sending signal 0 via the kernel."""
+    try:
+        res = subprocess.run(["sudo", "kill", "-0", pid], capture_output=True, text=True)
+        return res.returncode == 0
+    except Exception:
+        return False
+
+def resolve_busy_processes(mountpoint: Path) -> bool:
+    """Finds processes keeping the drive busy and offers an intelligent, interactive kill menu."""
+    res = subprocess.run(["sudo", "lsof", "+f", "--", str(mountpoint)], capture_output=True, text=True)
+    if res.returncode != 0 or not res.stdout.strip():
+        return False
+
+    lines = res.stdout.strip().split("\n")
+    if len(lines) <= 1:
+        return False
+
+    processes = []
+    # Skip header, parse rows. Deduplicate by PID.
+    for line in lines[1:]:
+        parts = line.split()
+        if len(parts) >= 3:
+            pid = parts[1]
+            if not any(p["pid"] == pid for p in processes):
+                processes.append({
+                    "cmd": parts[0],
+                    "pid": pid,
+                    "user": parts[2]
+                })
+
+    if not processes:
+        return False
+
+    console.print(Panel(
+        "[bold red]⚠️  WARNING: DATA CORRUPTION RISK ⚠️[/]\n\n"
+        f"The following processes are currently locking [bold white]{mountpoint}[/]\n"
+        "Force-killing them may result in unsaved work being lost or file corruption.",
+        title="Filesystem Busy", border_style="red"
+    ))
+
+    table = Table(show_header=True, header_style="bold yellow", border_style="yellow")
+    table.add_column("COMMAND", style="cyan")
+    table.add_column("PID", justify="right", style="yellow")
+    table.add_column("USER")
+
+    for p in processes:
+        table.add_row(p["cmd"], p["pid"], p["user"])
+
+    console.print(table)
+    console.print()
+
+    action_taken = False
+    for p in processes:
+        # Just-in-time check to see if the process was already killed via a parent tree termination.
+        if not is_process_alive(p["pid"]):
+            console.print(f"[bold cyan][INFO][/] {p['cmd']} (PID: {p['pid']}) has already exited gracefully.")
+            continue
+
+        ans = Prompt.ask(
+            f"Force kill [bold cyan]{p['cmd']}[/] (PID: [bold yellow]{p['pid']}[/])?", 
+            choices=["y", "n"], 
+            default="n"
+        )
+        if ans == "y":
+            kill_res = subprocess.run(["sudo", "kill", "-9", p['pid']], capture_output=True, text=True)
+            if kill_res.returncode == 0:
+                success(f"Successfully killed {p['cmd']} (PID: {p['pid']}).")
+                action_taken = True
+            else:
+                stderr_msg = kill_res.stderr.strip()
+                err(f"Failed to kill PID {p['pid']}: {stderr_msg}")
+    
+    return action_taken
+
+def run_cryptsetup_forensics(mapper_name: str):
+    """Diagnoses exactly what is preventing a cryptsetup closure."""
+    target = f"/dev/mapper/{mapper_name}"
+    log(f"Running forensic block-device scan on {target}...")
+    
+    res = subprocess.run(["sudo", "lsof", target], capture_output=True, text=True)
+    if res.stdout.strip():
+        console.print(Panel(
+            res.stdout.strip(), 
+            title="Processes locking the underlying crypt node", 
+            border_style="red"
+        ))
+    else:
+        hint_msg("No userspace applications are holding the node. It is likely locked by a kernel subsystem (e.g., LVM, Btrfs async flusher) or udev daemon probing.")
+        hint_msg(f"To lock it asynchronously once the kernel is finished, run: `sudo cryptsetup close --deferred {mapper_name}`")
+
 # ------------------------------------------------------------------------------
 #  CONFIG PARSING
 # ------------------------------------------------------------------------------
 def load_config(override_path: Path | None = None) -> dict[str, Drive]:
     """Loads and validates drives.toml into native dataclasses."""
-    
-    # Handle explicit CLI override natively
     if override_path:
         if not override_path.exists():
             err(f"Explicit config file '{override_path}' not found.")
@@ -238,7 +324,6 @@ def load_config(override_path: Path | None = None) -> dict[str, Drive]:
 
     if not target_config:
         err("Configuration file 'drives.toml' not found.")
-        console.print("Please place it in `~/.config/drive_manager/drives.toml` or the script directory.")
         sys.exit(1)
 
     try:
@@ -261,7 +346,6 @@ def load_config(override_path: Path | None = None) -> dict[str, Drive]:
                 inner_uuid=data.get("inner_uuid"),
                 hint=data.get("hint")
             )
-            # Validation
             if drives[name].type not in ["PROTECTED", "SIMPLE"]:
                 raise ValueError(f"Invalid type '{drives[name].type}'")
             if drives[name].type == "PROTECTED" and not drives[name].inner_uuid:
@@ -279,7 +363,6 @@ def load_config(override_path: Path | None = None) -> dict[str, Drive]:
 #  CORE ENGINE
 # ------------------------------------------------------------------------------
 def show_status(drives: dict[str, Drive]):
-    """Renders a visually appealing status table mapping system reality to config."""
     table = Table(show_header=True, header_style="bold white", border_style="bright_black")
     table.add_column("DRIVE", width=14)
     table.add_column("TYPE", width=10)
@@ -312,14 +395,12 @@ def show_status(drives: dict[str, Drive]):
     console.print()
 
 def do_unlock(drive: Drive):
-    """Unlocks and mounts the drive using latest kernel semantics."""
     prime_sudo()
     log(f"Starting unlock sequence for '{drive.name}'...")
 
     target_uuid = drive.inner_uuid if drive.type == "PROTECTED" else drive.outer_uuid
     mount_info = get_mount_info(drive.mountpoint)
 
-    # 1. Check if occupied
     if mount_info:
         source_str = mount_info.get("source", "")
         actual_source = Path(source_str).resolve() if source_str else Path()
@@ -332,7 +413,6 @@ def do_unlock(drive: Drive):
             err(f"Mountpoint {drive.mountpoint} is occupied by another device: {actual_source}")
             sys.exit(1)
 
-    # 2. Decrypt if PROTECTED
     if drive.type == "PROTECTED":
         if not resolve_device(drive.outer_uuid):
             err(f"Physical drive not found (Outer UUID: {drive.outer_uuid}). Is it plugged in?")
@@ -343,15 +423,14 @@ def do_unlock(drive: Drive):
         else:
             log("Unlocking encrypted container...")
             mapper_name = f"luks-{drive.outer_uuid}"
+            outer_dev_path = f"/dev/disk/by-uuid/{drive.outer_uuid}"
             
-            # As per cryptsetup.md: use `open --type luks UUID=<uuid>` (replaces legacy `luksOpen`)
-            base_cmd = ["sudo", "cryptsetup", "open", "--type", "luks", f"UUID={drive.outer_uuid}", mapper_name]
-
+            # Auto-detection mode: Omit `--type luks` to allow native BitLocker and LUKS interoperability.
+            base_cmd = ["sudo", "cryptsetup", "open", outer_dev_path, mapper_name]
             pwd = keyring.get_password(KEYRING_SERVICE, drive.name)
             
             if pwd:
                 log("Password found in secure keyring. Supplying to cryptsetup...")
-                # "--key-file -" explicitly maps to stdin reading
                 cmd = base_cmd + ["--key-file", "-"]
                 if not run_sudo_cmd(cmd, stdin_data=pwd):
                     err("Decryption failed. Keyring password might be incorrect.")
@@ -369,10 +448,7 @@ def do_unlock(drive: Drive):
                 err("Timeout waiting for inner filesystem to appear.")
                 sys.exit(1)
 
-    # 3. Mount Filesystem
     log(f"Mounting to {drive.mountpoint}...")
-    
-    # As per mount.md: utilize native `UUID=` tags, explicit `--source`/`--target`, and atomic `--mkdir`
     cmd = [
         "sudo", "mount", 
         "--mkdir", 
@@ -387,36 +463,42 @@ def do_unlock(drive: Drive):
         sys.exit(1)
 
 def do_lock(drive: Drive):
-    """Unmounts and locks the crypt device securely."""
     prime_sudo()
     log(f"Starting lock sequence for '{drive.name}'...")
 
     mount_info = get_mount_info(drive.mountpoint)
 
-    # 1. Unmount safely
     if mount_info:
         log(f"Unmounting {drive.mountpoint}...")
-        # As per umount.md: umount inherently flushes buffers for the targeted filesystem.
-        # Calling global os.sync() here is an archaic anti-pattern and has been removed.
-        if not run_sudo_cmd(["sudo", "umount", str(drive.mountpoint)]):
-            err(f"Failed to unmount. A process might be locking the filesystem (check 'lsof +f -- {drive.mountpoint}').")
+        unmounted = False
+        
+        for attempt in range(5):
+            if run_sudo_cmd(["sudo", "umount", str(drive.mountpoint)]):
+                unmounted = True
+                break
+            else:
+                log("Filesystem is busy. Scanning for locking processes...")
+                if resolve_busy_processes(drive.mountpoint):
+                    log("Retrying unmount sequence...")
+                    time.sleep(1)
+                else:
+                    break 
+        
+        if unmounted:
+            log("Unmount successful.")
+        else:
+            err(f"Failed to unmount {drive.mountpoint}. A process is still locking the filesystem.")
             sys.exit(1)
-        log("Unmount successful.")
     else:
         log(f"{drive.mountpoint} is already unmounted.")
 
-    # 2. Lock Cryptsetup
     if drive.type == "PROTECTED":
         mapper_name = None
         physical_present = resolve_device(drive.outer_uuid)
         
         if physical_present:
-            # Drive is physically present. Ask kernel for exact mapper name to ensure interoperability 
-            # (handles drives unlocked by OS/udisks2 instead of our script).
             mapper_name = get_crypt_mapper_name(drive.outer_uuid)
         else:
-            # Drive is physically missing (surprise removal). lsblk will fail, so we check for a ghost
-            # node matching our script's deterministic naming scheme.
             deterministic_name = f"luks-{drive.outer_uuid}"
             if Path(f"/dev/mapper/{deterministic_name}").exists():
                 hint_msg("Physical drive missing, but ghost mapper detected. Forcing cleanup.")
@@ -431,9 +513,21 @@ def do_lock(drive: Drive):
         if mapper_name:
             time.sleep(1)
             subprocess.run(["udevadm", "settle", "--timeout=5"], capture_output=True)
+            subprocess.run(["sudo", "blockdev", "--flushbufs", f"/dev/mapper/{mapper_name}"], capture_output=True)
 
             log(f"Locking crypt node: {mapper_name}...")
             
+            # --- STRATEGY 1: Interoperable DBus Lock ---
+            # If the drive was unlocked by the Desktop Environment (udisks2) or an older bash script, 
+            # udisksd holds an exclusive monitoring reference. A manual cryptsetup close will fail with EBUSY.
+            outer_dev = f"/dev/disk/by-uuid/{drive.outer_uuid}"
+            if shutil.which("udisksctl") and Path(outer_dev).exists():
+                res = subprocess.run(["udisksctl", "lock", "-b", outer_dev], capture_output=True, text=True)
+                if res.returncode == 0:
+                    success("Encrypted container successfully locked via udisks2 API.")
+                    return
+            
+            # --- STRATEGY 2: Standard Cryptsetup Close ---
             for attempt in range(LOCK_MAX_RETRIES):
                 if run_sudo_cmd(["sudo", "cryptsetup", "close", mapper_name]):
                     success("Encrypted container successfully locked.")
@@ -441,7 +535,16 @@ def do_lock(drive: Drive):
                 log(f"Lock attempt {attempt+1}/{LOCK_MAX_RETRIES} failed. Retrying...")
                 time.sleep(LOCK_RETRY_DELAY)
             
-            err(f"Failed to lock {mapper_name} after multiple attempts. Ensure no rogue process holds a reference.")
+            # --- STRATEGY 3: Deferred Kernel Teardown ---
+            # For NTFS/Btrfs drives, kernel async flushers can keep the device busy for several seconds
+            # after unmount. We issue a deferred close to let the kernel destroy it automatically.
+            log("Device is held by a kernel subsystem. Engaging deferred asynchronous lock...")
+            if run_sudo_cmd(["sudo", "cryptsetup", "close", "--deferred", mapper_name]):
+                success("Device marked for deferred closure (will lock automatically when kernel I/O finishes).")
+                return
+
+            err(f"Failed to lock {mapper_name} after all strategies exhausted.")
+            run_cryptsetup_forensics(mapper_name)
             sys.exit(1)
         else:
             success("Encrypted container is already locked.")
@@ -449,7 +552,6 @@ def do_lock(drive: Drive):
         success(f"Simple drive '{drive.name}' disconnected cleanly.")
 
 def set_keyring_password(drives: dict[str, Drive], target: str):
-    """Securely store a LUKS password in the system keyring."""
     if target not in drives:
         err(f"Drive '{target}' not recognized in config.")
         sys.exit(1)
@@ -464,7 +566,7 @@ def set_keyring_password(drives: dict[str, Drive], target: str):
         title="Keyring Setup", border_style="cyan"
     ))
 
-    pwd = getpass.getpass(f"Enter LUKS password for '{target}': ")
+    pwd = getpass.getpass(f"Enter LUKS/BitLocker password for '{target}': ")
     pwd_confirm = getpass.getpass("Confirm password: ")
 
     if pwd != pwd_confirm:
@@ -488,7 +590,6 @@ def main():
     parser.add_argument("-c", "--config", type=Path, help="Path to override drives.toml")
     subparsers = parser.add_subparsers(dest="action", required=True)
 
-    # Subcommands
     subparsers.add_parser("status", help="Show status of all configured drives")
     
     unlock_p = subparsers.add_parser("unlock", help="Unlock and mount a specified drive")
@@ -502,10 +603,7 @@ def main():
 
     args = parser.parse_args()
 
-    # Early dependency check before touching kernel / disk states
     check_dependencies()
-
-    # Load Configuration from TOML
     drives = load_config(args.config)
 
     match args.action:
