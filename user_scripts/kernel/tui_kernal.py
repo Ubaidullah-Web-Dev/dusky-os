@@ -7,7 +7,7 @@ from python.frontend.core_types import ConfigItem
 ENGINE_TYPE = "systemd_boot"                       
 TARGET_FILE = "/boot/loader/entries/arch-linux.conf"           
 APP_TITLE = "Kernel Parameter Editor"         
-# REQUIRE_ROOT = True
+REQUIRE_ROOT = True
 
 # =============================================================================
 # 2. UI & ENVIRONMENT BEHAVIOR
@@ -15,7 +15,6 @@ APP_TITLE = "Kernel Parameter Editor"
 DEFAULT_MODE = "batch"                        
 THEME_FILE = "~/.config/matugen/generated/dusky_tui.json"
 
-# Enabled User Presets and strictly routed them to the new "Presets" tab
 ENABLE_USER_PRESETS = True                   
 USER_PRESETS_TAB = "Presets"
 
@@ -125,6 +124,16 @@ SCHEMA = {
     # TAB 1: PERFORMANCE
     # -------------------------------------------------------------------------
     1: [
+        ConfigItem(
+            label="Memory Limit",
+            key="mem",
+            scope="DEFAULT",
+            type_="string",
+            options=["unset", "6G", "8G", "12G", "16G", "24G", "32G", "48G", "64G"],
+            default="unset",
+            group="Memory",
+            extended_help="**RAM Allocation Limit**\n\nForces the kernel to use a specific maximum amount of memory (e.g., `16G`). This is useful for testing low-memory conditions or reserving hardware RAM. You can select a preset or type your own custom value."
+        ),
         ConfigItem(
             label="Mitigations",
             key="mitigations",
@@ -412,7 +421,7 @@ SCHEMA = {
             key="action_mkinitcpio",
             scope="DEFAULT",
             type_="action",
-            default="mkinitcpio -P",
+            default="mkinitcpio -P > /dev/null",
             group="System Generation",
             confirm_message="Are you sure you want to regenerate the initramfs for all configured kernels? (mkinitcpio -P)",
             extended_help="**mkinitcpio -P**\n\nRebuilds the initial ramdisk environment for all installed preset kernels. This is absolutely essential after changing root filesystem types, LUKS encryption parameters, or early-boot drivers."
@@ -422,7 +431,7 @@ SCHEMA = {
             key="action_bootctl_update",
             scope="DEFAULT",
             type_="action",
-            default="bootctl update",
+            default="bootctl update -q",
             group="Bootloader Configuration",
             confirm_message="Are you sure you want to update systemd-boot in the ESP? (bootctl update)",
             extended_help="**bootctl update**\n\nUpdates all installed versions of systemd-boot in the EFI system partition (ESP) if the available version is newer. It also ensures the boot loader is appended to the firmware's boot list."
@@ -432,7 +441,7 @@ SCHEMA = {
             key="action_bootctl_install",
             scope="DEFAULT",
             type_="action",
-            default="bootctl install",
+            default="bootctl install -q",
             group="Bootloader Configuration",
             confirm_message="Are you sure you want to INSTALL systemd-boot? This will overwrite the primary EFI bootloader. (bootctl install)",
             extended_help="**bootctl install**\n\nInstalls systemd-boot into the EFI system partition and adds it to the top of the firmware's boot loader list. Only run this if systemd-boot is not yet installed."
@@ -442,7 +451,7 @@ SCHEMA = {
             key="action_bootctl_seed",
             scope="DEFAULT",
             type_="action",
-            default="bootctl random-seed",
+            default="bootctl random-seed -q",
             group="Bootloader Configuration",
             extended_help="**bootctl random-seed**\n\nRefreshes the random seed in the ESP and EFI variables, ensuring proper early-boot entropy."
         ),
@@ -451,7 +460,5 @@ SCHEMA = {
     # -------------------------------------------------------------------------
     # TAB 5: PRESETS
     # -------------------------------------------------------------------------
-    # This array is intentionally left empty. The UI engine will automatically
-    # populate this tab with the [Save Preset] button and all user-defined presets.
     5: []
 }
