@@ -2,7 +2,7 @@
 
 """
 ==============================================================================
- UNIVERSAL DRIVE MANAGER (PLATINUM EDITION)
+ UNIVERSAL DRIVE MANAGER (PLATINUM EDITION - ARCH OPTIMIZED)
  ------------------------------------------------------------------------------
  Architecture updated to strict, cutting-edge standards based on the latest 
  util-linux (2.42+) and cryptsetup (2.8+) man pages.
@@ -14,12 +14,12 @@
   - Intelligent NTFS/FAT32 Auto-Permission Configurator (uid/gid injection)
   - Zero-dependency TOML parsing (Python 3.11+ tomllib)
   - Arch Linux Auto-Bootstrapper for required UI/Sec dependencies
-  - Robust Lockfile Mechanics (Atomic O_CREAT+flock to prevent PID wipes)
+  - Robust Lockfile Mechanics with User-Isolated Runtime Directing
   - Pre-emptive `sudo -v` credential priming to prevent stdin pipe collision
-  - Interactive Busy Process Resolver (Intelligent PID Tracking + Forensics)
+  - Interactive Busy Process Resolver (High-Performance Memory Parsing)
   - Triple-Tier Teardown (udisksctl -> cryptsetup -> deferred async closure)
   - Smart Password Retry Loop with Right-Aligned Memory History
-  - Secure /tmp Session Persistence with Auto-Scrolling Window Capping
+  - Secure XDG_RUNTIME_DIR Session Persistence with Atomic Writes
 ==============================================================================
 """
 
@@ -47,6 +47,7 @@ try:
     from rich.panel import Panel
     from rich.prompt import Prompt
     from rich.align import Align
+    from rich.markup import escape
 except ImportError:
     print("\n[INFO] Missing required Python libraries: 'keyring' and/or 'rich'.")
     print("[INFO] Attempting to auto-install via pacman...")
@@ -70,7 +71,6 @@ except ImportError:
 FILESYSTEM_TIMEOUT = 15
 LOCK_RETRY_DELAY = 1
 LOCK_MAX_RETRIES = 5
-LOCK_FILE = Path("/tmp/.drive_manager.lock")
 KEYRING_SERVICE = "drive_manager"
 
 console = Console()
@@ -106,7 +106,7 @@ def hint_msg(msg: str):
     console.print(f"[bold yellow]\\[HINT][/] {msg}")
 
 # ------------------------------------------------------------------------------
-#  SYSTEM HELPERS & KERNEL INTERFACES
+#  SECURITY & SYSTEM ISOLATION
 # ------------------------------------------------------------------------------
 def prevent_root_execution():
     """Ensures the script is run as a normal user to keep Keyring D-Bus access valid."""
@@ -115,6 +115,32 @@ def prevent_root_execution():
         console.print("Running as root breaks access to your user's desktop keyring.")
         console.print("The script will securely request sudo permissions internally when needed.")
         sys.exit(1)
+
+def get_runtime_dir() -> Path:
+    """Returns a rigorously verified user-owned directory for temporary IPC and lockfiles."""
+    uid = os.getuid()
+    # Explicitly handle XDG variables that are exported but contain empty strings
+    runtime_env = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    
+    if runtime_env:
+        path = Path(runtime_env) / "drive_manager"
+    else:
+        # Fallback if executing outside of systemd-logind context
+        path = Path(f"/tmp/.drive_manager_{uid}")
+
+    if not path.exists():
+        try:
+            path.mkdir(mode=0o700, parents=True)
+        except FileExistsError:
+            pass
+
+    # Strictly verify ownership and restrictive permissions to prevent CVE-377 hijacks
+    st = path.stat()
+    if st.st_uid != uid or (st.st_mode & 0o077) != 0:
+        err(f"Security hazard: Directory {path} is improperly permissioned or hijacked.")
+        sys.exit(1)
+
+    return path
 
 def prime_sudo():
     """Primes the sudo credential cache cleanly before stdin operations."""
@@ -125,15 +151,14 @@ def prime_sudo():
         sys.exit(1)
 
 def acquire_lock():
-    """Acquires a kernel-level exclusive file lock atomically."""
+    """Acquires a kernel-level exclusive file lock atomically within the user's isolated dir."""
     global lock_fd
+    lock_path = get_runtime_dir() / "drive_manager.lock"
     try:
-        # Safely open without truncating to avoid wiping an active instance's lock PID
-        fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o644)
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         lock_fd = os.fdopen(fd, "r+")
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         
-        # Only truncate after exclusively acquiring the lock
         lock_fd.seek(0)
         lock_fd.truncate()
         lock_fd.write(str(os.getpid()))
@@ -153,6 +178,9 @@ def check_dependencies():
         err(f"Missing required commands: {', '.join(missing)}")
         sys.exit(1)
 
+# ------------------------------------------------------------------------------
+#  KERNEL INTERFACES
+# ------------------------------------------------------------------------------
 def resolve_device(uuid: str) -> Path | None:
     """Returns the fully resolved Path to a block device, resolving any symlinks."""
     if not uuid:
@@ -163,14 +191,16 @@ def resolve_device(uuid: str) -> Path | None:
     return None
 
 def wait_for_device(uuid: str, timeout: int) -> bool:
-    """Waits for udev to populate the /dev/disk/by-uuid tree."""
-    subprocess.run(["udevadm", "settle", f"--timeout={timeout}"], capture_output=True)
+    """Waits strictly and safely for udev to populate the /dev/disk/by-uuid tree."""
     start = time.time()
+    subprocess.run(["udevadm", "settle", f"--timeout={timeout}"], capture_output=True)
+    
     while (time.time() - start) < timeout:
         if resolve_device(uuid):
             return True
         time.sleep(1)
-    return False
+        
+    return resolve_device(uuid) is not None
 
 def get_fstype(uuid: str) -> str | None:
     """Uses lsblk to dynamically probe the filesystem or crypto type of a UUID."""
@@ -182,7 +212,7 @@ def get_fstype(uuid: str) -> str | None:
         try:
             data = json.loads(res.stdout)
             devices = data.get("blockdevices", [])
-            if devices:
+            if devices and devices[0].get("fstype"):
                 return devices[0].get("fstype")
         except json.JSONDecodeError:
             pass
@@ -190,7 +220,6 @@ def get_fstype(uuid: str) -> str | None:
 
 def get_mount_info(target_dir: Path) -> dict[str, Any] | None:
     """Uses findmnt JSON output to safely detect if a directory is mounted."""
-    # '-v' (--nofsroot) prevents Btrfs subvolumes from corrupting the SOURCE string
     cmd = ["findmnt", "--json", "-v", "--mountpoint", str(target_dir)]
     res = subprocess.run(cmd, capture_output=True, text=True)
     
@@ -220,7 +249,7 @@ def get_crypt_mapper_name(outer_uuid: str) -> str | None:
     return None
 
 def run_sudo_cmd(cmd: list[str], stdin_data: str | None = None) -> bool:
-    """Helper to run a sudo command securely, surfacing internal stderr logs if it fails."""
+    """Helper to run a sudo command securely. Dynamically applies capture_output to prevent hanging on sudo prompts."""
     try:
         if stdin_data is not None:
             res = subprocess.run(cmd, input=stdin_data, text=True, capture_output=True)
@@ -245,7 +274,7 @@ def is_process_alive(pid: str) -> bool:
         return False
 
 def resolve_busy_processes(mountpoint: Path) -> bool:
-    """Finds processes keeping the drive busy and offers an interactive kill menu."""
+    """Finds processes keeping the drive busy parsing lsof directly (sudo bypasses hidepid natively)."""
     res = subprocess.run(["sudo", "lsof", "+f", "--", str(mountpoint)], capture_output=True, text=True)
     if res.returncode != 0 or not res.stdout.strip():
         return False
@@ -294,14 +323,14 @@ def resolve_busy_processes(mountpoint: Path) -> bool:
             continue
 
         ans = Prompt.ask(
-            f"Force kill [bold cyan]{p['cmd']}[/] (PID: [bold yellow]{p['pid']}[/])?", 
+            f"Force kill [bold cyan]{escape(p['cmd'])}[/] (PID: [bold yellow]{p['pid']}[/])?", 
             choices=["y", "n"], 
             default="n"
         )
         if ans == "y":
             kill_res = subprocess.run(["sudo", "kill", "-9", p['pid']], capture_output=True, text=True)
             if kill_res.returncode == 0:
-                success(f"Successfully killed {p['cmd']} (PID: {p['pid']}).")
+                success(f"Successfully killed {escape(p['cmd'])} (PID: {p['pid']}).")
                 action_taken = True
             else:
                 stderr_msg = kill_res.stderr.strip()
@@ -329,18 +358,15 @@ def run_cryptsetup_forensics(mapper_name: str):
 #  PERSISTENT FAILED PASSWORD STORAGE
 # ------------------------------------------------------------------------------
 def get_temp_attempts_path(drive_name: str) -> Path:
-    """Returns a secure path to the temporary attempts file for a specific user and drive."""
-    uid = os.getuid()
-    return Path(f"/tmp/.drive_manager_{uid}_{drive_name}_attempts.json")
+    """Returns a secure path to the temporary attempts file within the isolated runtime dir."""
+    return get_runtime_dir() / f"attempts_{drive_name}.json"
 
 def load_temp_attempts(drive_name: str) -> list[str]:
-    """Loads temporary failed password attempts securely from /tmp."""
+    """Loads temporary failed password attempts securely."""
     path = get_temp_attempts_path(drive_name)
     if not path.exists():
         return []
-    
     try:
-        # Strict validation: verify ownership and ensure no group/world permissions (0o600 mask)
         stat_info = path.stat()
         if stat_info.st_uid != os.getuid() or (stat_info.st_mode & 0o077) != 0:
             path.unlink(missing_ok=True)
@@ -353,15 +379,18 @@ def load_temp_attempts(drive_name: str) -> list[str]:
         return []
 
 def save_temp_attempts(drive_name: str, attempts: list[str]):
-    """Saves temporary failed password attempts securely to /tmp, capping the log size."""
+    """Saves failed password attempts securely, executing writes atomically."""
     path = get_temp_attempts_path(drive_name)
     if len(attempts) > 50:
-        attempts = attempts[-50:]  # Cap memory history boundary to protect memory size
+        attempts = attempts[-50:]
+        
+    temp_path = path.with_suffix(".tmp")
     try:
-        # Atomic create using 0o600 permissions
-        fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        # Atomic create inside the already isolated directory
+        fd = os.open(temp_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump(attempts, f)
+        temp_path.rename(path)
     except Exception:
         pass
 
@@ -384,8 +413,12 @@ def load_config(override_path: Path | None = None) -> dict[str, Drive]:
             sys.exit(1)
         target_config = override_path
     else:
+        # Explicitly strip empty strings to respect XDG specifications
+        config_env = os.environ.get("XDG_CONFIG_HOME", "").strip()
+        xdg_config = Path(config_env) if config_env else Path.home() / ".config"
+        
         config_paths = [
-            Path.home() / ".config" / "drive_manager" / "drives.toml",
+            xdg_config / "drive_manager" / "drives.toml",
             Path(__file__).parent / "drives.toml"
         ]
         target_config = next((p for p in config_paths if p.exists()), None)
@@ -445,7 +478,6 @@ def show_status(drives: dict[str, Drive]):
         mount_info = get_mount_info(drive.mountpoint)
         is_mounted = False
 
-        # Attempt to identify FS type gracefully if locked
         fstype_str = get_fstype(target_uuid) or drive.fstype or "Unknown"
 
         if mount_info:
@@ -500,7 +532,6 @@ def do_unlock(drive: Drive):
             outer_dev_path = f"/dev/disk/by-uuid/{drive.outer_uuid}"
             
             # --- DYNAMIC CRYPTO PROBER ---
-            # cryptsetup natively auto-detects LUKS, but fails blindly on BitLocker without --type bitlk.
             outer_fstype = get_fstype(drive.outer_uuid)
             crypto_type_args = []
             
@@ -529,12 +560,10 @@ def do_unlock(drive: Drive):
                 if drive.hint:
                     hint_msg(drive.hint)
                 
-                # Retrieve temporary attempts across runs safely
                 tried_passwords = load_temp_attempts(drive.name)
                 
                 while True:
                     if tried_passwords:
-                        # Display only the last 6 entries to fit perfectly in standard viewports
                         max_display = 6
                         display_items = tried_passwords[-max_display:]
                         hidden_count = len(tried_passwords) - len(display_items)
@@ -543,9 +572,8 @@ def do_unlock(drive: Drive):
                         if hidden_count > 0:
                             panel_lines.append(f"[dim]... {hidden_count} older attempt{'s' if hidden_count > 1 else ''} hidden ...[/]")
                         
-                        panel_lines.extend(f"[red]✗[/] {p}" for p in display_items)
+                        panel_lines.extend(f"[red]✗[/] {escape(p)}" for p in display_items)
                         
-                        # Render a nice right-aligned history panel using Rich
                         hist_panel = Panel(
                             "\n".join(panel_lines),
                             title="[yellow]Previously Tried[/]",
@@ -569,16 +597,13 @@ def do_unlock(drive: Drive):
                         
                     cmd = base_cmd + ["--key-file", "-"]
                     
-                    # Passing stdin_data mimics pipe mechanics so the password isn't visible in `ps` processes
                     if run_sudo_cmd(cmd, stdin_data=pwd_attempt):
-                        # Successful unlock: completely wipe temporary failed attempts history
                         clear_temp_attempts(drive.name)
                         break
                     else:
                         err("Decryption failed. Please try again.")
                         if pwd_attempt not in tried_passwords:
                             tried_passwords.append(pwd_attempt)
-                            # Sync history dynamically to secure /tmp JSON file
                             save_temp_attempts(drive.name, tried_passwords)
 
             log("Waiting for filesystem block device to populate...")
@@ -588,21 +613,16 @@ def do_unlock(drive: Drive):
 
     log(f"Mounting to {drive.mountpoint}...")
     
-    # --- DYNAMIC FILESYSTEM PROBER & INJECTOR ---
     detected_fstype = get_fstype(target_uuid)
-    
     mount_args = ["--mkdir"]
     
-    # 1. Obey strict user override if provided in TOML
     if drive.fstype:
         mount_args.extend(["-t", drive.fstype])
         
-    # 2. Compile mount options (Auto-inject NTFS/FAT permissions to avoid read-only root locking)
     options = []
     if drive.mount_options:
         options.extend(drive.mount_options)
     else:
-        # Check either the explicitly set TOML fstype or the dynamically probed one.
         fstype_to_check = (drive.fstype or detected_fstype or "").lower()
         if fstype_to_check in ["ntfs", "ntfs3", "vfat", "fat32", "exfat", "msdos"]:
             uid = os.getuid()
@@ -721,7 +741,7 @@ def set_keyring_password(drives: dict[str, Drive], target: str):
         sys.exit(1)
 
     console.print(Panel(
-        f"Setting secure keyring password for drive: [bold cyan]{target}[/]\n"
+        f"Setting secure keyring password for drive: [bold cyan]{escape(target)}[/]\n"
         "This eliminates the need for manual entry during unlock sequences.",
         title="Keyring Setup", border_style="cyan"
     ))
@@ -734,7 +754,7 @@ def set_keyring_password(drives: dict[str, Drive], target: str):
         sys.exit(1)
 
     keyring.set_password(KEYRING_SERVICE, target, pwd)
-    clear_temp_attempts(target) # Reset failures history since password was stored
+    clear_temp_attempts(target)
     success(f"Password stored securely in the system keyring for '{target}'.")
 
 # ------------------------------------------------------------------------------
@@ -788,4 +808,8 @@ def main():
                 do_lock(drive)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        console.print("\n[bold red]\\[ERROR][/] Interrupted by user.")
+        sys.exit(130)

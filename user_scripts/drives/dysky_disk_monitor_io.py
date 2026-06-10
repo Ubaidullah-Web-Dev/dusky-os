@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-Arch Linux Real-Time System I/O Monitor (Hyper-Sleek Final Edition)
+Dusky Disk Real-Time System I/O Monitor (Hyper-Sleek Final Edition)
 Zero-stutter background polling, solid sleek borders, Matugen theme integration.
 """
 
@@ -274,7 +274,7 @@ class DriveWidget(Static, can_focus=True):
 
 
 class IOMonitorApp(App):
-    """Arch Linux Next-Gen I/O Monitor"""
+    """Dusky Disk I/O Monitor"""
 
     CSS = f"""
     Screen {{
@@ -336,7 +336,7 @@ class IOMonitorApp(App):
         except Exception: self.kernel = "Rolling"
 
     def compose(self) -> ComposeResult:
-        self.title = f"Arch Linux I/O Matrix (Kernel: {self.kernel})"
+        self.title = f"Dusky Disk I/O Matrix (Kernel: {self.kernel})"
         yield Header(show_clock=True)
         yield Static(id="ram_bar")
         yield VerticalScroll(id="main_scroll")
