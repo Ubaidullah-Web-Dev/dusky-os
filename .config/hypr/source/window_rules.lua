@@ -629,6 +629,17 @@ hl.window_rule({
     center = true
 })
 
+
+--- dusky_snapshot_manager.py ---
+hl.window_rule({
+    name = "dusky_snapshot_manager.py",
+    match = { class = "^(dusky_snapshot_manager.py)$" },
+    float = true,
+    size = {"(monitor_w*0.9)", "(monitor_h*0.9)"},
+    move = {"(monitor_w*0.05)", "(monitor_h*0.05)"},
+    center = true
+})
+
 --- dysky_disk_monitor_io.py ---
 hl.window_rule({
     name = "dysky_disk_monitor_io.py",
