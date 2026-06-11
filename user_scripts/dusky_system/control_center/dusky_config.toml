@@ -257,193 +257,21 @@ terminal = false
 [[pages.layout]]
 type = "section"
 [pages.layout.properties]
-title = "System Recovery & Backup"
-icon = ""
-description = ""
+title = "BTRFS Snapshots"
+icon = "drive-harddisk-system-symbolic"
+description = "Manage filesystem snapshots"
 
 [[pages.layout.items]]
-type = "navigation"
-[pages.layout.items.properties]
-title = "Btrfs Snapshot Manager"
-description = "Create and restore system and data states"
-icon = "document-revert-symbolic"
-
-[[pages.layout.items.layout]]
-type = "section"
-[pages.layout.items.layout.properties]
-title = "Create Snapshots"
-description = "Type a description and hit Create."
-
-[[pages.layout.items.layout.items]]
-type = "entry"
-[pages.layout.items.layout.items.properties]
-title = "Create Combined Snapshot"
-description = "Takes a synced snapshot of both Root and Home."
-icon = "camera-photo-symbolic"
-button_text = "Create"
-[pages.layout.items.layout.items.on_action]
-type = "exec"
-command = "sudo ~/user_scripts/btrfs_snapshots/cc/04_dusky_snapshot_manager.py -c root -C {value} && sudo ~/user_scripts/btrfs_snapshots/cc/04_dusky_snapshot_manager.py -c home -C {value}"
-
-[[pages.layout.items.layout.items]]
-type = "entry"
-[pages.layout.items.layout.items.properties]
-title = "Create Root Snapshot"
-description = "Takes a snapshot of the root filesystem only."
-icon = "drive-harddisk-system-symbolic"
-button_text = "Create"
-[pages.layout.items.layout.items.on_action]
-type = "exec"
-command = "sudo ~/user_scripts/btrfs_snapshots/cc/04_dusky_snapshot_manager.py -c root -C {value}"
-
-[[pages.layout.items.layout.items]]
-type = "entry"
-[pages.layout.items.layout.items.properties]
-title = "Create Home Snapshot"
-description = "Takes a snapshot of your personal data only."
-icon = "user-home-symbolic"
-button_text = "Create"
-[pages.layout.items.layout.items.on_action]
-type = "exec"
-command = "sudo ~/user_scripts/btrfs_snapshots/cc/04_dusky_snapshot_manager.py -c home -C {value}"
-
-[[pages.layout.items.layout]]
-type = "section"
-[pages.layout.items.layout.properties]
-title = "Full System Recovery"
-description = "Safest option. Reverts Root and Home simultaneously to keep configs and data synced."
-
-[[pages.layout.items.layout.items]]
-type = "async_selector"
-[pages.layout.items.layout.items.properties]
-title = "Combined Recovery (Root + Home)"
-description = "Select an exact timestamp. Requires immediate reboot."
-icon = "system-reboot-symbolic"
-list_command = "sudo ~/user_scripts/btrfs_snapshots/cc/04_dusky_snapshot_manager.py -c root -l --json"
-display_template = "[{date}] {description}"
-button_text = "Restore Both"
-style = "destructive"
-sort = "reverse"
-auto_refresh = true
-display_max_length = 45
-[pages.layout.items.layout.items.on_action]
-type = "exec"
-command = "sudo ~/user_scripts/btrfs_snapshots/cc/bash_wrapper_for_restore.sh '{raw_date}' '{description}'"
-
-[[pages.layout.items.layout]]
-type = "section"
-[pages.layout.items.layout.properties]
-title = "Advanced Recovery (Partial)"
-description = "Revert specific subvolumes individually."
-
-[[pages.layout.items.layout.items]]
-type = "async_selector"
-[pages.layout.items.layout.items.properties]
-title = "System Recovery (Root Only)"
-description = "Revert pacman updates or system configs. Requires reboot."
-icon = "drive-harddisk-system-symbolic"
-list_command = "sudo ~/user_scripts/btrfs_snapshots/cc/04_dusky_snapshot_manager.py -c root -l --json"
-display_template = "[{id}] {date} | {description}"
-button_text = "Restore Root"
-style = "destructive"
-sort = "reverse"
-auto_refresh = true
-display_max_length = 45
-[pages.layout.items.layout.items.on_action]
-type = "exec"
-command = "sudo ~/user_scripts/btrfs_snapshots/cc/04_dusky_snapshot_manager.py -c root -R {id}"
-
-[[pages.layout.items.layout.items]]
-type = "async_selector"
-[pages.layout.items.layout.items.properties]
-title = "Data Recovery (Home Only)"
-description = "Revert personal files. Hot-reloads instantly (no reboot)."
-icon = "user-home-symbolic"
-list_command = "sudo ~/user_scripts/btrfs_snapshots/cc/04_dusky_snapshot_manager.py -c home -l --json"
-display_template = "[{id}] {date} | {description}"
-button_text = "Restore Home"
-style = "suggested"
-sort = "reverse"
-auto_refresh = true
-display_max_length = 45
-[pages.layout.items.layout.items.on_action]
-type = "exec"
-command = "sudo ~/user_scripts/btrfs_snapshots/cc/04_dusky_snapshot_manager.py -c home -R {id}"
-
-[[pages.layout.items.layout]]
-type = "section"
-[pages.layout.items.layout.properties]
-title = "Snapshot Cleanup"
-description = "Safely remove old or unneeded states."
-
-[[pages.layout.items.layout.items]]
-type = "async_selector"
-[pages.layout.items.layout.items.properties]
-title = "Delete Combined Snapshot (Root + Home)"
-description = "Removes both synchronized states."
-icon = "edit-delete-symbolic"
-list_command = "sudo ~/user_scripts/btrfs_snapshots/cc/04_dusky_snapshot_manager.py -c root -l --json"
-display_template = "[{date}] {description}"
-button_text = "Delete Both"
-style = "destructive"
-sort = "reverse"
-auto_refresh = true
-display_max_length = 45
-[pages.layout.items.layout.items.on_action]
-type = "exec"
-command = "sudo ~/user_scripts/btrfs_snapshots/cc/bash_wrapper_for_delete.sh '{raw_date}' '{description}'"
-
-[[pages.layout.items.layout.items]]
-type = "async_selector"
-[pages.layout.items.layout.items.properties]
-title = "Delete System Snapshot (Root Only)"
-description = "Removes a specific system state."
-icon = "drive-harddisk-system-symbolic"
-list_command = "sudo ~/user_scripts/btrfs_snapshots/cc/04_dusky_snapshot_manager.py -c root -l --json"
-display_template = "[{id}] {date} | {description}"
-button_text = "Delete Root"
-style = "destructive"
-sort = "reverse"
-auto_refresh = true
-display_max_length = 45
-[pages.layout.items.layout.items.on_action]
-type = "exec"
-command = "sudo ~/user_scripts/btrfs_snapshots/cc/04_dusky_snapshot_manager.py -c root -D {id}"
-
-[[pages.layout.items.layout.items]]
-type = "async_selector"
-[pages.layout.items.layout.items.properties]
-title = "Delete Data Snapshot (Home Only)"
-description = "Removes a specific personal data state."
-icon = "user-home-symbolic"
-list_command = "sudo ~/user_scripts/btrfs_snapshots/cc/04_dusky_snapshot_manager.py -c home -l --json"
-display_template = "[{id}] {date} | {description}"
-button_text = "Delete Home"
-style = "destructive"
-sort = "reverse"
-auto_refresh = true
-display_max_length = 45
-[pages.layout.items.layout.items.on_action]
-type = "exec"
-command = "sudo ~/user_scripts/btrfs_snapshots/cc/04_dusky_snapshot_manager.py -c home -D {id}"
-
-[[pages.layout.items.layout]]
-type = "section"
-[pages.layout.items.layout.properties]
-title = "Setup"
-description = "Configure BTRFS subvolumes"
-
-[[pages.layout.items.layout.items]]
 type = "button"
-[pages.layout.items.layout.items.properties]
-title = "BTRFS Sub-volume Setup"
-description = "Configure limine, snapper isolation, and pacman hooks"
-icon = "preferences-system-symbolic"
+[pages.layout.items.properties]
+title = "Snapshot Manager"
+description = "Create, restore, and delete snapshots"
+icon = "document-revert-symbolic"
 button_text = "Open"
-[pages.layout.items.layout.items.on_press]
-type = "redirect"
-page = "setup_features"
-subpage = "BTRFS Sub-volume Setup"
+[pages.layout.items.on_press]
+type = "exec"
+command = "kitty --class dusky_snapshot_manager.py --hold sudo python3 \"$HOME/user_scripts/btrfs_snapshots/cc/dusky_snapshot_manager.py\""
+terminal = false
 
 [[pages.layout]]
 type = "section"
@@ -2835,54 +2663,6 @@ button_text = "Setup"
 [pages.layout.items.on_press]
 type = "exec"
 command = "kitty --class 465_sddm_setup.sh --hold sh -c \"$HOME/user_scripts/arch_setup_scripts/scripts/465_sddm_setup.sh\""
-terminal = false
-
-[[pages.layout.items]]
-type = "navigation"
-[pages.layout.items.properties]
-title = "BTRFS Sub-volume Setup"
-description = "Configure BTRFS snapshots and snapper"
-icon = "document-save-symbolic"
-
-[[pages.layout.items.layout]]
-type = "section"
-[pages.layout.items.layout.properties]
-title = "BTRFS Setup"
-
-[[pages.layout.items.layout.items]]
-type = "button"
-[pages.layout.items.layout.items.properties]
-title = "Step 1: Limine Setup"
-description = "Configure Limine bootloader for BTRFS"
-icon = "computer-symbolic"
-button_text = "Setup"
-[pages.layout.items.layout.items.on_press]
-type = "exec"
-command = "kitty --class 01_limine_setup.sh --hold sh -c \"$HOME/user_scripts/btrfs_snapshots/01_limine_setup.sh --auto\""
-terminal = false
-
-[[pages.layout.items.layout.items]]
-type = "button"
-[pages.layout.items.layout.items.properties]
-title = "Step 2: Snapper Isolation Subvolume"
-description = "Configure snapper isolation subvolume"
-icon = "drive-harddisk-system-symbolic"
-button_text = "Setup"
-[pages.layout.items.layout.items.on_press]
-type = "exec"
-command = "kitty --class 02_snapper_isolation_subvolume.sh --hold sh -c \"$HOME/user_scripts/btrfs_snapshots/02_snapper_isolation_subvolume.sh --auto\""
-terminal = false
-
-[[pages.layout.items.layout.items]]
-type = "button"
-[pages.layout.items.layout.items.properties]
-title = "Step 3: Snapper Pacman Hooks"
-description = "Enable automatic snapshots on pacman operations"
-icon = "system-software-install-symbolic"
-button_text = "Setup"
-[pages.layout.items.layout.items.on_press]
-type = "exec"
-command = "kitty --class 03_snapper_pacman_hooks.sh --hold sh -c \"$HOME/user_scripts/btrfs_snapshots/03_snapper_pacman_hooks_for_limine.sh --auto\""
 terminal = false
 
 [[pages.layout]]
