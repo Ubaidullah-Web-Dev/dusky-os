@@ -599,6 +599,8 @@ def do_unlock(drive: Drive):
                     
                     if run_sudo_cmd(cmd, stdin_data=pwd_attempt):
                         clear_temp_attempts(drive.name)
+                        keyring.set_password(KEYRING_SERVICE, drive.name, pwd_attempt)
+                        success("Password saved to keyring for future use.")
                         break
                     else:
                         err("Decryption failed. Please try again.")
