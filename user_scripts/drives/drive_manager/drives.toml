@@ -58,8 +58,8 @@ outer_uuid = "e15929e5-417f-4761-b478-55c9a7c24220"
 inner_uuid = "5A921A119219F26D"
 hint = "game_simple"
 # fstab comment noted this was a BTRFS drive with nodatacow
-fstype = "btrfs"
-mount_options = ["nodatacow", "noatime", "space_cache=v2", "subvol=/"]
+fstype = "ntfs3"
+mount_options = ["noatime", "uid=1000", "gid=1000", "umask=002", "windows_names"]
 
 [drives.wdfast]
 type = "PROTECTED"
