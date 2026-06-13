@@ -652,7 +652,9 @@ def snapshot_records_to_gui(records: list[dict[str, object]]) -> list[dict[str, 
         if snap_id_value is None:
             continue
 
+        # [BACKPORTED FIX]: Remove the *+- characters appended to active/default snapshots
         snap_id = str(snap_id_value).strip()
+        snap_id = re.sub(r'[*+-]+$', '', snap_id)
         if snap_id == "0" or not snap_id.isdigit():
             continue
 
@@ -695,7 +697,9 @@ def parse_snapper_table(stdout: str) -> list[dict[str, str]]:
         if len(parts) < 7:
             continue
 
+        # [BACKPORTED FIX]: Remove the *+- characters appended to active/default snapshots
         snap_id = parts[0]
+        snap_id = re.sub(r'[*+-]+$', '', snap_id)
         if snap_id == "0" or not snap_id.isdigit():
             continue
 
@@ -929,54 +933,70 @@ def handle_delete_pair(config1: str, snap_id1: str, config2: str, snap_id2: str)
 
 
 # -----------------------------------------------------------------------------
-# FZF TUI INTEGRATION
+# FZF TUI INTEGRATION & RENDERING ENGINE
 # -----------------------------------------------------------------------------
+
+def strip_ansi(text: str) -> str:
+    """Removes ANSI escape sequences to accurately calculate visual string width."""
+    return re.sub(r'\x1b\[[0-9;]*m', '', text)
+
+
+def draw_tui_panel(title: str, lines: list[str], width: int = 44) -> None:
+    """[BACKPORTED]: Renders a pixel-perfect boxed panel adapting perfectly to text length."""
+    title_clean = strip_ansi(title)
+    dash_count = max(0, width - len(title_clean) - 5)
+    print(f"\033[1;38;5;220m╭─ {title} \033[1;38;5;220m{'─' * dash_count}╮\033[0m")
+    
+    for line in lines:
+        line_clean = strip_ansi(line)
+        pad = max(0, width - len(line_clean) - 4)
+        print(f"\033[1;38;5;220m│\033[0m {line}{' ' * pad} \033[1;38;5;220m│\033[0m")
+        
+    print(f"\033[1;38;5;220m╰{'─' * (width - 2)}╯\033[0m\n")
+
 
 def handle_tui_preview(view: str, line: str, show_diff: bool = False) -> None:
     """Invoked asynchronously by FZF to generate the dynamic side-pane preview."""
     try:
-        # Separate the visible fzf text from the hidden metadata payload packed via JSON
+        # [BACKPORTED FIX]: Rely strictly on JSON IPC instead of visual regex scraping
         line_parts = line.split('\x1f')
-        visible_line = line_parts[0]
-        extra_data = {}
-        if len(line_parts) > 1:
-            try:
-                extra_data = json.loads(line_parts[1])
-            except ValueError:
-                pass
-        
-        # Strip all ANSI escape sequences to process raw FZF line natively
-        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-        clean_line = ansi_escape.sub('', visible_line)
-        parts = [p.strip() for p in clean_line.split("│")]
-        
-        if not parts or not parts[0].isdigit():
+        if len(line_parts) < 2:
             print("\n\033[3;38;5;246m  No snapshot selected or invalid layout.\033[0m")
             return
             
-        snap_id = parts[0]
-        snap_type = parts[1] if len(parts) > 1 else "Unknown"
-        snap_date = parts[3] if len(parts) > 3 else "Unknown"
-        snap_desc = parts[4] if len(parts) > 4 else "No Description"
-        
-        # Robustly unpack the highly specific hidden data provided by the engine
-        snap_user = extra_data.get("user", "root")
-        snap_cleanup = extra_data.get("cleanup", "")
-        snap_userdata = extra_data.get("userdata", "")
-        snap_pre_num = extra_data.get("pre_number", "")
-        snap_age = extra_data.get("age", "")
-        
-        # 1. Cleanly Aligned Shortcuts Panel (Math-Calculated Padding exactly 44 chars wide ensuring right-side borders lock tight)
-        print("\033[1;38;5;220m╭─ 󰏖 KEYBOARD SHORTCUTS " + "─"*19 + "╮\033[0m")
-        print("\033[1;38;5;220m│\033[0m \033[1;38;5;114m[ENTER]\033[0m   \033[38;5;253m󰁯 Restore Selected\033[0m" + " "*13 + "\033[1;38;5;220m│\033[0m")
-        print("\033[1;38;5;220m│\033[0m \033[1;38;5;196m[DEL]\033[0m     \033[38;5;253m󰆴 Delete Selected\033[0m" + " "*14 + "\033[1;38;5;220m│\033[0m")
-        print("\033[1;38;5;220m│\033[0m \033[1;38;5;81m[CTRL-S]\033[0m  \033[38;5;253m󰎈 Create New Snapshot\033[0m" + " "*10 + "\033[1;38;5;220m│\033[0m")
-        print("\033[1;38;5;220m│\033[0m \033[1;38;5;213m[TAB]\033[0m     \033[38;5;253m󰓡 Switch View (Root/Home)\033[0m" + " "*6 + "\033[1;38;5;220m│\033[0m")
-        print("\033[1;38;5;220m│\033[0m \033[1;38;5;246m[CTRL-A]\033[0m  \033[38;5;253m󰒉 Select All\033[0m" + " "*19 + "\033[1;38;5;220m│\033[0m")
-        print("\033[1;38;5;220m│\033[0m \033[1;38;5;246m[CTRL-X]\033[0m  \033[38;5;253m󰒓 Deselect All\033[0m" + " "*17 + "\033[1;38;5;220m│\033[0m")
-        print("\033[1;38;5;220m╰" + "─"*42 + "╯\033[0m\n")
+        try:
+            meta = json.loads(line_parts[1])
+        except ValueError:
+            meta = {}
+            
+        if meta.get("empty"):
+            print("\033[1;38;5;196m[!] No items available in this view.\033[0m")
+            return
 
-        # 2. Expanded Snapshot Meta Data leveraging hidden JSON payloads matching 44-char width design
+        # Safely unpack strictly from the JSON payload injected by launch_tui()
+        snap_id = meta.get("id", "N/A")
+        snap_type = meta.get("type", "Unknown")
+        snap_date = meta.get("date", "N/A")
+        snap_raw_date = meta.get("raw_date", "")
+        snap_desc = meta.get("description", "No Description")
+        snap_user = meta.get("user", "root")
+        snap_cleanup = meta.get("cleanup", "")
+        snap_userdata = meta.get("userdata", "")
+        snap_pre_num = meta.get("pre_number", "")
+        snap_age = meta.get("age", "")
+
+        # 1. Cleanly Aligned Shortcuts Panel (Math-Calculated Padding exactly 44 chars wide)
+        shortcut_lines = [
+            "\033[1;38;5;114m[ENTER]\033[0m   \033[38;5;253m󰁯 Restore Selected\033[0m",
+            "\033[1;38;5;196m[DEL]\033[0m     \033[38;5;253m󰆴 Delete Selected\033[0m",
+            "\033[1;38;5;81m[CTRL-S]\033[0m  \033[38;5;253m󰎈 Create New Snapshot\033[0m",
+            "\033[1;38;5;213m[TAB]\033[0m     \033[38;5;253m󰓡 Switch View (Root/Home)\033[0m",
+            "\033[1;38;5;246m[CTRL-A]\033[0m  \033[38;5;253m󰒉 Select All\033[0m",
+            "\033[1;38;5;246m[CTRL-X]\033[0m  \033[38;5;253m󰒓 Deselect All\033[0m"
+        ]
+        draw_tui_panel("\033[1;38;5;220m󰏖 KEYBOARD SHORTCUTS\033[0m", shortcut_lines, width=44)
+
+        # 2. Expanded Snapshot Meta Data leveraging hidden JSON payloads
         print(f"\033[1;38;5;81m󰆑 SNAPSHOT DETAILS\033[0m")
         print(f"\033[38;5;238m" + "─" * 44 + "\033[0m")
         print(f" \033[1;38;5;246mConfig \033[0m │ \033[1;38;5;253m{view.upper()}\033[0m")
@@ -995,7 +1015,6 @@ def handle_tui_preview(view: str, line: str, show_diff: bool = False) -> None:
         print(f" \033[1;38;5;246mDesc   \033[0m │ \033[38;5;253m{snap_desc}\033[0m\n")
 
         # 3. Dynamic Diff generation via snapper status (Snapshot -> Current)
-        # Only runs when explicitly requested via Ctrl+V for instant UI responsiveness
         if show_diff:
             print(f"\033[1;38;5;114m󰏫 FILES CHANGED IF RESTORED\033[0m \033[3;38;5;246m(vs Current System)\033[0m")
             print(f"\033[38;5;238m" + "─" * 44 + "\033[0m")
@@ -1003,8 +1022,6 @@ def handle_tui_preview(view: str, line: str, show_diff: bool = False) -> None:
             def run_diff(config: str, s_id: str):
                 print(f"\033[1;38;5;203m▶ System Profile: {config}\033[0m")
                 try:
-                    # Comparing <id> against 0 shows what happened *since* the snapshot
-                    # i.e., What will happen to current files if we revert.
                     result = subprocess.run(["snapper", "-c", config, "status", f"{s_id}..0"], capture_output=True, text=True)
                     if result.returncode != 0:
                         print(f"  \033[38;5;196mError extracting diff: {result.stderr.strip()}\033[0m")
@@ -1027,12 +1044,11 @@ def handle_tui_preview(view: str, line: str, show_diff: bool = False) -> None:
                         status = l[0]
                         filepath = l[6:].strip() if len(l) > 6 else l[1:].strip()
 
-                        # Logic Mapping (What the reversion does to the current system state)
-                        if status == '+': # File was added *after* snapshot -> Reverting will Delete it
+                        if status == '+':
                             print(f"  \033[1;38;5;196m[-]\033[0m \033[38;5;246m{filepath}\033[0m")
-                        elif status == '-': # File was removed *after* snapshot -> Reverting will Restore it
+                        elif status == '-':
                             print(f"  \033[1;38;5;114m[+]\033[0m \033[38;5;253m{filepath}\033[0m")
-                        elif status == 'c': # File was modified -> Reverting will modify it back
+                        elif status == 'c':
                             print(f"  \033[1;38;5;220m[~]\033[0m \033[38;5;253m{filepath}\033[0m")
                         else:
                             print(f"  \033[38;5;246m{l}\033[0m")
@@ -1045,7 +1061,8 @@ def handle_tui_preview(view: str, line: str, show_diff: bool = False) -> None:
                 run_diff("root", snap_id)
                 print()
                 try:
-                    r_id, h_id = find_coordinated_pair(snap_date, snap_desc)
+                    # Sync requires raw_date and desc provided via JSON payload!
+                    r_id, h_id = find_coordinated_pair(snap_raw_date, snap_desc)
                     run_diff("home", h_id)
                 except RuntimeError:
                     print(f"\033[1;38;5;203m▶ System Profile: home\033[0m")
@@ -1063,11 +1080,9 @@ def launch_tui() -> None:
     if not shutil.which("fzf"):
         fail("[!] Fatal: 'fzf' is required for the interactive menu. Install it using: pacman -S fzf")
 
-    # Reordered tabs to enforce exact user specification: Home -> Root -> Root+Home
     views = ["home", "root", "coordinated"]
     view_idx = 0
 
-    # Catppuccin Mocha vivid theme styling extracted from pkg reference
     fzf_colors = (
         "bg+:#1e1e2e,bg:#11111b,spinner:#f5e0dc,"
         "fg:#cdd6f4,fg+:#cdd6f4,header:#89b4fa,info:#cba6f7,"
@@ -1081,16 +1096,11 @@ def launch_tui() -> None:
     while True:
         current_view = views[view_idx]
         
-        # Fetch instantaneous Global Btrfs Storage usage natively
         gb = 1024**3
         total, used, free = shutil.disk_usage("/")
         
-        # --- TOP LEVEL STORAGE HEADER ---
-        # This will be injected *above* the prompt line via `--header-first`
         storage_hdr = f" \033[1;38;5;81m󰋊 BTRFS STORAGE:\033[0m \033[38;5;253m{total/gb:.1f} GB Total\033[0m \033[38;5;238m|\033[0m \033[38;5;203m{used/gb:.1f} GB Used\033[0m \033[38;5;238m|\033[0m \033[38;5;114m{free/gb:.1f} GB Free\033[0m "
         
-        # --- DYNAMIC INTERACTIVE TABS GENERATION ---
-        # Reordered tab definitions. Layout structure permits flawless FZF mouse coordination
         tab_defs = [
             ("home", "󰋜 HOME ONLY", "114"),
             ("root", "󰒋 ROOT ONLY", "39"),
@@ -1100,42 +1110,28 @@ def launch_tui() -> None:
         tab_strs = []
         for v_id, label, color in tab_defs:
             if v_id == current_view:
-                # Active tab styling: Deep matching background block
                 tab_strs.append(f"\033[1;38;5;232;48;5;{color}m {label} \033[0m")
             else:
-                # Inactive tab styling: Transparent/dimmer
                 tab_strs.append(f"\033[38;5;246m {label} \033[0m")
 
-        # Constructed interactively below the prompt via `--header-lines`
         mode_hdr = "  " + "  ".join(tab_strs)
         
-        # --- SEPARATOR AND PERFECTLY ALIGNED TABLE HEADERS ---
         c_sep = "\033[38;5;238m│\033[0m"
-        
-        # We deliberately over-render the horizontal line to 500 characters. 
-        # FZF naturally clips this out cleanly at the list pane boundary (with --no-hscroll active).
-        # This acts as a bulletproof workaround for Python's standard TTY limits inside piped processes.
         hr = "\033[38;5;238m" + "─" * 500 + "\033[0m"
         
-        # Employs identical Python format layout bounds (`:>4`, `:<7`, etc) to perfectly align with data rows 
         hdr_id = f"\033[1;38;5;242m{'ID':>4}\033[0m"
         hdr_type = f"\033[1;38;5;242m{'TYPE':<7}\033[0m"
         hdr_age = f"\033[1;38;5;242m{'AGE':<10}\033[0m"
         hdr_date = f"\033[1;38;5;242m{'DATE':<18}\033[0m"
         hdr_desc = f"\033[1;38;5;242mDESCRIPTION\033[0m"
         
-        # The gutter offset will be automatically preserved by FZF because it's passed as a `--header-line`
         table_hdr = f"{hdr_id} {c_sep} {hdr_type} {c_sep} {hdr_age} {c_sep} {hdr_date} {c_sep} {hdr_desc}"
         
-        # --- CONSTRUCTING THE INPUT STREAM ---
         lines_for_fzf = []
-        
-        # 1. Provide Sticky UI Headers to be fixed right underneath the fzf prompt:
         lines_for_fzf.append(mode_hdr)
         lines_for_fzf.append(hr)
         lines_for_fzf.append(table_hdr)
         
-        # 2. Append Snapshot Data:
         config_to_query = "root" if current_view in ("coordinated", "root") else "home"
         snaps = load_snapshot_list_for_gui(config_to_query)
         snap_map = {}
@@ -1148,7 +1144,6 @@ def launch_tui() -> None:
                 dt = parse_snapshot_datetime(s["raw_date"])
                 age_str = time_ago(dt) if dt else "Unknown"
                 
-                # Symmetrical constraints ensure matching with `table_hdr`
                 id_str = f"\033[1;38;5;39m{s['id']:>4}\033[0m"         
                 type_str = f"\033[38;5;213m{s['type']:<7}\033[0m"       
                 age_colored = f"\033[38;5;114m{age_str:<10}\033[0m"    
@@ -1157,9 +1152,13 @@ def launch_tui() -> None:
                 
                 visible_line = f"{id_str} {c_sep} {type_str} {c_sep} {age_colored} {c_sep} {date_str} {c_sep} {desc_str}"
                 
-                # Bundle extended meta-data properties extracted from snapper into an invisible FZF payload
-                # This guarantees 0-latency previews for FZF by injecting the raw metadata entirely off-screen
+                # [BACKPORTED FIX]: Massive injection of native JSON properties bypassing the UI stream
                 extra_data = {
+                    "id": s["id"],
+                    "type": s["type"],
+                    "date": s["date"],
+                    "raw_date": s["raw_date"],
+                    "description": s["description"],
                     "user": s.get("user", "root"),
                     "cleanup": s.get("cleanup", ""),
                     "userdata": s.get("userdata", ""),
@@ -1167,21 +1166,13 @@ def launch_tui() -> None:
                     "age": age_str
                 }
                 
-                # Separated by hex control char '\x1f' ensuring zero collisions with UI aesthetics
                 lines_for_fzf.append(f"{visible_line}\x1f{json.dumps(extra_data)}")
         else:
-            lines_for_fzf.append(f"\033[1;38;5;196m No snapshots found for '{config_to_query}' configuration.\033[0m")
+            lines_for_fzf.append(f"\033[1;38;5;196m No snapshots found for '{config_to_query}' configuration.\033[0m\x1f{{\"empty\": true}}")
 
-        # Utilizing strict fzf 0.73.1 syntax and layout logic for async previewing
         preview_cmd = f"{executable} {script_path} --tui-preview {current_view} {{}}"
         preview_diff_cmd = f"{executable} {script_path} --tui-preview {current_view} --show-diff {{}}"
 
-        # Layout Engine Upgrades:
-        # 1. `--border-label` interrupts the frame exactly with "Dusky Snapshots"
-        # 2. `--prompt` shifted to strictly say ":: Snapshots ❯"
-        # 3. `--header` isolates the Storage metric and `--header-first` pins it exactly above the prompt
-        # 4. `--header-lines=3` pins the Tabs and Table aligned exactly underneath the prompt.
-        # 5. `--delimiter=\x1f` and `--with-nth=1` silently truncate JSON payloads from FZF display!
         fzf_cmd = [
             "fzf",
             "--multi",
@@ -1213,19 +1204,21 @@ def launch_tui() -> None:
         except Exception as exc:
             fail(f"[!] FZF Execution failed: {exc}")
 
+        # [BACKPORTED FIX]: Honor SIGINT completely (Return Code 130)
+        if process.returncode in (130, 2):
+            print("\n\033[1;38;5;196m[!] Terminated by user.\033[0m", file=sys.stderr)
+            sys.exit(130)
+
         if not stdout.strip():
-            break # User pressed ESC or aborted
+            break 
 
         output_lines = stdout.strip().split("\n")
         key_pressed = output_lines[0]
         
-        # --- Handle Active Tab Toggle (Via Mouse / click-header) ---
         if key_pressed == "click-header":
             line = int(output_lines[1]) if len(output_lines) > 1 and output_lines[1].isdigit() else 0
             col = int(output_lines[2]) if len(output_lines) > 2 and output_lines[2].isdigit() else 0
             
-            # Since mode_hdr is passed within --header-lines alongside the normal header, it safely triggers within lines 1 & 2.
-            # Bounds account exactly for the shifted FZF gutter offset (+2 chars).
             if line in (1, 2):
                 if col <= 18:
                     view_idx = 0      # Home
@@ -1235,12 +1228,10 @@ def launch_tui() -> None:
                     view_idx = 2      # Root+Home
             continue
         
-        # --- Handle Active Tab Toggle (Via Keyboard / TAB key) ---
         if key_pressed == "tab":
             view_idx = (view_idx + 1) % len(views)
             continue
             
-        # Snapshot Creation Logic
         if key_pressed in ("ctrl-s", "alt-s"):
             print(f"\n\033[1;38;5;81m[*] Action: CREATE NEW SNAPSHOT ({current_view.upper()})\033[0m")
             try:
@@ -1263,20 +1254,21 @@ def launch_tui() -> None:
         if len(output_lines) < 2 or not snaps:
             continue
 
+        # [BACKPORTED FIX]: Completely bypass visual regex strings in Multi-Select via IPC mapping
         selected_ids = []
         for line in output_lines[1:]:
-            # Strip ANSI escape sequences to reliably get the ID
-            clean_line = re.sub(r'\x1b\[[0-9;]*m', '', line)
-            parts = clean_line.split()
-            if parts:  # Defensively prevent IndexError against malformed/empty FZF returns
-                sid = parts[0].strip()
-                if sid in snap_map:
-                    selected_ids.append(sid)
+            parts = line.split('\x1f')
+            if len(parts) > 1:
+                try:
+                    meta = json.loads(parts[1])
+                    if "id" in meta and meta["id"] in snap_map:
+                        selected_ids.append(str(meta["id"]))
+                except ValueError:
+                    pass
 
         if not selected_ids:
             continue
 
-        # Handle Coordinated Actions
         if current_view == "coordinated":
             pairs_to_process = []
             has_error = False
@@ -1316,7 +1308,6 @@ def launch_tui() -> None:
                         handle_delete_pair("root", r_id, "home", h_id)
                     input("\n\033[1;38;5;114mPress Enter to return to menu...\033[0m")
                     
-        # Handle Root-Only Actions
         elif current_view == "root":
             if key_pressed == "enter":
                 if len(selected_ids) > 1:
@@ -1335,7 +1326,6 @@ def launch_tui() -> None:
                         handle_delete("root", sid)
                     input("\n\033[1;38;5;114mPress Enter to return to menu...\033[0m")
 
-        # Handle Home-Only Actions
         elif current_view == "home":
             if key_pressed == "enter":
                 if len(selected_ids) > 1:
@@ -1358,7 +1348,6 @@ def launch_tui() -> None:
 def main() -> None:
     ensure_root()
 
-    # If absolutely no arguments were passed, launch the interactive TUI
     if len(sys.argv) == 1:
         launch_tui()
         sys.exit(0)
@@ -1384,11 +1373,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Require -c/--config for single-target actions
     if (args.list or args.create is not None or args.restore is not None or args.delete is not None) and not args.config:
         parser.error("-c/--config is required with --list, --create, --restore, and --delete")
 
-    # CLI Execution Paths
     if args.list:
         handle_list(args.config, args.json)
     elif args.create is not None:
@@ -1429,9 +1416,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    # --- Asynchronous TUI Preview Payload Interception ---
-    # Intercepts the FZF subshell request *before* argparse or privileges are evaluated,
-    # ensuring blindingly fast execution for the `snapper status` preview panel.
     if len(sys.argv) >= 3 and sys.argv[1] == "--tui-preview":
         _view = sys.argv[2]
         _show_diff = "--show-diff" in sys.argv
