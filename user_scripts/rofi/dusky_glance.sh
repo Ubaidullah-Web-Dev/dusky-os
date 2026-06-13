@@ -203,7 +203,7 @@ declare -a ROFI_SUB=(
             vertical-align: 0.5;
         }
         listview { 
-            lines: 3; 
+            lines: 5; 
             columns: 1; 
             spacing: 10px; 
             scrollbar: false; 
@@ -307,13 +307,48 @@ case "$choice" in
         fi
         ;;
         
+    '󰋊  Disk Usage')
+        # Dynamically aggregate available disks
+        d_opts=("󰋊  Root Partition (/)")
+        
+        while read -r line; do
+            name=$(echo "$line" | awk '{print $1}')
+            # Filter out loops and rams exactly as python IO monitor
+            [[ "$name" =~ ^(loop|sr|ram|dm|fd) ]] && continue
+            
+            # Form clean label with device model
+            model=$(echo "$line" | cut -d' ' -f2- | xargs)
+            d_opts+=("󰆼  $name ($model)")
+        done < <(lsblk -d -n -o NAME,MODEL)
+        
+        dchoice=$(printf '%s\n' "${d_opts[@]}" | "${ROFI_SUB[@]}" -p "Select Target") || exit 0
+        
+        # Original fallback fallback / root partition logic
+        if [[ "$dchoice" == *"Root Partition"* ]]; then
+            "$DAEMON_SCRIPT" --disk & disown
+        else
+            # Extract pure device name cleanly
+            dev_name=$(echo "$dchoice" | awk '{print $2}')
+            
+            rw_opts=("󰑍  Live Read" "󰏫  Live Write" "  Temperature")
+            rwchoice=$(printf '%s\n' "${rw_opts[@]}" | "${ROFI_SUB[@]}" -p "/dev/$dev_name") || exit 0
+            
+            if [[ "$rwchoice" == *"Read"* ]]; then
+                "$DAEMON_SCRIPT" --disk-read "$dev_name" & disown
+            elif [[ "$rwchoice" == *"Write"* ]]; then
+                "$DAEMON_SCRIPT" --disk-write "$dev_name" & disown
+            elif [[ "$rwchoice" == *"Temperature"* ]]; then
+                "$DAEMON_SCRIPT" --disk-temp "$dev_name" & disown
+            fi
+        fi
+        ;;
+
     '󱑎  Stopwatch')      "$DAEMON_SCRIPT" --stopwatch & disown ;;
     '󰥔  Live Clock')     "$DAEMON_SCRIPT" --clock & disown ;;
     '  CPU Usage')      "$DAEMON_SCRIPT" --cpu & disown ;;
     '󰘚  Memory (RAM)')   "$DAEMON_SCRIPT" --ram & disown ;;
     '  CPU Temp')       "$DAEMON_SCRIPT" --temp & disown ;;
     '󰁹  Battery / Power')"$DAEMON_SCRIPT" --battery & disown ;;
-    '󰋊  Disk Usage')     "$DAEMON_SCRIPT" --disk & disown ;;
     '󰈀  Network Speed')  "$DAEMON_SCRIPT" --network & disown ;;
     '󰔚  System Uptime')  "$DAEMON_SCRIPT" --uptime & disown ;;
     '󰽽  Active Workspace')"$DAEMON_SCRIPT" --workspace & disown ;;

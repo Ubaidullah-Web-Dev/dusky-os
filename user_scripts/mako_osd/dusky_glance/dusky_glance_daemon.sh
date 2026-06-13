@@ -295,6 +295,104 @@ case "$MODE" in
         done
         ;;
 
+    --disk-read)
+        DEV="${2:-}"
+        stat_file="/sys/block/$DEV/stat"
+        if [[ -z "$DEV" || ! -f "$stat_file" ]]; then
+            send_osd "Unknown Drive"
+            exit 1
+        fi
+
+        prev_read_sec=0
+        if read -r -a stats < "$stat_file"; then
+            prev_read_sec=${stats[2]}
+        fi
+
+        while true; do
+            if read -r -a stats < "$stat_file"; then
+                curr_read_sec=${stats[2]}
+                
+                # OPTIMIZATION: Native Bash arithmetic replaces awk. Zero subprocess overhead, exact integer mapping.
+                read_mb_s=$(( (curr_read_sec - prev_read_sec) * 512 / 1048576 ))
+                tot_read_mb=$(( curr_read_sec * 512 / 1048576 ))
+
+                send_osd "${tot_read_mb} ${read_mb_s}"
+                
+                prev_read_sec=$curr_read_sec
+            fi
+            sleep 1
+        done
+        ;;
+
+    --disk-write)
+        DEV="${2:-}"
+        stat_file="/sys/block/$DEV/stat"
+        if [[ -z "$DEV" || ! -f "$stat_file" ]]; then
+            send_osd "Unknown Drive"
+            exit 1
+        fi
+
+        prev_write_sec=0
+        if read -r -a stats < "$stat_file"; then
+            prev_write_sec=${stats[6]}
+        fi
+
+        while true; do
+            if read -r -a stats < "$stat_file"; then
+                curr_write_sec=${stats[6]}
+                
+                # OPTIMIZATION: Native Bash arithmetic replaces awk. Zero subprocess overhead, exact integer mapping.
+                write_mb_s=$(( (curr_write_sec - prev_write_sec) * 512 / 1048576 ))
+                tot_write_mb=$(( curr_write_sec * 512 / 1048576 ))
+
+                send_osd "${tot_write_mb} ${write_mb_s}"
+                
+                prev_write_sec=$curr_write_sec
+            fi
+            sleep 1
+        done
+        ;;
+
+    --disk-temp)
+        DEV="${2:-}"
+        stat_file="/sys/block/$DEV/stat"
+        if [[ -z "$DEV" || ! -f "$stat_file" ]]; then
+            send_osd "Unknown Drive"
+            exit 1
+        fi
+
+        # Discover ALL hwmon temp sensors for this block device
+        temp_files=()
+        for tfile in /sys/block/"$DEV"/device/hwmon*/temp*_input; do
+            [[ -f "$tfile" ]] && temp_files+=("$tfile")
+        done
+        if [[ ${#temp_files[@]} -eq 0 && "$DEV" == nvme* ]]; then
+            ctrl_dev=$(echo "$DEV" | grep -o 'nvme[0-9]\+')
+            for tfile in /sys/class/nvme/"$ctrl_dev"/hwmon*/temp*_input; do
+                [[ -f "$tfile" ]] && temp_files+=("$tfile")
+            done
+        fi
+
+        while true; do
+            if [[ ${#temp_files[@]} -gt 0 ]]; then
+                temps=()
+                for tf in "${temp_files[@]}"; do
+                    if read -r t < "$tf" 2>/dev/null; then
+                        temps+=("$((t/1000))°")
+                    fi
+                done
+                if [[ ${#temps[@]} -gt 0 ]]; then
+                    send_osd "${temps[*]}"
+                else
+                    send_osd "N/A"
+                fi
+            else
+                send_osd "N/A"
+            fi
+            sleep 1
+        done
+        ;;
+
     --network)
         STATE_DIR="${XDG_RUNTIME_DIR:-/run/user/$UID}/waybar-net"
         STATE_FILE="$STATE_DIR/state"
