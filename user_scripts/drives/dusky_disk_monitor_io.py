@@ -381,8 +381,8 @@ class DriveWidget(Static, can_focus=True):
         # Enforced fixed widths and no_wrap=True completely prevent UI shifting/wrapping
         # Columns recalibrated to precisely match the 46-char optical width of the original script.
         table = Table.grid(expand=True, padding=(0, 1))
-        table.add_column("LeftLabel", width=10, no_wrap=True)
-        table.add_column("LeftValue", width=11, justify="right", no_wrap=True)
+        table.add_column("LeftLabel", width=9, no_wrap=True)
+        table.add_column("LeftValue", width=12, justify="left", no_wrap=True)
         table.add_column("Pad", ratio=1)
         table.add_column("R1_Lbl", width=8, justify="right", no_wrap=True)
         table.add_column("R1_Val", width=17, justify="left", no_wrap=True)
@@ -403,7 +403,7 @@ class DriveWidget(Static, can_focus=True):
         w_iops_str = f"{w_iops:.1f} IOPS"
 
         # Tucked latency specifically for HDDs and ZRAMs to keep UI slim
-        latency_val = f"[bold {ERROR}]{await_ms:>5.2f} ms[/]" if is_compact else ""
+        latency_val = f"[bold {ERROR}]{await_ms:.2f} ms[/]" if is_compact else ""
 
         # Compact temp: show on Read row (blank space above latency)
         compact_temp = ""
@@ -412,7 +412,7 @@ class DriveWidget(Static, can_focus=True):
 
         # Row 1: Active Read Stats (Speeds shifted left into R2/R3 labels to close gap)
         table.add_row(
-            f"[{WARNING}]Read:[/]", f"[bold {SUCCESS}]{read_mb:>8.1f} MB[/]", "",
+            f"[{WARNING}]Read:[/]", f"[bold {SUCCESS}]{read_mb:.1f} MB[/]", "",
             f"[bold {ACCENT}]READ[/]", f"{r_spark}",
             f"[bold {FG}]{r_spd}[/]", "",
             f"{r_iops_str}", f"{compact_temp}"
@@ -420,7 +420,7 @@ class DriveWidget(Static, can_focus=True):
         
         # Row 2: Active Write Stats
         table.add_row(
-            f"[{WARNING}]Write:[/]", f"[bold {SUCCESS}]{write_mb:>8.1f} MB[/]", "",
+            f"[{WARNING}]Write:[/]", f"[bold {SUCCESS}]{write_mb:.1f} MB[/]", "",
             f"[bold {SUCCESS}]WRITE[/]", f"{w_spark}",
             f"[bold {FG}]{w_spd}[/]", "",
             f"{w_iops_str}", latency_val
@@ -430,7 +430,7 @@ class DriveWidget(Static, can_focus=True):
         if not is_compact:
             # Row 3: Latency, Utilization %, Critical, Power Cycles
             table.add_row(
-                f"[{WARNING}]Latency:[/]", f"[bold {ERROR}]{await_ms:>5.2f} ms[/]", "",
+                f"[{WARNING}]Latency:[/]", f"[bold {ERROR}]{await_ms:.2f} ms[/]", "",
                 f"[{MUTED}]UTIL[/]", f"[{MUTED}]│[/] [bold {ERROR}]{util_pct:.1f}%[/]",
                 f"[{MUTED}]CRITICAL[/]", f"[{MUTED}]│[/] [bold {crit_col}]{smart.critical_warning}[/]",
                 f"[{MUTED}]PWR CYC[/]", f"[{MUTED}]│[/] [{FG}]{smart.power_cycles}[/]"
