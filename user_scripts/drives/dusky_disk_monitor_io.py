@@ -261,7 +261,6 @@ class SysStatParser:
     @staticmethod
     def get_device_metadata() -> dict:
         try:
-            # Added ROTA to positively identify rotational hard drives
             res = subprocess.run(["lsblk", "-J", "-d", "-o", "NAME,SIZE,TYPE,MODEL,ROTA"], capture_output=True, text=True, check=True)
             data = json.loads(res.stdout)
             meta = {}
@@ -293,7 +292,6 @@ class SysStatParser:
 
 class DriveWidget(Static, can_focus=True):
     
-    # Height set to auto to dynamically collapse for HDDs and ZRAMs
     DEFAULT_CSS = f"""
     DriveWidget {{
         border: solid {MUTED};
@@ -319,12 +317,14 @@ class DriveWidget(Static, can_focus=True):
     def on_mount(self):
         self.border_title = f"[bold {FG}]/dev/{self.dev_name}[/]"
         
-    def generate_sparkline(self, data: deque, width: int = 16, color_hex: str = ACCENT) -> str:
+    def generate_sparkline(self, data: deque, width: int = 16, color_hex: str = ACCENT) -> Text:
+        """Returns a hard-cropped rich Text object to completely eliminate 3-dot truncation."""
         ticks = " ▂▃▄▅▆▇█"
         valid_data = list(data)
         
         if not valid_data: 
-            return f"[{MUTED}]" + "_" * width + "[/]"
+            line = f"[{MUTED}]" + "_" * width + "[/]"
+            return Text.from_markup(line, overflow="crop")
         
         max_val = max(valid_data)
         line = ""
@@ -335,14 +335,13 @@ class DriveWidget(Static, can_focus=True):
                 idx = int((v / max_val) * (len(ticks) - 1))
                 idx = max(0, min(idx, len(ticks) - 1))
                 line += f"[{color_hex}]{ticks[idx]}[/]"
-        return line
+        return Text.from_markup(line, overflow="crop")
 
     def tick_update(self, curr: BlockStats, meta_info: dict):
         size = meta_info.get('size', '?')
         dtype = meta_info.get('type', '?')
         model = meta_info.get('model', 'N/A')
         
-        # Determine if view should be compact (for HDDs or ZRAMs)
         is_hdd = meta_info.get('rota', False)
         is_zram = self.dev_name.startswith("zram")
         is_compact = is_hdd or is_zram
@@ -359,7 +358,6 @@ class DriveWidget(Static, can_focus=True):
         dt = curr.timestamp - prev.timestamp
         if dt <= 0: return
         
-        # Metrics Calculations
         r_mb_s = ((curr.read_sectors - prev.read_sectors) * 512) / dt / 1048576
         w_mb_s = ((curr.write_sectors - prev.write_sectors) * 512) / dt / 1048576
         r_iops = (curr.read_ios - prev.read_ios) / dt
@@ -378,18 +376,33 @@ class DriveWidget(Static, can_focus=True):
         read_mb = (curr.read_sectors * 512) / 1048576
         write_mb = (curr.write_sectors * 512) / 1048576
 
-        # Enforced fixed widths and no_wrap=True completely prevent UI shifting/wrapping
-        # Columns recalibrated to precisely match the 46-char optical width of the original script.
+        # ====================================================================
+        # THE PERFECT GOLDEN FLUID GRID 
+        # Total fixed width is a mathematically perfectly tight 79 characters.
+        # Overflow is strictly hard-cropped everywhere (0 dots, ever).
+        # F1, F2, F3 dynamically distribute all empty space inside the UI.
+        # ====================================================================
         table = Table.grid(expand=True, padding=(0, 1))
-        table.add_column("LeftLabel", width=9, no_wrap=True)
-        table.add_column("LeftValue", width=12, justify="left", no_wrap=True)
-        table.add_column("Pad", ratio=1)
-        table.add_column("R1_Lbl", width=8, justify="right", no_wrap=True)
-        table.add_column("R1_Val", width=17, justify="left", no_wrap=True)
-        table.add_column("R2_Lbl", width=12, justify="right", no_wrap=True)
-        table.add_column("R2_Val", width=9, justify="left", no_wrap=True)
-        table.add_column("R3_Lbl", width=12, justify="right", no_wrap=True)
-        table.add_column("R3_Val", width=9, justify="left", no_wrap=True)
+        
+        table.add_column("C1_Lbl", width=10, justify="left", no_wrap=True, overflow="crop")
+        table.add_column("C1_Val", width=11, justify="left", no_wrap=True, overflow="crop")
+        
+        table.add_column("F1", ratio=1) # Dynamic Spacer 1 (Forces middle rightwards)
+        
+        table.add_column("C2_Lbl", width=6, justify="right", no_wrap=True, overflow="crop")
+        table.add_column("C2_Val", width=17, justify="left", no_wrap=True, overflow="crop")
+        
+        table.add_column("F2", ratio=1) # Dynamic Spacer 2 
+        
+        table.add_column("C3_Lbl", width=11, justify="right", no_wrap=True, overflow="crop")
+        table.add_column("C3_Val", width=5, justify="left", no_wrap=True, overflow="crop")
+        
+        table.add_column("F3", ratio=1) # Dynamic Spacer 3
+        
+        table.add_column("C4_Lbl", width=11, justify="right", no_wrap=True, overflow="crop")
+        table.add_column("C4_Val", width=8, justify="left", no_wrap=True, overflow="crop")
+        
+        table.add_column("Pad", ratio=1) # Shock Absorber at far right edge
 
         r_spark = self.generate_sparkline(self.history_read, width=16, color_hex=ACCENT)
         w_spark = self.generate_sparkline(self.history_write, width=16, color_hex=SUCCESS)
@@ -402,54 +415,68 @@ class DriveWidget(Static, can_focus=True):
         r_iops_str = f"{r_iops:.1f} IOPS"
         w_iops_str = f"{w_iops:.1f} IOPS"
 
-        # Tucked latency specifically for HDDs and ZRAMs to keep UI slim
         latency_val = f"[bold {ERROR}]{await_ms:.2f} ms[/]" if is_compact else ""
+        compact_temp = f"[{WARNING}]{smart.temp}[/]" if (is_compact and smart.temp != "N/A") else ""
 
-        # Compact temp: show on Read row (blank space above latency)
-        compact_temp = ""
-        if is_compact and smart.temp != "N/A":
-            compact_temp = f"[{WARNING}]{smart.temp}[/]"
-
-        # Row 1: Active Read Stats (Speeds shifted left into R2/R3 labels to close gap)
+        # ROW 1 (Every row maps exactly 12 components: 8 data fields, 4 flex spacers "")
         table.add_row(
-            f"[{WARNING}]Read:[/]", f"[bold {SUCCESS}]{read_mb:.1f} MB[/]", "",
-            f"[bold {ACCENT}]READ[/]", f"{r_spark}",
-            f"[bold {FG}]{r_spd}[/]", "",
-            f"{r_iops_str}", f"{compact_temp}"
+            f"[{WARNING}]Read:[/]", f"[bold {SUCCESS}]{read_mb:.1f} MB[/]", 
+            "", 
+            f"[bold {ACCENT}]READ[/]", r_spark, 
+            "", 
+            f"[bold {FG}]{r_spd}[/]", "", 
+            "", 
+            f"{r_iops_str}", f"{compact_temp}", 
+            ""
         )
         
-        # Row 2: Active Write Stats
+        # ROW 2
         table.add_row(
-            f"[{WARNING}]Write:[/]", f"[bold {SUCCESS}]{write_mb:.1f} MB[/]", "",
-            f"[bold {SUCCESS}]WRITE[/]", f"{w_spark}",
-            f"[bold {FG}]{w_spd}[/]", "",
-            f"{w_iops_str}", latency_val
+            f"[{WARNING}]Write:[/]", f"[bold {SUCCESS}]{write_mb:.1f} MB[/]", 
+            "", 
+            f"[bold {SUCCESS}]WRITE[/]", w_spark, 
+            "", 
+            f"[bold {FG}]{w_spd}[/]", "", 
+            "", 
+            f"{w_iops_str}", f"{latency_val}", 
+            ""
         )
         
-        # Exclude remaining SMART fields for HDDs and ZRAMs entirely
         if not is_compact:
-            # Row 3: Latency, Utilization %, Critical, Power Cycles
+            # ROW 3
             table.add_row(
-                f"[{WARNING}]Latency:[/]", f"[bold {ERROR}]{await_ms:.2f} ms[/]", "",
-                f"[{MUTED}]UTIL[/]", f"[{MUTED}]│[/] [bold {ERROR}]{util_pct:.1f}%[/]",
-                f"[{MUTED}]CRITICAL[/]", f"[{MUTED}]│[/] [bold {crit_col}]{smart.critical_warning}[/]",
-                f"[{MUTED}]PWR CYC[/]", f"[{MUTED}]│[/] [{FG}]{smart.power_cycles}[/]"
+                f"[{WARNING}]Latency:[/]", f"[bold {ERROR}]{await_ms:.2f} ms[/]", 
+                "", 
+                f"[{MUTED}]UTIL[/]", f"[{MUTED}]│[/] [bold {ERROR}]{util_pct:.1f}%[/]", 
+                "", 
+                f"[{MUTED}]CRITICAL[/]", f"[{MUTED}]│[/] [bold {crit_col}]{smart.critical_warning}[/]", 
+                "", 
+                f"[{MUTED}]PWR CYC[/]", f"[{MUTED}]│[/] [{FG}]{smart.power_cycles}[/]", 
+                ""
             )
 
-            # Row 4: Total Read, Health %, Errors, Power Hours
+            # ROW 4
             table.add_row(
-                f"[{WARNING}]Total Rd:[/]", f"[bold {ACCENT}]{smart.tbr}[/]", "",
-                f"[{MUTED}]HEALTH[/]", f"[{MUTED}]│[/] [bold {SUCCESS}]{smart.health}[/]",
-                f"[{MUTED}]ERRORS[/]", f"[{MUTED}]│[/] [bold {err_col}]{smart.media_errors}[/]",
-                f"[{MUTED}]PWR HRS[/]", f"[{MUTED}]│[/] [{FG}]{smart.power_on_hours}[/]"
+                f"[{WARNING}]Total Rd:[/]", f"[bold {ACCENT}]{smart.tbr}[/]", 
+                "", 
+                f"[{MUTED}]HEALTH[/]", f"[{MUTED}]│[/] [bold {SUCCESS}]{smart.health}[/]", 
+                "", 
+                f"[{MUTED}]ERRORS[/]", f"[{MUTED}]│[/] [bold {err_col}]{smart.media_errors}[/]", 
+                "", 
+                f"[{MUTED}]PWR HRS[/]", f"[{MUTED}]│[/] [{FG}]{smart.power_on_hours}[/]", 
+                ""
             )
 
-            # Row 5: Total Write, Temp(s), T1 Time, Power Cuts
+            # ROW 5
             table.add_row(
-                f"[{WARNING}]Total Wr:[/]", f"[bold {ACCENT}]{smart.tbw}[/]", "",
-                f"[{MUTED}]TEMP[/]", f"[{MUTED}]│[/] [{WARNING}]{smart.temp}[/]",
-                f"[{MUTED}]T1 TIME[/]", f"[{MUTED}]│[/] [{WARNING}]{smart.therm_t1}[/]",
-                f"[{MUTED}]PWR CUT[/]", f"[{MUTED}]│[/] [{ERROR}]{smart.unsafe_shutdowns}[/]"
+                f"[{WARNING}]Total Wr:[/]", f"[bold {ACCENT}]{smart.tbw}[/]", 
+                "", 
+                f"[{MUTED}]TEMP[/]", f"[{MUTED}]│[/] [{WARNING}]{smart.temp}[/]", 
+                "", 
+                f"[{MUTED}]T1 TIME[/]", f"[{MUTED}]│[/] [{WARNING}]{smart.therm_t1}[/]", 
+                "", 
+                f"[{MUTED}]PWR CUT[/]", f"[{MUTED}]│[/] [{ERROR}]{smart.unsafe_shutdowns}[/]", 
+                ""
             )
 
         self.update(table)
@@ -457,8 +484,6 @@ class DriveWidget(Static, can_focus=True):
 
 class IOMonitorApp(App):
     """Dusky Disk I/O Monitor"""
-
-    # Natively disables the ^P palette menu, the left icon, and theming capabilities completely.
     ENABLE_COMMAND_PALETTE = False
 
     CSS = f"""
@@ -518,26 +543,21 @@ class IOMonitorApp(App):
         super().__init__()
         self.meta = {}
         self.mounted_drives = set()
-        
-        try: self.kernel = os.uname().release
-        except Exception: self.kernel = "Rolling"
 
     def compose(self) -> ComposeResult:
         self.title = "Dusky Disk I/O Monitor"
-        # Using a flat static component ensures exactly 1 line of height with zero interactivity
         yield Static("Dusky Disk I/O Monitor", id="custom_header")
         yield Static(id="ram_bar")
         yield VerticalScroll(id="main_scroll")
         yield Footer()
 
     def on_mount(self):
-        self.refresh_metadata_worker() # Fire instantly on load
+        self.refresh_metadata_worker()
         self.set_interval(1.0, self.tick)
         self.set_interval(5.0, self.refresh_metadata_worker)
 
     @work(thread=True, exclusive=True)
     def refresh_metadata_worker(self):
-        """Asynchronous worker to prevent UI stutters when calling lsblk."""
         new_meta = SysStatParser.get_device_metadata()
         self.call_from_thread(self._update_meta, new_meta)
         
@@ -565,7 +585,6 @@ class IOMonitorApp(App):
                 focused.scroll_visible()
 
     def tick(self):
-        # 1. Update Clean RAM Bar with dynamic styling
         dirty, wb = SysStatParser.get_ram_buffers()
         ram_txt = Text.from_markup(
             f"[bold {FG}]SYSTEM MEMORY[/]  [{BG}]│[/]  "
@@ -574,7 +593,6 @@ class IOMonitorApp(App):
         )
         self.query_one("#ram_bar", Static).update(ram_txt)
 
-        # 2. Hardware Mount Sync
         current_drives = []
         try:
             current_drives = [d for d in os.listdir("/sys/block") if not d.startswith(("loop", "sr", "ram", "dm", "fd"))]
@@ -595,7 +613,6 @@ class IOMonitorApp(App):
                 scroll_area.mount(DriveWidget(id=f"drive_{dev}", dev_name=dev))
                 self.mounted_drives.add(dev)
 
-        # Focus first widget on initial load
         if is_initial and current_drives:
             def focus_first():
                 widgets = self.query(DriveWidget)
@@ -603,7 +620,6 @@ class IOMonitorApp(App):
                     widgets.first().focus()
             self.call_later(focus_first)
 
-        # 3. Dispatch Stats to Widgets
         for widget in self.query(DriveWidget):
             curr = SysStatParser.get_block_stats(widget.dev_name)
             if curr:
