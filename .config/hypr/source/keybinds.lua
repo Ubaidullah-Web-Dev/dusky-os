@@ -510,7 +510,7 @@ hl.bind(
 -- Music Recognition
 hl.bind(
     "SUPER + ALT + M",
-    hl.dsp.exec_cmd(terminal .. " --hold  " .. dusky_scripts .. "music/music_recognition.sh"),
+    hl.dsp.exec_cmd(terminal .. " --class music_recognition.sh --hold  " .. dusky_scripts .. "music/music_recognition.sh"),
     { description = "Music Recognition aka Shazam" }
 )
 
