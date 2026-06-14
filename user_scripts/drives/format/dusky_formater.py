@@ -405,8 +405,6 @@ def build_execution_plan(plan: FormatPlan) -> tuple[list[ExecutionStep], str, Op
         mapper_name = generate_secure_mapper_name()
         target_block = f"/dev/mapper/{mapper_name}"
         
-        # `-q` runs batch mode (suppressing the manual YES confirmation) 
-        # `-` reads the keyfile directly from Standard Input
         luks_fmt = ["cryptsetup", "-q", "luksFormat", "--type", "luks2", device, "-"]
         commands.append({
             "action": "luks_format",
@@ -418,7 +416,8 @@ def build_execution_plan(plan: FormatPlan) -> tuple[list[ExecutionStep], str, Op
         bash_script += f"# Initialize modern LUKS2 Container (Passphrase securely piped)\n"
         bash_script += f"echo -n 'YOUR_PASSPHRASE' | {shlex.join(luks_fmt[:-1])} -\n"
         
-        luks_open = ["cryptsetup", "open", "--type", "luks", "--key-file", "-", device, mapper_name]
+        # FIX: Added --allow-discards to enable TRIM passthrough
+        luks_open = ["cryptsetup", "open", "--type", "luks", "--allow-discards", "--key-file", "-", device, mapper_name]
         commands.append({
             "action": "luks_open",
             "desc": f"Opening encrypted volume as '{mapper_name}'",
@@ -426,8 +425,8 @@ def build_execution_plan(plan: FormatPlan) -> tuple[list[ExecutionStep], str, Op
             "interactive": False,
             "input_data": passphrase
         })
-        bash_script += f"# Map the LUKS volume\n"
-        bash_script += f"echo -n 'YOUR_PASSPHRASE' | cryptsetup open --type luks --key-file - {device} {mapper_name}\n\n"
+        bash_script += f"# Map the LUKS volume with discard passthrough\n"
+        bash_script += f"echo -n 'YOUR_PASSPHRASE' | cryptsetup open --type luks --allow-discards --key-file - {device} {mapper_name}\n\n"
 
     mkfs_cmd: list[str] = []
     match fs_type:
@@ -489,23 +488,29 @@ def execute_plan(commands: list[ExecutionStep], mapper_name: Optional[str] = Non
                 console.print(f"\n[bold yellow]Executing:[/] {step['desc']}...")
                 console.print(f"[dim]$ {shlex.join(step['cmd'])}[/]\n")
                 try:
+                    # FIX: Utilizing unbuffered byte reading to allow native carriage returns (\r)
+                    # to properly update the progress bar in the terminal without hanging.
                     proc = subprocess.Popen(
                         step["cmd"],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
-                        text=True,
-                        bufsize=1
+                        bufsize=0 
                     )
                     with proc:
-                        for line in proc.stdout:
-                            line = line.rstrip()
-                            if line:
-                                console.print(f"  [dim]{line}[/]")
-                    proc.wait()
+                        if proc.stdout:
+                            while True:
+                                char = proc.stdout.read(1)
+                                if not char and proc.poll() is not None:
+                                    break
+                                if char:
+                                    sys.stdout.buffer.write(char)
+                                    sys.stdout.buffer.flush()
+                                    
                     if proc.returncode != 0:
                         raise subprocess.CalledProcessError(proc.returncode, step["cmd"])
+                        
                 except subprocess.CalledProcessError as e:
-                    console.print(f"[bold red]Fatal Error executing:[/] {shlex.join(step['cmd'])}")
+                    console.print(f"\n[bold red]Fatal Error executing:[/] {shlex.join(step['cmd'])}")
                     raise Exception("Execution pipeline aborted.")
                 console.print(f"\n[bold green]✔[/] {step['desc']} [dim](Completed)[/]")
             else:
