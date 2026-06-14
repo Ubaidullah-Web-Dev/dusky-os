@@ -13,6 +13,7 @@ import subprocess
 import json
 import shlex
 import uuid
+import time
 from typing import Any, Optional, TypedDict
 
 # ==============================================================================
@@ -110,6 +111,18 @@ def get_all_paths(devices: list[dict[str, Any]]) -> list[str]:
             paths.extend(get_all_paths(get_val(dev, "children", [])))
     return paths
 
+def get_all_mountpoints(device_node: Optional[dict[str, Any]]) -> list[str]:
+    """Recursively collects all active mount points for a device and its children."""
+    if not device_node:
+        return []
+    mounts: list[str] = []
+    raw_mounts = get_val(device_node, "mountpoints", [])
+    if isinstance(raw_mounts, list):
+        mounts.extend([m for m in raw_mounts if m])
+    for child in get_val(device_node, "children", []):
+        mounts.extend(get_all_mountpoints(child))
+    return mounts
+
 def is_mounted_recursively(device_node: Optional[dict[str, Any]]) -> bool:
     if not device_node: 
         return False
@@ -178,6 +191,63 @@ def display_device_tree(devices: list[dict[str, Any]], table: Table, mount_data:
         if "children" in dev:
             display_device_tree(get_val(dev, "children", []), table, mount_data, level + 1)
 
+def resolve_busy_processes(mountpoint: str) -> bool:
+    """Finds processes keeping the drive busy parsing lsof directly and offers a force kill."""
+    try:
+        res = subprocess.run(["lsof", "+f", "--", mountpoint], capture_output=True, text=True)
+    except FileNotFoundError:
+        console.print("[dim yellow]Note: 'lsof' is not installed. Cannot scan for busy processes.[/]")
+        return False
+
+    if res.returncode != 0 or not res.stdout.strip():
+        return False
+
+    lines = res.stdout.strip().split("\n")
+    if len(lines) <= 1:
+        return False
+
+    processes = []
+    for line in lines[1:]:
+        parts = line.split()
+        if len(parts) >= 3:
+            pid = parts[1]
+            if not any(p["pid"] == pid for p in processes):
+                processes.append({
+                    "cmd": parts[0],
+                    "pid": pid,
+                    "user": parts[2]
+                })
+
+    if not processes:
+        return False
+
+    console.print(Panel(
+        f"[bold red]⚠️  WARNING: FILESYSTEM IS BUSY ⚠️[/]\n\n"
+        f"The following processes are currently locking [bold white]{mountpoint}[/]\n"
+        "Force-closing them will result in unsaved data loss.",
+        title="Filesystem Locked", border_style="red"
+    ))
+
+    table = Table(show_header=True, header_style="bold yellow", border_style="yellow")
+    table.add_column("COMMAND", style="cyan")
+    table.add_column("PID", justify="right", style="yellow")
+    table.add_column("USER")
+
+    for p in processes:
+        table.add_row(p["cmd"], p["pid"], p["user"])
+
+    console.print(table)
+    console.print()
+
+    ans = Confirm.ask("Forcefully terminate all listed processes (SIGKILL) to free the drive?", default=False)
+    if ans:
+        for p in processes:
+            console.print(f"Killing {p['cmd']} (PID: {p['pid']})...")
+            subprocess.run(["kill", "-9", p['pid']], capture_output=True)
+        time.sleep(1) # Give kernel time to drop the file descriptors
+        return True
+    return False
+
 # ==============================================================================
 # 4. INTERACTIVE TUI & CONFIGURATION
 # ==============================================================================
@@ -189,7 +259,8 @@ def generate_secure_mapper_name() -> str:
 def interactive_setup() -> FormatPlan:
     console.print(Panel.fit("[bold magenta]Dusky Formatter v5.3[/] - [cyan]Arch Linux Storage & Analysis Utility[/]", border_style="magenta"))
     
-    raw_devices = get_block_devices()
+    # Render table once at startup
+    initial_devices = get_block_devices()
     mount_data = get_mount_options()
     
     table = Table(
@@ -206,22 +277,59 @@ def interactive_setup() -> FormatPlan:
     table.add_column("FS", style="blue", no_wrap=True, vertical="middle")
     table.add_column("Active Mounts & Flags", style="red", ratio=8) 
     
-    display_device_tree(raw_devices, table, mount_data)
+    display_device_tree(initial_devices, table, mount_data)
     console.print(table)
     
-    valid_paths = get_all_paths(raw_devices)
-    
     while True:
+        # DYNAMIC RE-POLL: Prevents memory caching bugs if user unmounts externally
+        current_devices = get_block_devices()
+        valid_paths = get_all_paths(current_devices)
+        
         target_device = Prompt.ask("\nEnter the [bold green]Path[/] of the device to format (e.g., /dev/nvme0n1p1)")
         if target_device not in valid_paths or not target_device.startswith("/dev/"):
             console.print("[bold red]Invalid device path selected. Ensure it matches a physical path in the table.[/]")
             continue
         
-        device_node = find_device_node(raw_devices, target_device)
+        device_node = find_device_node(current_devices, target_device)
         if is_mounted_recursively(device_node):
-            console.print(f"[bold red blink]CRITICAL SAFETY LOCK:[/]\n[yellow]{target_device}[/] (or a child volume) is actively mounted!")
-            console.print("Unmount it manually using `umount` to prevent live filesystem corruption. Aborting selection.")
-            continue
+            active_mounts = get_all_mountpoints(device_node)
+            console.print(f"\n[bold red blink]CRITICAL SAFETY LOCK:[/]\n[yellow]{target_device}[/] (or a child volume) is actively mounted at:")
+            for m in active_mounts:
+                console.print(f"  - [cyan]{m}[/]")
+            
+            console.print("\n[yellow]Formatting an active mount is strictly prohibited and will corrupt the live filesystem.[/]")
+            
+            if Confirm.ask("Would you like Dusky Formatter to attempt a [bold red]force unmount[/] now?", default=False):
+                unmount_failed = False
+                # Sort descending by length to unmount deeply nested points first
+                for m in sorted(active_mounts, key=len, reverse=True):
+                    console.print(f"[bold yellow]➜[/] Attempting to unmount {m}...")
+                    res = subprocess.run(["umount", m], capture_output=True, text=True)
+                    
+                    if res.returncode == 0:
+                        console.print(f"  [bold green]✔ Successfully unmounted {m}[/]")
+                    else:
+                        console.print(f"  [bold red]✗ Standard unmount failed for {m}. Target is busy.[/]")
+                        if resolve_busy_processes(m):
+                            res2 = subprocess.run(["umount", m], capture_output=True, text=True)
+                            if res2.returncode == 0:
+                                console.print(f"  [bold green]✔ Successfully unmounted {m} after force kill.[/]")
+                            else:
+                                console.print(f"  [bold red]✗ Still unable to unmount {m} (Kernel Lock / Busy).[/]")
+                                unmount_failed = True
+                        else:
+                            unmount_failed = True
+                            
+                if unmount_failed:
+                    console.print("[red]Could not free all mounts. Please resolve manually or reboot if kernel locked.[/]")
+                    continue
+                else:
+                    console.print("[green]All mount points cleared. Verifying state...[/]")
+                    continue # Re-evaluates in the next loop iteration safely
+            else:
+                console.print("[dim]Aborting selection. Please handle unmounting manually.[/]")
+                continue
+
         break
 
     console.print("\n[bold cyan]--- Security & Encryption ---[/]")
