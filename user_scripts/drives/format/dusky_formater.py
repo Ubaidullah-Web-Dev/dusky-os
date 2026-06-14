@@ -438,8 +438,9 @@ def build_execution_plan(plan: FormatPlan) -> tuple[list[ExecutionStep], str, Op
             mkfs_cmd.append(target_block)
             
         case "ext4":
-            mkfs_cmd = ["mkfs.ext4", "-F"] 
+            mkfs_cmd = ["mkfs.ext4", "-F", "-v"]
             if label: mkfs_cmd.extend(["-L", label])
+            mkfs_cmd.extend(["-E", "lazy_itable_init=0,lazy_journal_init=0"])
             mkfs_cmd.append(target_block)
             
         case "xfs":
@@ -484,37 +485,57 @@ def execute_plan(commands: list[ExecutionStep], mapper_name: Optional[str] = Non
     
     try:
         for step in commands:
-            # Wrapped in a rich status spinner to prevent the UI from freezing
-            # during long background executions like LUKS key benchmarking.
-            with console.status(f"[bold yellow]Executing:[/] {step['desc']}...", spinner="dots"):
+            if step["action"] == "mkfs":
+                console.print(f"\n[bold yellow]Executing:[/] {step['desc']}...")
+                console.print(f"[dim]$ {shlex.join(step['cmd'])}[/]\n")
                 try:
-                    if step["interactive"]:
-                        subprocess.run(step["cmd"], check=True)
-                    else:
-                        # Dynamically construct kwargs to safely pipe input to the process
-                        kwargs: dict[str, Any] = {
-                            "capture_output": True,
-                            "text": True,  # Allows str I/O, subprocess handles encoding autonomously
-                            "check": True
-                        }
-                        if step.get("input_data") is not None:
-                            kwargs["input"] = step["input_data"]
-                            
-                        subprocess.run(step["cmd"], **kwargs)
-                    
-                    if step["action"] == "luks_open":
-                        luks_is_open = True
-                    elif step["action"] == "luks_close":
-                        luks_is_open = False
-                        
+                    proc = subprocess.Popen(
+                        step["cmd"],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1
+                    )
+                    with proc:
+                        for line in proc.stdout:
+                            line = line.rstrip()
+                            if line:
+                                console.print(f"  [dim]{line}[/]")
+                    proc.wait()
+                    if proc.returncode != 0:
+                        raise subprocess.CalledProcessError(proc.returncode, step["cmd"])
                 except subprocess.CalledProcessError as e:
                     console.print(f"[bold red]Fatal Error executing:[/] {shlex.join(step['cmd'])}")
-                    if not step["interactive"] and e.stderr is not None:
-                        console.print(f"[red]Kernel/API Output:\n{e.stderr.strip()}[/]")
                     raise Exception("Execution pipeline aborted.")
-            
-            # Print a permanent success message once the spinner disappears
-            console.print(f"[bold green]✔[/] {step['desc']} [dim](Completed)[/]")
+                console.print(f"\n[bold green]✔[/] {step['desc']} [dim](Completed)[/]")
+            else:
+                with console.status(f"[bold yellow]Executing:[/] {step['desc']}...", spinner="dots"):
+                    try:
+                        if step["interactive"]:
+                            subprocess.run(step["cmd"], check=True)
+                        else:
+                            kwargs: dict[str, Any] = {
+                                "capture_output": True,
+                                "text": True,
+                                "check": True
+                            }
+                            if step.get("input_data") is not None:
+                                kwargs["input"] = step["input_data"]
+                                
+                            subprocess.run(step["cmd"], **kwargs)
+                        
+                        if step["action"] == "luks_open":
+                            luks_is_open = True
+                        elif step["action"] == "luks_close":
+                            luks_is_open = False
+                            
+                    except subprocess.CalledProcessError as e:
+                        console.print(f"[bold red]Fatal Error executing:[/] {shlex.join(step['cmd'])}")
+                        if not step["interactive"] and e.stderr is not None:
+                            console.print(f"[red]Kernel/API Output:\n{e.stderr.strip()}[/]")
+                        raise Exception("Execution pipeline aborted.")
+                
+                console.print(f"[bold green]✔[/] {step['desc']} [dim](Completed)[/]")
                 
         console.print("\n[bold green]✔ All formatting operations successfully completed![/]")
 
