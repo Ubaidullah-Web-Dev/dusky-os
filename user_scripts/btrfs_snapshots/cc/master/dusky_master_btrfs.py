@@ -8,6 +8,8 @@ NOCOW management, and an interactive 5-tab TUI on Arch Linux.
 import argparse
 import csv
 import json
+import logging
+import logging.handlers
 import os
 import re
 import shlex
@@ -23,9 +25,43 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-# Type Aliases
+# Modern Type Aliases (Python 3.12+ / 3.14+ Compatible)
 type BtrfsMount = dict[str, Any]
 type SubvolMeta = dict[str, Any]
+
+
+# =============================================================================
+# LOGGING (Systemd Journal & Flat File Integration)
+# =============================================================================
+
+def setup_logger() -> logging.Logger:
+    """
+    Initializes an Arch-compliant logger that writes to the systemd journal
+    and a fallback flat file. This prevents TUI tearing while preserving critical errors.
+    """
+    logger = logging.getLogger("dusky-master")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False # Prevent leaking to stdout/stderr (protects FZF)
+
+    # 1. Native Systemd Journal routing via /dev/log
+    try:
+        syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')
+        syslog_handler.setFormatter(logging.Formatter('dusky-master[%(process)d]: %(levelname)s - %(message)s'))
+        logger.addHandler(syslog_handler)
+    except Exception:
+        pass
+
+    # 2. Hardened Flat-file backup for easy grepping
+    try:
+        file_handler = logging.FileHandler("/var/log/dusky.log")
+        file_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+        logger.addHandler(file_handler)
+    except OSError:
+        pass
+
+    return logger
+
+LOG = setup_logger()
 
 
 # =============================================================================
@@ -45,6 +81,7 @@ def ensure_root() -> None:
 
 def fail(message: str, exit_code: int = 1) -> None:
     print(f"\033[1;38;5;196m{message}\033[0m", file=sys.stderr)
+    LOG.critical(message)
     sys.exit(exit_code)
 
 def error_text(result: subprocess.CompletedProcess[str]) -> str:
@@ -97,9 +134,6 @@ def confirm_prompt(prompt: str) -> bool:
 # =============================================================================
 
 def get_btrfs_device(mountpoint: str) -> str:
-    # Use live mount info (-M) instead of fstab to natively support LUKS2 and LVM.
-    # The -v (--nofsroot) flag cleanly strips the Btrfs subvolume brackets (e.g., [/var/log]).
-    # The -e (--evaluate) flag safely resolves UUIDs/labels to raw block device paths.
     result = run_cmd(["findmnt", "-n", "-v", "-e", "-o", "SOURCE", "-M", mountpoint])
     device = result.stdout.strip()
     if not device.startswith("/dev/"):
@@ -107,23 +141,16 @@ def get_btrfs_device(mountpoint: str) -> str:
     return os.path.realpath(device)
 
 def get_active_subvol(mountpoint: str) -> str:
-    """
-    Bulletproof resolution of the active subvolume name mirroring bash script fail-safes.
-    Accounts for edge cases like subvolid= usage or absent fstab entries.
-    """
-    # 1. Try fstab first (Source of truth for boot)
     result = run_cmd(["findmnt", "--fstab", "-n", "-o", "OPTIONS", "-M", mountpoint], check=False)
     if result.returncode == 0:
         match = re.search(r"(?:^|,)subvol=([^,]+)(?:,|$)", result.stdout.strip())
         if match: return match.group(1).lstrip("/")
 
-    # 2. Try live mount info (Crucial if mounted manually or via systemd mount units without fstab)
     result = run_cmd(["findmnt", "-n", "-o", "OPTIONS", "-M", mountpoint], check=False)
     if result.returncode == 0:
         match = re.search(r"(?:^|,)subvol=([^,]+)(?:,|$)", result.stdout.strip())
         if match: return match.group(1).lstrip("/")
 
-    # 3. Fallback to native btrfs tools (Ultimate fallback if mounted purely by subvolid)
     result = run_cmd(["btrfs", "subvolume", "show", mountpoint], check=False)
     if result.returncode == 0:
         match = re.search(r"^[ \t]*Path:[ \t]*(.+)$", result.stdout, re.MULTILINE)
@@ -183,11 +210,24 @@ def get_snapper_configs() -> list[dict[str, str]]:
 # =============================================================================
 
 @contextmanager
-def mount_top_level(device: str) -> Iterator[Path]:
+def mount_top_level(device: str, quiet: bool = False) -> Iterator[Path]:
+    """
+    Context manager to mount the physical top-level BTRFS tree.
+    Protected with a polled retry loop to guarantee native unmount capability
+    without leaking zombie mounts via lazy unmounts.
+    """
     with tempfile.TemporaryDirectory(prefix="btrfs_top_level_", dir="/mnt", ignore_cleanup_errors=True) as tmpdir:
         mnt_point = Path(tmpdir)
-        print(f"\033[1;38;5;81m[*] Mounting top-level tree (subvolid=5) for {device}...\033[0m", file=sys.stderr)
-        run_cmd(["mount", "-o", "subvolid=5", device, str(mnt_point)])
+        if not quiet:
+            print(f"\033[1;38;5;81m[*] Mounting top-level tree (subvolid=5) for {device}...\033[0m", file=sys.stderr)
+        
+        res = run_cmd(["mount", "-o", "subvolid=5", device, str(mnt_point)], check=False)
+        if res.returncode != 0:
+            if quiet:
+                LOG.error(f"Background mount failed for {device}: {error_text(res)}")
+                raise RuntimeError(f"Failed to mount {device}: {error_text(res)}")
+            else:
+                fail(f"[!] Command failed: mount {mnt_point}\n{error_text(res)}", res.returncode)
 
         active_exception: BaseException | None = None
         try:
@@ -196,13 +236,28 @@ def mount_top_level(device: str) -> Iterator[Path]:
             active_exception = exc
             raise
         finally:
-            print("\033[1;38;5;81m[*] Unmounting top-level tree...\033[0m", file=sys.stderr)
-            result = run_cmd(["umount", str(mnt_point)], check=False)
-            if result.returncode != 0:
+            if not quiet:
+                print("\033[1;38;5;81m[*] Unmounting top-level tree...\033[0m", file=sys.stderr)
+            
+            # [SURGICAL FIX] Native Polled Retry Loop - Eliminates zombie mounts caused by umount -l
+            unmounted = False
+            for attempt in range(3):
+                result = run_cmd(["umount", str(mnt_point)], check=False)
+                if result.returncode == 0:
+                    unmounted = True
+                    break
+                time.sleep(1)
+                
+            if not unmounted:
                 message = error_text(result)
-                if active_exception is None:
-                    fail(f"[!] Command failed: umount {mnt_point}\n{message}", result.returncode)
-                print(f"\033[1;38;5;220m[!] Warning: Failed to unmount {mnt_point}: {message}\033[0m", file=sys.stderr)
+                log_msg = f"Failed to cleanly unmount {mnt_point} after 3 attempts: {message}. Filesystem may be busy."
+                
+                if quiet:
+                    LOG.warning(log_msg)
+                else:
+                    if active_exception is None:
+                        fail(f"[!] Command failed: umount {mnt_point}\n{message}", result.returncode)
+                    print(f"\033[1;38;5;220m[!] Warning: {log_msg}\033[0m", file=sys.stderr)
 
 def get_btrfs_mounts() -> list[BtrfsMount]:
     res = run_cmd(["findmnt", "-t", "btrfs", "-J", "-e"], check=False)
@@ -212,8 +267,9 @@ def get_btrfs_mounts() -> list[BtrfsMount]:
 
 def get_all_subvolumes() -> list[SubvolMeta]:
     """
-    Analyzes physical subvolumes by mounting devices at their top level (ID 5).
-    This fixes the flaw in the new script where subvolumes returned invalid VFS paths.
+    Optimized O(1) memory lookup for UI load speeds.
+    Synchronous physical IO checks have been completely removed from this phase
+    and shifted to the Action handlers to guarantee rapid application launches.
     """
     mounts = get_btrfs_mounts()
     seen_devs = set()
@@ -221,38 +277,49 @@ def get_all_subvolumes() -> list[SubvolMeta]:
     subvol_regex = re.compile(r"^ID\s+(\d+).*?path\s+(.+)$")
     
     for m in mounts:
-        dev = m.get("source")
-        if not dev or dev in seen_devs: continue
+        raw_dev = m.get("source")
+        if not raw_dev: continue
+        
+        dev = os.path.realpath(raw_dev)
+        if dev in seen_devs: continue
         seen_devs.add(dev)
         
         target_hint = m.get("target", "/")
         
         try:
-            with mount_top_level(dev) as top_mnt:
+            with mount_top_level(dev, quiet=True) as top_mnt:
                 res = run_cmd(["btrfs", "subvolume", "list", str(top_mnt)], check=False)
                 if res.returncode != 0: continue
                     
+                # Read-Only status lookup via -r flag
+                ro_res = run_cmd(["btrfs", "subvolume", "list", "-r", str(top_mnt)], check=False)
+                ro_ids = set()
+                if ro_res.returncode == 0:
+                    for line in ro_res.stdout.splitlines():
+                        match = subvol_regex.match(line.strip())
+                        if match: ro_ids.add(match.group(1))
+
                 for line in res.stdout.splitlines():
                     match = subvol_regex.match(line.strip())
                     if match:
                         sv_id = match.group(1)
                         sv_path = match.group(2).strip()
                         
-                        abs_path = top_mnt / sv_path
-                        if not abs_path.exists(): continue
+                        # UX Optimization: Hide Snapper snapshots from the native Subvolumes tab
+                        if "/.snapshots/" in sv_path and sv_path.endswith("/snapshot"):
+                            continue
                         
-                        ro_check = run_cmd(["btrfs", "property", "get", "-t", "subvol", str(abs_path), "ro"], check=False)
-                        is_ro = "ro=true" in ro_check.stdout.lower()
-                        
+                        # Existence verification is now deferred precisely until an action is selected.
                         subvols.append({
                             "id": sv_id,
-                            "path": sv_path,              # Physical relative path
-                            "device": dev,                # Required for top-level mounting
-                            "mount_target": target_hint,  # Contextual UI hint
-                            "is_ro": is_ro
+                            "path": sv_path,
+                            "device": dev,
+                            "mount_target": target_hint,
+                            "is_ro": sv_id in ro_ids
                         })
         except Exception as e:
-            print(f"\033[1;38;5;220m[!] Warning: Failed to parse subvolumes for {dev}: {e}\033[0m", file=sys.stderr)
+            LOG.error(f"Subvolume scan encountered an error on device '{dev}': {e}")
+            pass
             
     return subvols
 
@@ -283,7 +350,14 @@ def backup_snapshot_to_external(src_dev: str, src_rel_path: str, external_dest: 
     ext_dev = get_btrfs_device(str(dest_path))
     
     with mount_top_level(src_dev) as src_mnt, mount_top_level(ext_dev) as ext_mnt:
-        src_path = src_mnt / src_rel_path
+        
+        # Self-Healing Sweep: Clean up orphaned snapshots from previous power-losses
+        print(f"\033[38;5;246m[*] Sweeping for orphaned ephemeral backups...\033[0m")
+        for item in src_mnt.iterdir():
+            if item.name.startswith(".tmp_send_") and item.is_dir():
+                run_cmd(["btrfs", "subvolume", "delete", str(item)], check=False)
+                
+        src_path = src_mnt / src_rel_path.lstrip("/")
         if not src_path.exists():
             fail(f"[!] Source subvolume could not be resolved at the physical layer: {src_path}")
 
@@ -292,8 +366,9 @@ def backup_snapshot_to_external(src_dev: str, src_rel_path: str, external_dest: 
 
         ephemeral_snap = None
         if not is_ro:
-            print(f"\033[1;38;5;220m[*] Source {src_path.name} is writable. Creating ephemeral Read-Only snapshot for secure stream...\033[0m")
-            ephemeral_snap = src_path.parent / f".tmp_send_{src_path.name}_{int(time.time())}"
+            print(f"\033[1;38;5;220m[*] Source {src_path.name or 'root'} is writable. Creating ephemeral Read-Only snapshot for secure stream...\033[0m")
+            # Create snapshot firmly at physical top level to avoid parent bounds traversing
+            ephemeral_snap = src_mnt / f".tmp_send_{src_path.name or 'root'}_{int(time.time())}"
             run_cmd_raise(["btrfs", "subvolume", "snapshot", "-r", str(src_path), str(ephemeral_snap)])
             src_path = ephemeral_snap
             
@@ -314,7 +389,7 @@ def backup_snapshot_to_external(src_dev: str, src_rel_path: str, external_dest: 
                     
                 src_item = received_items[0]
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                original_name = Path(src_rel_path).name
+                original_name = Path(src_rel_path).name or "root"
                 final_dest = ext_mnt / f"backup_snap_{original_name}_{timestamp}"
                 
                 if final_dest.exists():
@@ -324,8 +399,15 @@ def backup_snapshot_to_external(src_dev: str, src_rel_path: str, external_dest: 
                 print(f"\033[1;38;5;114m[+] Backup successful!\033[0m")
                 print(f"\033[1;38;5;114m[+] Top-level Subvolume safely created at: {ext_dev} -> {final_dest.name}\033[0m")
             finally:
-                try: staging_dir.rmdir()
-                except OSError: pass 
+                # Prevent garbage resource leaks from failed receives
+                if staging_dir.exists():
+                    try:
+                        for item in staging_dir.iterdir():
+                            # Must explicitly execute Btrfs native deletion for incomplete subvolumes
+                            run_cmd(["btrfs", "subvolume", "delete", str(item)], check=False)
+                        staging_dir.rmdir()
+                    except OSError as e:
+                        LOG.error(f"Post-backup cleanup warning for staging directory {staging_dir}: {e}")
         finally:
             if ephemeral_snap and ephemeral_snap.exists():
                 print(f"\033[38;5;246m[*] Cleaning up ephemeral snapshot...\033[0m")
@@ -371,8 +453,8 @@ def resolve_restore_spec(config: str, snap_id: str) -> RestoreSpec:
     return RestoreSpec(config, snap_id, target_mnt, device, active_subvol, snapshots_subvol)
 
 def prepare_restore(spec: RestoreSpec, top_mnt: Path, timestamp: str) -> PreparedRestore:
-    target_path = top_mnt / spec.active_subvol
-    source_snapshot = top_mnt / spec.snapshots_subvol / spec.snap_id / "snapshot"
+    target_path = top_mnt / spec.active_subvol.lstrip("/")
+    source_snapshot = top_mnt / spec.snapshots_subvol.lstrip("/") / spec.snap_id / "snapshot"
     temp_delete_path = target_path.with_name(f"{target_path.name}_to_delete_{timestamp}")
     staging_path = target_path.with_name(f"{target_path.name}_restore_{spec.snap_id}_{timestamp}")
     return PreparedRestore(spec, source_snapshot, target_path, temp_delete_path, staging_path)
@@ -697,7 +779,7 @@ def load_all_snapper_data() -> list[dict[str, str]]:
     for cfg_info in configs:
         cfg = cfg_info["config"]
         base_path = cfg_info["subvolume"]
-        snaps_mnt = "/.snapshots" if base_path == "/" else f"{base_path}/.snapshots"
+        snaps_mnt = "/.snapshots" if base_path == "/" else f"{base_path.rstrip('/')}/.snapshots"
         gui_snaps = load_snapshot_list_for_gui(cfg)
         for s in gui_snaps:
             s["config"] = cfg
@@ -866,7 +948,11 @@ def draw_tui_panel(title: str, lines: list[str], width: int = 48) -> None:
 def handle_tui_preview(view: str, line: str, show_diff: bool = False) -> None:
     try:
         parts = line.split('\x1f')
-        meta = json.loads(parts[1]) if len(parts) > 1 else {}
+        try:
+            meta = json.loads(parts[1]) if len(parts) > 1 else {}
+        except ValueError:
+            meta = {}
+            
         if meta.get("empty"):
             print("\033[1;38;5;196m[!] No items available in this view.\033[0m")
             return
@@ -895,6 +981,7 @@ def handle_tui_preview(view: str, line: str, show_diff: bool = False) -> None:
                 "\033[1;38;5;220m[CTRL-B]\033[0m  \033[38;5;253m󰆗 Backup to Ext. Drive\033[0m",
                 "\033[1;38;5;213m[TAB]\033[0m     \033[38;5;253m󰓡 Switch View\033[0m",
                 "\033[1;38;5;246m[CTRL-A/X]\033[0m\033[38;5;253m󰒉 Select/Deselect All\033[0m",
+                "\033[1;38;5;246m[CTRL-V/P]\033[0m\033[38;5;253m󰏫 Toggle Diff Mode\033[0m",
                 "\033[1;38;5;141m[ALT-P]\033[0m   \033[38;5;253m󰈈 Toggle Preview Pane\033[0m"
             ])
             draw_tui_panel("\033[1;38;5;220m󰏖 KEYBOARD SHORTCUTS\033[0m", shortcuts, 48)
@@ -931,8 +1018,11 @@ def handle_tui_preview(view: str, line: str, show_diff: bool = False) -> None:
             
             print(f" \033[1;38;5;246mDesc   \033[0m │ \033[38;5;253m{meta.get('description', meta.get('desc', 'N/A'))}\033[0m\n")
 
-            # 3. Dynamic Diff Generation
-            if show_diff:
+        # 3. Dynamic Diff Generation
+        if show_diff:
+            if is_subvol:
+                print(f"\033[1;38;5;246m[!] Diff mode not applicable for raw subvolumes.\033[0m")
+            else:
                 print(f"\033[1;38;5;114m󰏫 FILES CHANGED IF RESTORED\033[0m \033[3;38;5;246m(vs Current System)\033[0m")
                 print(f"\033[38;5;238m" + "─" * 48 + "\033[0m")
 
@@ -972,10 +1062,10 @@ def handle_tui_preview(view: str, line: str, show_diff: bool = False) -> None:
                         run_diff("home", h_id)
                     except RuntimeError:
                         print(f"\033[1;38;5;203m▶ System Profile: home\033[0m\n  \033[3;38;5;196mFailed to locate paired snapshot.\033[0m")
-            else:
-                print(f"\033[1;38;5;246m[!] File changes hidden for performance.\033[0m")
-                print(f"\033[1;38;5;246mPress \033[1;38;5;220m<Ctrl+V>\033[1;38;5;246m to generate file change list.\033[0m")
-                print(f"\033[1;38;5;246mPress \033[1;38;5;220m<Ctrl+P>\033[1;38;5;246m to hide and restore fast scrolling.\033[0m")
+        else:
+            print(f"\033[1;38;5;246m[!] File changes hidden for performance.\033[0m")
+            print(f"\033[1;38;5;246mPress \033[1;38;5;220m<Ctrl+V>\033[1;38;5;246m to generate file change list.\033[0m")
+            print(f"\033[1;38;5;246mPress \033[1;38;5;220m<Ctrl+P>\033[1;38;5;246m to hide and restore fast scrolling.\033[0m")
 
     except Exception as e:
         print(f"\033[1;38;5;196mError rendering preview:\n{e}\033[0m")
@@ -1046,7 +1136,19 @@ def launch_tui() -> None:
                     date_str = f"\033[38;5;220m{s.get('date', ''):<18}\033[0m"
                     desc_str = f"\033[38;5;253m{s.get('description', '')}\033[0m"
                     vis = f"{cfg_str} {c_sep} {id_str} {c_sep} {age_str} {c_sep} {date_str} {c_sep} {desc_str}"
-                    lines_for_fzf.append(f"{vis}\x1f{json.dumps(s)}")
+                    
+                    meta = {
+                        "config": s['config'],
+                        "id": s.get('id'),
+                        "date": date_str.strip(),
+                        "raw_date": s.get('raw_date', ''),
+                        "desc": desc_str.strip(),
+                        "location": s.get('location'),
+                        "age": s.get('age', ''),
+                        "user": s.get('user', ''),
+                        "cleanup": s.get('cleanup', '')
+                    }
+                    lines_for_fzf.append(f"{vis}\x1f{json.dumps(meta)}")
             else:
                 dummy_vis = f"\033[38;5;246m{'Empty':<8}\033[0m {c_sep} {'':>4} {c_sep} {'':<10} {c_sep} {'No snapshots':<18} {c_sep}"
                 lines_for_fzf.append(f"{dummy_vis}\x1f{json.dumps({'empty': True})}")
@@ -1065,13 +1167,13 @@ def launch_tui() -> None:
             
             if snaps:
                 snap_dir = get_target_mount_from_snapper_config(config_to_query)
-                snaps_mnt = "/.snapshots" if snap_dir == "/" else f"{snap_dir}/.snapshots"
+                snaps_mnt = "/.snapshots" if snap_dir == "/" else f"{snap_dir.rstrip('/')}/.snapshots"
                 for s in sorted(snaps, key=lambda x: int(x["id"]), reverse=True):
                     id_str = f"\033[1;38;5;39m{s['id']:>4}\033[0m"         
                     type_str = f"\033[38;5;213m{s['type']:<7}\033[0m"       
                     age_colored = f"\033[38;5;114m{s.get('age', ''):<10}\033[0m"    
                     date_str = f"\033[38;5;220m{s['date']:<18}\033[0m"     
-                    desc_str = f"\033[38;5;253m{s['description']}\033[0m"  
+                    desc_str = f"\033[38;5;253m{s.get('description', '')}\033[0m"  
                     vis = f"{id_str} {c_sep} {type_str} {c_sep} {age_colored} {c_sep} {date_str} {c_sep} {desc_str}"
                     s["config"] = config_to_query
                     s["location"] = f"{snaps_mnt}/{s['id']}/snapshot"
@@ -1096,7 +1198,7 @@ def launch_tui() -> None:
         ]
 
         try:
-            process = subprocess.Popen(fzf_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            process = subprocess.Popen(fzf_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8")
             stdout, _ = process.communicate(input="\n".join(lines_for_fzf))
         except Exception as exc:
             fail(f"[!] FZF Execution failed: {exc}")
@@ -1110,7 +1212,7 @@ def launch_tui() -> None:
         output_lines = stdout.strip().split("\n")
         key_pressed = output_lines[0]
 
-        # Mouse click tab routing logic
+        # Mouse click tab routing logic matching header layout hitboxes
         clicked_tab = False
         for out_line in output_lines:
             if out_line.startswith("click-header:"):
@@ -1132,16 +1234,14 @@ def launch_tui() -> None:
             view_idx = (view_idx + 1) % len(views)
             continue
 
-        selected_ids = []
         selected_metas = []
         for line in output_lines[1:]:
             parts = line.split('\x1f')
             if len(parts) > 1:
                 try:
                     meta = json.loads(parts[1])
-                    if not meta.get("empty"):
+                    if not meta.get("empty") and "id" in meta: 
                         selected_metas.append(meta)
-                        if "id" in meta: selected_ids.append(str(meta["id"]))
                 except ValueError: pass
 
         # Global Actions Processing
@@ -1167,7 +1267,8 @@ def launch_tui() -> None:
         if current_view == "coordinated":
             pairs_to_process = []
             has_error = False
-            for sid, m_data in zip(selected_ids, selected_metas):
+            for m_data in selected_metas:
+                sid = str(m_data["id"])
                 print(f"\n\033[1;38;5;81m[*] Synchronizing snapshots for Root ID {sid}...\033[0m")
                 try:
                     r_id, h_id = find_coordinated_pair(m_data.get("raw_date", ""), m_data.get("description", ""))
@@ -1200,6 +1301,7 @@ def launch_tui() -> None:
                         handle_delete_pair("root", r_id, "home", h_id)
             elif key_pressed == "ctrl-b":
                 print("\n\033[1;38;5;196m[!] Backup is not supported in Coordinated mode. Switch to Global or Subvolumes tab.\033[0m")
+                input("\n\033[1;38;5;114mPress Enter to return...\033[0m")
                 
         elif current_view in ("home", "root", "global"):
             if key_pressed == "enter":
@@ -1217,18 +1319,33 @@ def launch_tui() -> None:
                 if confirm_prompt(f"Permanently delete {len(selected_metas)} snapshot(s)?"):
                     for m in selected_metas: handle_delete(m["config"], str(m["id"]))
             elif key_pressed == "ctrl-b":
+                if len(selected_metas) > 1:
+                    print("\n\033[1;38;5;196m[!] Error: Please select only one snapshot to backup.\033[0m")
+                    input("\033[1;38;5;114mPress Enter to return...\033[0m")
+                    continue
                 loc = meta.get("location")
                 if loc:
-                    # Leverage the top-level mount resolver from Subvolumes tab context
-                    dev = get_btrfs_device(get_target_mount_from_snapper_config(meta['config']))
-                    sv_rel = loc.lstrip("/") 
+                    cfg = meta.get("config")
+                    target_mnt = get_target_mount_from_snapper_config(cfg)
+                    dev = get_btrfs_device(target_mnt)
+                    snapshots_mnt = "/.snapshots" if target_mnt == "/" else f"{target_mnt.rstrip('/')}/.snapshots"
+                    snapshots_subvol = get_active_subvol(snapshots_mnt)
+                    
+                    sv_rel = f"{snapshots_subvol.lstrip('/')}/{meta['id']}/snapshot" 
+                    
                     print(f"\n\033[1;38;5;213m[*] Action: EXTERNAL BACKUP (Send/Receive)\033[0m\n[*] Source Path: {sv_rel}")
                     try:
                         dest = input("\033[1;38;5;220m[*] Destination Path (e.g., /mnt/ExternalDrive): \033[0m").strip()
                         if dest: backup_snapshot_to_external(dev, sv_rel, dest)
                     except KeyboardInterrupt: pass
+                    input("\n\033[1;38;5;114mPress Enter to return...\033[0m")
 
         elif current_view == "subvolumes":
+            if key_pressed in ("ctrl-n", "ctrl-s", "ctrl-g", "ctrl-b") and len(selected_metas) > 1:
+                print("\n\033[1;38;5;196m[!] Error: Please select only one subvolume for this action.\033[0m")
+                input("\033[1;38;5;114mPress Enter to return...\033[0m")
+                continue
+
             dev = meta['device']
             sv_path = meta['path']
             
@@ -1242,6 +1359,7 @@ def launch_tui() -> None:
                             disable_cow = confirm_prompt("Disable Copy-On-Write (NOCOW / chattr +C)?")
                             create_nocow_subvolume(parent, name, disable_cow)
                     except KeyboardInterrupt: pass
+                    input("\n\033[1;38;5;114mPress Enter to return...\033[0m")
                 case "ctrl-s":
                     print(f"\n\033[1;38;5;81m[*] ACTION: CREATE NATIVE BTRFS SNAPSHOT\033[0m\n[*] Source: {sv_path}")
                     try:
@@ -1249,12 +1367,16 @@ def launch_tui() -> None:
                         if dest_rel:
                             is_ro = confirm_prompt("Make snapshot Read-Only?")
                             with mount_top_level(dev) as top_mnt:
-                                src_abs = str(top_mnt / sv_path)
-                                dest_abs = str(top_mnt / dest_rel)
+                                src_abs = top_mnt / sv_path.lstrip("/")
+                                dest_abs = str(top_mnt / dest_rel.lstrip("/"))
+                                if not src_abs.exists():
+                                    print(f"\033[1;38;5;196m[!] Error: Source subvolume no longer exists physically: {sv_path}\033[0m")
+                                    continue
                                 cmd = ["btrfs", "subvolume", "snapshot", "-r"] if is_ro else ["btrfs", "subvolume", "snapshot"]
-                                run_cmd(cmd + [src_abs, dest_abs])
+                                run_cmd(cmd + [str(src_abs), dest_abs])
                             print("\033[1;38;5;114m[+] Snapshot created successfully.\033[0m")
                     except KeyboardInterrupt: pass
+                    input("\n\033[1;38;5;114mPress Enter to return...\033[0m")
                 case "ctrl-g":
                     print(f"\n\033[1;38;5;213m[*] ACTION: INITIALIZE SNAPPER CONFIG\033[0m\n[*] Target: {sv_path}")
                     try:
@@ -1265,20 +1387,62 @@ def launch_tui() -> None:
                             run_cmd(["snapper", "-c", cfg_name, "create-config", live_mnt])
                             print(f"\033[1;38;5;114m[+] Snapper configuration '{cfg_name}' initialized.\033[0m")
                     except KeyboardInterrupt: pass
+                    input("\n\033[1;38;5;114mPress Enter to return...\033[0m")
                 case "ctrl-b":
                     print(f"\n\033[1;38;5;213m[*] ACTION: EXTERNAL BACKUP (Send/Receive)\033[0m\n[*] Source: {sv_path}")
                     try:
                         dest = input("\033[1;38;5;220m[*] Enter Destination Path (e.g., /mnt/ExternalDrive): \033[0m").strip()
-                        if dest: backup_snapshot_to_external(dev, sv_path, dest)
+                        if dest: backup_snapshot_to_external(dev, sv_path.lstrip("/"), dest)
                     except KeyboardInterrupt: pass
+                    input("\n\033[1;38;5;114mPress Enter to return...\033[0m")
                 case "delete" | "ctrl-d":
-                    print(f"\n\033[1;38;5;196m[*] ACTION: DELETE SUBVOLUME\033[0m\n[*] Target: {sv_path}")
-                    if confirm_prompt("DANGER: Permanently delete this BTRFS subvolume?"):
-                        with mount_top_level(dev) as top_mnt:
-                            run_cmd(["btrfs", "subvolume", "delete", str(top_mnt / sv_path)])
+                    print(f"\n\033[1;38;5;196m[*] ACTION: DELETE SUBVOLUME(S) ({len(selected_metas)} selected)\033[0m")
+                    
+                    # [SURGICAL FIX] SYSTEM GUARDRAIL: Identify protected OS partitions dynamically
+                    # Dynamically queries live mountinfo to protect EVERY currently active partition
+                    protected_subvols = set()
+                    
+                    for mnt in get_btrfs_mounts():
+                        target = mnt.get("target")
+                        options = mnt.get("options", "")
+                        match = re.search(r"(?:^|,)subvol=([^,]+)(?:,|$)", options)
+                        if match:
+                            protected_subvols.add(match.group(1).strip("/"))
+                        else:
+                            show_cmd = run_cmd(["btrfs", "subvolume", "show", target], check=False)
+                            if show_cmd.returncode == 0:
+                                show_match = re.search(r"^[ \t]*Path:[ \t]*(.+)$", show_cmd.stdout, re.MULTILINE)
+                                if show_match:
+                                    path_clean = show_match.group(1).strip().strip("/")
+                                    if path_clean and path_clean != "<FS_TREE>":
+                                        protected_subvols.add(path_clean)
+                    
+                    safe_to_delete = []
+                    for m in selected_metas: 
+                        p_clean = m['path'].strip("/")
+                        if p_clean in protected_subvols:
+                            print(f"\033[1;38;5;196m[!] SYSTEM GUARDRAIL ACTIVATED: Refusing to delete active system partition -> {m['path']}\033[0m")
+                        else:
+                            print(f"[*] Target: {m['path']}")
+                            safe_to_delete.append(m)
+                            
+                    if not safe_to_delete:
+                        input("\n\033[1;38;5;114mPress Enter to return...\033[0m")
+                        continue
 
-        if key_pressed not in ("enter", "tab"):
-            input("\n\033[1;38;5;114mPress Enter to return to menu...\033[0m")
+                    if confirm_prompt("DANGER: Permanently delete these BTRFS subvolume(s)?"):
+                        dev_map = {}
+                        for m in safe_to_delete:
+                            dev_map.setdefault(m['device'], []).append(m['path'])
+                        for dev_key, paths in dev_map.items():
+                            with mount_top_level(dev_key) as top_mnt:
+                                for p in paths:
+                                    # Just-in-time existence verification since we bypassed it during scan
+                                    target_abs = top_mnt / p.lstrip("/")
+                                    if not target_abs.exists():
+                                        print(f"\033[1;38;5;220m[-] Subvolume already deleted or missing: {p}\033[0m")
+                                        continue
+                                    run_cmd(["btrfs", "subvolume", "delete", str(target_abs)])
 
 
 # =============================================================================
