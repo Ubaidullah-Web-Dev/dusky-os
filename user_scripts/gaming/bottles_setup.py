@@ -195,10 +195,10 @@ def main():
         )
 
     # Step 4: Core Native Gaming Tools
-    # Included gamescope for micro-compositing/upscaling and desktop-file-utils for Rofi bridging
+    # Included lutris for general-purpose game management, gamescope for micro-compositing/upscaling, and desktop-file-utils for Rofi bridging
     run_command(
-        "sudo pacman -S --needed --noconfirm steam flatpak gamemode lib32-gamemode mangohud lib32-mangohud gamescope desktop-file-utils",
-        "Install Steam, Flatpak daemon, Gamescope, GameMode (CPU optimization), MangoHud, and Utils."
+        "sudo pacman -S --needed --noconfirm steam lutris wine flatpak gamemode lib32-gamemode mangohud lib32-mangohud gamescope desktop-file-utils",
+        "Install Steam, Lutris, System Wine, Flatpak daemon, Gamescope, GameMode, MangoHud, and Utils."
     )
 
     # Step 5: Flatpak Repository Initialization
@@ -240,10 +240,11 @@ def main():
         "[bold green]✔ Architecture Established![/bold green]\n"
         "Your Arch Linux system is fully armed for native games, Proton, and modern Windows repacks.\n\n"
         "[bold]Immediate Next Steps:[/bold]\n"
-        "1. Open your [cyan]Rofi[/cyan] menu — your Flatpaks are bridged and ready to launch.\n"
+        "1. Open your [cyan]Rofi[/cyan] menu — your Flatpaks and native apps like [cyan]Steam[/cyan] and [cyan]Lutris[/cyan] are ready to launch.\n"
         "2. Note: [cyan]Bottles[/cyan] has already been auto-configured to detect your secondary storage drives.\n"
-        "3. Open [cyan]Bottles[/cyan], create a new 'Gaming' environment, and execute any game installer (.exe / .msi).\n"
-        "4. [bold red]CRITICAL (If using Heavy Repacks):[/bold red] Check the 'Limit installer to 2GB' box to prevent Out-Of-Memory crashes.",
+        "3. Use [cyan]Lutris[/cyan] to centralize your GOG, Epic Games, and Amazon libraries.\n"
+        "4. Use [cyan]Bottles[/cyan] for isolated environments and executing independent game installers (.exe / .msi).\n"
+        "5. [bold red]CRITICAL (If using Heavy Repacks):[/bold red] Check the 'Limit installer to 2GB' box in Bottles to prevent Out-Of-Memory crashes.",
         border_style="green"
     ))
 
