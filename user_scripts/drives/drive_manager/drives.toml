@@ -36,7 +36,7 @@ mount_options = ["nodatacow", "ssd", "discard=async", "noatime", "space_cache=v2
 type = "PROTECTED"
 mountpoint = "/mnt/media"
 outer_uuid = "98353f6a-b21b-4966-9f57-948678bde66d"
-inner_uuid = "55d50d6d-a1ed-41d9-ba38-a6542eebbcd9"
+inner_uuid = "a7230e67-34e8-4cd2-981d-ea02d1253539"
 hint = "LAP_P"
 fstype = "ext4"
 mount_options = ["noatime", "delalloc", "commit=20"]
