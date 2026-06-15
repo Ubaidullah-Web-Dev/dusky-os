@@ -40,6 +40,65 @@ def is_multilib_enabled() -> bool:
         sys.exit(1)
     return False
 
+def get_installed_flatpaks() -> list:
+    """Dynamically fetches a list of all installed Flatpak Application IDs."""
+    try:
+        result = subprocess.run(
+            ["flatpak", "list", "--app", "--columns=application"],
+            capture_output=True, text=True, check=True
+        )
+        # Filter out empty lines
+        return [app_id.strip() for app_id in result.stdout.split('\n') if app_id.strip()]
+    except subprocess.CalledProcessError:
+        return []
+
+def integrate_desktop_entries():
+    """
+    Idempotently symlinks Flatpak .desktop files to the user's local applications directory
+    and flushes the DB. This guarantees instant visibility in launchers like Rofi/Wofi.
+    Also cleans up dead symlinks from previously uninstalled flatpaks.
+    """
+    user_apps_dir = os.path.expanduser("~/.local/share/applications")
+    os.makedirs(user_apps_dir, exist_ok=True)
+    
+    system_export_dir = "/var/lib/flatpak/exports/share/applications"
+    user_export_dir = os.path.expanduser("~/.local/share/flatpak/exports/share/applications")
+    
+    installed_apps = get_installed_flatpaks()
+    integrated_count = 0
+
+    # 1. Clean up broken symlinks (in case flatpaks were removed)
+    for filename in os.listdir(user_apps_dir):
+        file_path = os.path.join(user_apps_dir, filename)
+        if os.path.islink(file_path) and not os.path.exists(file_path):
+            os.remove(file_path)
+
+    # 2. Bridge active Flatpak desktop entries
+    for app_id in installed_apps:
+        desktop_file = f"{app_id}.desktop"
+        target_path = None
+        
+        # Prioritize system-wide installations, fallback to user-specific
+        if os.path.exists(os.path.join(system_export_dir, desktop_file)):
+            target_path = os.path.join(system_export_dir, desktop_file)
+        elif os.path.exists(os.path.join(user_export_dir, desktop_file)):
+            target_path = os.path.join(user_export_dir, desktop_file)
+            
+        if target_path:
+            symlink_path = os.path.join(user_apps_dir, desktop_file)
+            
+            # Idempotent create/update
+            if os.path.lexists(symlink_path):
+                if os.path.islink(symlink_path) and os.readlink(symlink_path) == target_path:
+                    continue # Already correctly linked
+                os.remove(symlink_path) # Remove incorrect symlink or physical file collision
+            
+            os.symlink(target_path, symlink_path)
+            integrated_count += 1
+            
+    # 3. Flush the desktop application cache for immediate Rofi parsing
+    subprocess.run(["update-desktop-database", user_apps_dir], capture_output=True)
+
 def run_command(command: str, description: str, critical: bool = True):
     """Executes a shell command with an interactive Rich status spinner."""
     console.print(f"\n[bold cyan]Target:[/bold cyan] {description}")
@@ -52,7 +111,6 @@ def run_command(command: str, description: str, critical: bool = True):
     with console.status(f"[bold green]Executing: {command}...[/bold green]", spinner="dots"):
         try:
             # We pipe stdout to hide the raw output behind the spinner.
-            # CRITICAL: Any command run here MUST have a 'yes' or '--noconfirm' flag!
             process = subprocess.run(
                 command, 
                 shell=True, 
@@ -76,8 +134,8 @@ def run_command(command: str, description: str, critical: bool = True):
 def main():
     console.clear()
     console.print(Panel.fit(
-        "[bold magenta]Arch Linux Golden Gaming Setup[/bold magenta]\n"
-        "[white]Comprehensive automated installer for Drivers, Steam, Bottles, & Flatpaks.[/white]",
+        "[bold magenta]Arch Linux Universal Gaming Architecture[/bold magenta]\n"
+        "[white]Idempotent automated installer for Drivers, Steam, Bottles, Gamescope, & Flatpaks.[/white]",
         border_style="magenta"
     ))
 
@@ -94,12 +152,10 @@ def main():
     )
 
     # Step 2: Intelligent Multilib Configuration
-    multilib_active = is_multilib_enabled()
-    
-    if multilib_active:
+    if is_multilib_enabled():
         console.print(Panel(
             "The \[multilib] repository is [bold green]ALREADY ENABLED[/bold green].\n"
-            "Your system is already configured for 32-bit gaming libraries.",
+            "Your system is natively configured for 32-bit gaming libraries.",
             style="green"
         ))
     else:
@@ -116,9 +172,11 @@ def main():
     # Step 3: GPU Drivers (Vulkan Translation)
     console.print("\n[bold cyan]Select your GPU Vendor for strictly required Vulkan Drivers:[/bold cyan]")
     console.print("1. AMD (Radeon)")
-    console.print("2. NVIDIA")
-    console.print("3. Skip (I manage my own graphics drivers)")
-    gpu_choice = Prompt.ask("Enter choice", choices=["1", "2", "3"], default="3")
+    console.print("2. NVIDIA (GeForce)")
+    console.print("3. Intel (Arc/iGPU)")
+    console.print("4. Skip (I manage my own graphics drivers)")
+    
+    gpu_choice = Prompt.ask("Enter choice", choices=["1", "2", "3", "4"], default="4")
     
     if gpu_choice == "1":
         run_command(
@@ -130,41 +188,62 @@ def main():
             "sudo pacman -S --needed --noconfirm nvidia-utils lib32-nvidia-utils",
             "Install strictly required NVIDIA proprietary utilities and 32-bit Vulkan drivers."
         )
+    elif gpu_choice == "3":
+        run_command(
+            "sudo pacman -S --needed --noconfirm vulkan-intel lib32-vulkan-intel mesa lib32-mesa",
+            "Install strictly required Intel native and 32-bit Vulkan/Mesa drivers."
+        )
 
     # Step 4: Core Native Gaming Tools
+    # Included gamescope for micro-compositing/upscaling and desktop-file-utils for Rofi bridging
     run_command(
-        "sudo pacman -S --needed --noconfirm steam flatpak gamemode lib32-gamemode mangohud lib32-mangohud",
-        "Install Steam, Flatpak daemon, Feral GameMode (CPU optimization), and MangoHud."
+        "sudo pacman -S --needed --noconfirm steam flatpak gamemode lib32-gamemode mangohud lib32-mangohud gamescope desktop-file-utils",
+        "Install Steam, Flatpak daemon, Gamescope, GameMode (CPU optimization), MangoHud, and Utils."
     )
 
     # Step 5: Flatpak Repository Initialization
     run_command(
-        "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo",
-        "Initialize Flathub remote server for application downloads."
+        "flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo && "
+        "flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo",
+        "Initialize Flathub remote server for application downloads (user & system scopes)."
     )
 
     # Step 6: Flatpak Gaming Ecosystem
-    flatpak_apps = {
-        "Bottles": "com.usebottles.bottles",
-        "Flatseal": "com.github.tchx84.Flatseal",
-        "ProtonPlus": "com.vysp3r.ProtonPlus"
-    }
+    flatpak_apps = [
+        ("Bottles", "com.usebottles.bottles"),
+        ("Flatseal", "com.github.tchx84.Flatseal"),
+        ("ProtonPlus", "com.vysp3r.ProtonPlus")
+    ]
 
-    for app_name, app_id in flatpak_apps.items():
+    for app_name, app_id in flatpak_apps:
         run_command(
-            f"flatpak install flathub {app_id} -y",
+            f"sudo flatpak install --system flathub {app_id} -y",
             f"Install {app_name} securely via Flatpak sandbox.",
             critical=False 
         )
 
+    # Step 7: Automated Bottles Permission Override
+    # This automatically bypasses the sandbox restriction for secondary drives without needing manual Flatseal tweaks
+    run_command(
+        "sudo flatpak override --system --filesystem=host com.usebottles.bottles",
+        "Grant Bottles global filesystem permissions to natively detect secondary/game drives.",
+        critical=False
+    )
+
+    # Step 8: Rofi / Application Menu Integration
+    with console.status("[bold green]Bridging Flatpaks into Rofi/Wofi Application Launchers...[/bold green]", spinner="dots"):
+        integrate_desktop_entries()
+    console.print("[bold green]✔ Application Launcher integration complete![/bold green]")
+
     # Final Summary
     console.print(Panel.fit(
         "[bold green]✔ Architecture Established![/bold green]\n"
-        "Your Arch Linux system is fully armed for modern Windows repack compilation.\n\n"
-        "[bold]Immediate Next Steps for Forza Horizon 6:[/bold]\n"
-        "1. Open [cyan]Flatseal[/cyan] and grant [cyan]Bottles[/cyan] absolute filesystem permissions to your secondary drive.\n"
-        "2. Open [cyan]Bottles[/cyan], create a 'Gaming' environment, and execute the FitGirl setup.exe.\n"
-        "3. [bold red]CRITICAL:[/bold red] Check the 'Limit installer to 2GB' box to prevent decompression engine crashes.",
+        "Your Arch Linux system is fully armed for native games, Proton, and modern Windows repacks.\n\n"
+        "[bold]Immediate Next Steps:[/bold]\n"
+        "1. Open your [cyan]Rofi[/cyan] menu — your Flatpaks are bridged and ready to launch.\n"
+        "2. Note: [cyan]Bottles[/cyan] has already been auto-configured to detect your secondary storage drives.\n"
+        "3. Open [cyan]Bottles[/cyan], create a new 'Gaming' environment, and execute any game installer (.exe / .msi).\n"
+        "4. [bold red]CRITICAL (If using Heavy Repacks):[/bold red] Check the 'Limit installer to 2GB' box to prevent Out-Of-Memory crashes.",
         border_style="green"
     ))
 
