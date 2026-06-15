@@ -693,7 +693,7 @@ RestrictRealtime=true
 Nice=19
 IOSchedulingClass=idle
 CPUSchedulingPolicy=idle
-ExecStart=/usr/bin/bash -c 'for cfg in \$(/usr/bin/snapper --csvout --no-headers list-configs | /usr/bin/cut -d, -f1); do /usr/bin/snapper -c "\$cfg" create --description "Automated ${SNAPSHOT_TIMER_FREQUENCY} Snapshot" --cleanup-algorithm number; done'
+ExecStart=/usr/bin/bash -c 'for cfg in \$(/usr/bin/snapper --csvout --no-headers list-configs | /usr/bin/cut -d, -f1); do /usr/bin/snapper -c "\$cfg" create --description "${SNAPSHOT_TIMER_FREQUENCY} auto" --cleanup-algorithm number; done'
 EOF
 
     # Construct the Timer Unit
@@ -703,6 +703,7 @@ Description=Trigger ${SNAPSHOT_TIMER_FREQUENCY} Snapper Snapshots
 Documentation=man:snapper(8)
 
 [Timer]
+OnBootSec=5m
 OnUnitActiveSec=${SNAPSHOT_TIMER_FREQUENCY}
 Persistent=true
 RandomizedDelaySec=5m
