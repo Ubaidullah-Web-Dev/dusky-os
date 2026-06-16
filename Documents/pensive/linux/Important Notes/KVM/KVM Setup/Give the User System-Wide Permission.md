@@ -12,7 +12,7 @@ This is the default mode when running a virtual machine as a regular user.
 
 - **Pros:** Completely rootless and isolated; zero system-level configuration required.
     
-- **Cons:** Networking is restricted (bridging requires complex helpers), and **hardware/GPU** Passthrough is not **supported.**
+- **Cons:** Networking is restricted (bridging requires complex helpers), and **hardware/GPU Passthrough is not supported.**
     
 
 ### ✅ The System Instance (`qemu:///system`)
@@ -34,7 +34,7 @@ Modern Libvirt operates on a strict client-server architecture using **modular d
 
 Because the daemon runs as root—and securely handles all dangerous hardware passthrough, disk access, and KVM acceleration itself—your regular user **only needs Polkit permission to access the control socket.**
 
-Run the following command to add your user to the `libvirt` group, which Polkit natively recognizes for authorization:
+Run the following command to add your user to the `libvirt` group, which Arch Linux's Polkit natively recognizes for authorization:
 
 ```
 sudo usermod -aG libvirt "$(id -un)"
@@ -57,30 +57,26 @@ sudo usermod -aG libvirt "$(id -un)"
 > 
 > You must completely log out and log back in (or restart your computer) for the `libvirt` group to be applied.
 
-## 3. Enable the Modular Daemons
+## 3. Configuring the Default URI (Systemd / Wayland Method)
 
-Arch Linux utilizes modular daemons to keep the virtualization stack lightweight. Ensure the QEMU socket is enabled so your client can connect:
-
-```
-sudo systemctl enable --now virtqemud.socket
-```
-
-## 4. Configuring the Default URI
-
-To make life easier, we tell the system that whenever we run a virtualization command in the terminal, we imply `qemu:///system` by default.
+To make life easier, we tell the system that whenever we run a virtualization command or launch a GUI tool, we imply `qemu:///system` by default.
 
 > [!TIP] Specific Configuration Note
 > 
-> If you are using the Dusk / UWSM configuration files, this environment variable is already set for you automatically in the UWSM env file. You can skip manually editing your RC files.
+> If you are using the Dusk / UWSM configuration files, this environment variable is already set for you automatically in the UWSM env file. You can skip this step entirely.
 
-**For manual setup**, add this to your shell profile (`.zshrc` or `.bashrc`):
+**For manual setup**, do **not** use `.bashrc` or `.zshrc`. Modern Wayland app launchers will not read those files, causing `virt-manager` to fall back to the wrong session when launched from your GUI.
+
+Instead, use systemd's native environment directory so both your terminal _and_ GUI apps inherit the variable:
 
 ```
-echo "export LIBVIRT_DEFAULT_URI='qemu:///system'" >> ~/.zshrc
-source ~/.zshrc
+mkdir -p ~/.config/environment.d
+echo "LIBVIRT_DEFAULT_URI='qemu:///system'" > ~/.config/environment.d/libvirt.conf
 ```
 
-## 5. Verifying the Connection
+_Note: This will take effect on your next login._
+
+## 4. Verifying the Connection
 
 Once you have re-logged, verify that your user has Polkit authorization and is targeting the correct instance by default.
 
@@ -104,13 +100,13 @@ If the output says `qemu:///session` or you get a "Permission denied" error on t
 
 1. Verify you are actually in the group by typing `groups`. You must see `libvirt`.
     
-2. Ensure the modern modular socket is active: `systemctl status virtqemud.socket`.
+2. Ensure the modern modular socket is active from the previous setup step: `systemctl status virtqemud.socket`.
     
-3. Force the connection manually to test socket permissions:
+3. If the environment variable isn't loading yet, force the connection manually to test socket permissions:
     
 
 ```
 virt-manager --connect qemu:///system
 ```
 
-_Avoid using `virt-manager --connect qemu:///session` unless you specifically intend to create a restricted, isolated, non-passthrough VM._
+_Avoid_ using _`virt-manager --connect qemu:///session` unless you specifically intend to create a restricted, isolated, non-passthrough VM._
