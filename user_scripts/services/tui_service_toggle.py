@@ -89,6 +89,10 @@ CORE_SYSTEM_DEFS = {
         "Firewall (firewalld)",
         "Dynamic firewall manager. Provides a D-Bus interface to manage firewall rules and network zones."
     ),
+    "tailscaled.service": (
+        "Tailscaled",
+        "Allows remote access"
+    ),
     "dusky_snapshot.timer": (
         "3 Day Auto Snapshots (Backup)",
         "Triggers a snapshot automaticaly every 3 days, while automatically cleaning up the oldest snapshot (max 6)."
