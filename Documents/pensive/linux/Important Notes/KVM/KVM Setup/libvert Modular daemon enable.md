@@ -43,8 +43,8 @@ Before starting the modular specialists, we must completely eradicate the old ma
 > 
 > If you see a warning stating `The unit files have no installation config`, or `Unit is masked, ignoring`, this is completely normal and confirms the legacy daemon is effectively dead.
 
-```
 # Stop, disable, and mask the service and ALL legacy sockets
+```bash
 sudo systemctl stop libvirtd.service libvirtd.socket libvirtd-ro.socket libvirtd-admin.socket libvirtd-tcp.socket libvirtd-tls.socket
 sudo systemctl disable libvirtd.service libvirtd.socket libvirtd-ro.socket libvirtd-admin.socket libvirtd-tcp.socket libvirtd-tls.socket
 sudo systemctl mask libvirtd.service libvirtd.socket libvirtd-ro.socket libvirtd-admin.socket libvirtd-tcp.socket libvirtd-tls.socket

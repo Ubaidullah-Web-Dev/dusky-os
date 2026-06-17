@@ -57,8 +57,12 @@ To use `virt-manager` as your normal user without typing your root password cons
 
 First, add your current user to the `libvirt` group. On modern Arch, `polkit` is pulled in as a dependency and will automatically grant members of this group password-less access to the management daemon.
 
-```
+```bash
 sudo usermod -aG libvirt $USER
+```
+or 
+```bash
+sudo usermod -aG libvirt,kvm,input "$(id -un)"
 ```
 
 _(Note: You **must** log out and log back in, or reboot, for this group change to take effect)._

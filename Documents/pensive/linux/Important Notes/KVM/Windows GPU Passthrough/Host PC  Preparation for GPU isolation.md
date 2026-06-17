@@ -82,7 +82,7 @@ We must instruct the Linux Kernel to activate hardware virtualization and reserv
 Open your main Arch boot entry file.
 
 ```
-sudo nvim /boot/loader/entries/arch.conf
+sudo nvim /boot/loader/entries/arch-linux.conf
 ```
 
 ### 2.2 Append Kernel Parameters
@@ -149,6 +149,11 @@ _(AMD iGPU users: substitute `amdgpu` for `i915`.)_
 Ensure your systemd-based initramfs configuration includes `modconf`. This hook ensures the modprobe rules we create in Phase 4 are packaged into the initramfs.
 
 _(Crucial: `modconf` MUST appear before `kms`, so the blacklist/softdep rules are already active before `kms` autodetection decides which graphics modules to pull in.)_
+```ini
+HOOKS=(base systemd autodetect microcode modconf kms keyboard sd-vconsole block filesystems fsck)
+```
+
+or 
 
 ```
 HOOKS=(systemd autodetect microcode modconf kms keyboard sd-vconsole block filesystems)

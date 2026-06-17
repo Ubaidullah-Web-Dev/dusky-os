@@ -6,6 +6,9 @@
 
 ## Architecture: The Full Pipeline
 
+> [!INFO] ASUS TUF F15
+> even though i have a mux capable laptop this is the method to follow, it works well
+
 On a muxless (Optimus) laptop the NVIDIA GPU has no physical video output — all
 
 pixels are routed through the weaker Intel/AMD iGPU. When you pass the NVIDIA
@@ -62,17 +65,20 @@ needed after the VM launches.
 
 ### 1.1 Install Packages
 
-```
-# AUR: Looking Glass client (bleeding-edge git build)
-paru -S --needed looking-glass-git
 
-# AUR: KVMFR DKMS kernel module (git, matches the client source tree)
-paru -S --needed looking-glass-module-dkms-git
+- AUR: Looking Glass client (bleeding-edge git build)
+- AUR: KVMFR DKMS kernel module (git, matches the client source tree)
+- Official repos: FreeRDP v3 rescue bridge + DKMS framework
 
-# Official repos: FreeRDP v3 rescue bridge + DKMS framework
-sudo pacman -S --needed freerdp dkms
+```bash
+paru -S --needed looking-glass-module-dkms-git looking-glass-git freerdp dkms
 ```
 
+
+> [!Note]+ Make sure to grab the latest Windows host application build!
+> Get it from the 'Bleeding Edge' section here: https://looking-glass.io/downloads
+
+> [!Note]- package info
 > **Package note:** `looking-glass-git` builds the Linux **client** viewer.
 > 
 > `looking-glass-module-dkms-git` builds the **KVMFR kernel module** and
