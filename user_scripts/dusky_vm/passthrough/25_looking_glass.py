@@ -37,7 +37,6 @@ try:
     from rich.panel import Panel
     from rich.prompt import Prompt
     from rich.table import Table
-    from rich.syntax import Syntax
 except ImportError:
     print("\n[FATAL] 'python-rich' is missing. Please run: sudo pacman -S python-rich")
     sys.exit(1)
@@ -180,7 +179,7 @@ def enforce_device_integrity() -> None:
 def configure_qemu_cgroups() -> None:
     """
     Bulletproof Regex parsing to cleanly uncomment and inject /dev/kvmfr0.
-    Utilizes [^\]]* to prevent multiline runaway regex crashes.
+    Utilizes [^\\\\]* to prevent multiline runaway regex crashes.
     """
     conf_path = Path("/etc/libvirt/qemu.conf")
     console.print("\n[bold blue]==>[/bold blue] [bold]Securing QEMU Cgroup Device ACLs...[/bold]")
@@ -260,8 +259,12 @@ def main() -> None:
         console.print("  [cyan]2.[/cyan] Find your memory balloon and disable it to prevent DMA latency: [bold]<memballoon model='none'/>[/bold]")
         console.print("  [cyan]3.[/cyan] Paste the following block at the absolute bottom of the file, just before [bold]</domain>[/bold]:\n")
         
-        syntax = Syntax(xml_payload, "xml", theme="monokai", line_numbers=False)
-        console.print(Panel(syntax, title="libvirt QOM JSON Payload", border_style="cyan", expand=False))
+        # SURGICAL FIX: Bypass 'rich' entirely for the payload.
+        # Printing directly to standard output prevents the library from injecting
+        # artificial line breaks or box-drawing characters that complicate copy-pasting.
+        console.print("[cyan]━━━━━━━━━━━━━━━━━━━━━━━━━ libvirt QOM JSON Payload ━━━━━━━━━━━━━━━━━━━━━━━━━[/cyan]")
+        print(xml_payload)
+        console.print("[cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/cyan]\n")
 
     except KeyboardInterrupt:
         console.print("\n\n[bold red]⚠ Process interrupted by operator. Exiting cleanly.[/bold red]\n")
