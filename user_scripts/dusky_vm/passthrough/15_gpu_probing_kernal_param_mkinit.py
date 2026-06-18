@@ -194,14 +194,12 @@ def select_target_gpu(devices: list[VFIODevice]) -> list[str]:
 def resolve_boot_path() -> Path:
     """Dynamically resolves the XBOOTLDR or ESP path via systemd 260 bootctl."""
     try:
-        # Attempt 1: -x prints XBOOTLDR if it exists, or ESP otherwise.
         res = subprocess.run(["bootctl", "-x"], capture_output=True, text=True, check=True)
         return Path(res.stdout.strip())
     except Exception:
         pass
 
     try:
-        # Attempt 2: Explicit fallback to -p (ESP only) if -x inexplicably fails.
         res = subprocess.run(["bootctl", "-p"], capture_output=True, text=True, check=True)
         return Path(res.stdout.strip())
     except Exception:
@@ -242,29 +240,58 @@ def get_systemd_boot_target() -> tuple[Path, str, str]:
     bail("Could not dynamically resolve the target boot entry or configuration.")
 
 def generate_parameter_string(current_opts: list[str], targets: dict[str, str], blacklist_set: set[str]) -> str:
-    """Deduplicates and merges kernel parameters cleanly."""
+    """Intelligently merges kernel parameters without destroying existing comma-separated values."""
     new_opts: list[str] = []
-    existing_bl: set[str] = set()
-
+    
+    # Track these specific parameters to safely merge comma-separated values
+    merged_params: dict[str, set[str]] = {
+        "intel_iommu": set(),
+        "amd_iommu": set(),
+        "iommu": set(),
+        "vfio-pci.ids": set(),
+        "module_blacklist": set(),
+        "modprobe.blacklist": set()
+    }
+    
+    # 1. Parse current cmdline
     for opt in current_opts:
         if "=" in opt:
             k, v = opt.split("=", 1)
-            if k in ["intel_iommu", "amd_iommu", "iommu", "vfio-pci.ids"]:
-                continue
-            elif k == "module_blacklist":
-                existing_bl.update(v.split(","))
+            norm_k = k.replace("vfio_pci", "vfio-pci")
+            if norm_k in merged_params:
+                merged_params[norm_k].update(filter(None, v.split(",")))
             else:
                 new_opts.append(opt)
         else:
+            norm_opt = opt.replace("vfio_pci", "vfio-pci")
+            if norm_opt in merged_params:
+                continue # Strip malformed standalone keys
             new_opts.append(opt)
             
+    # 2. Merge our target values natively into the sets
     for k, v in targets.items():
-        new_opts.append(f"{k}={v}")
-        
-    merged_bl = existing_bl.union(blacklist_set)
-    merged_bl.discard("")
-    new_opts.append(f"module_blacklist={','.join(sorted(merged_bl))}")
+        norm_k = k.replace("vfio_pci", "vfio-pci")
+        if norm_k in merged_params:
+            merged_params[norm_k].update(filter(None, str(v).split(",")))
+        else:
+            new_opts.append(f"{k}={v}")
+            
+    # 3. Explicitly apply the blacklist
+    merged_params["module_blacklist"].update(blacklist_set)
     
+    # 4. Cross-vendor pollution cleanup (The logic you noticed!)
+    # If we are currently on Intel, scrub out leftover AMD flags from previous motherboard, and vice versa.
+    cpu_flag = get_cpu_iommu_flag()
+    if cpu_flag == "intel_iommu":
+        merged_params["amd_iommu"].clear()
+    elif cpu_flag == "amd_iommu":
+        merged_params["intel_iommu"].clear()
+        
+    # 5. Reconstruct
+    for k, vals in merged_params.items():
+        if vals:
+            new_opts.append(f"{k}={','.join(sorted(vals))}")
+            
     return " ".join(new_opts)
 
 def inject_bootloader_parameters(vfio_ids: list[str]) -> None:
@@ -345,7 +372,6 @@ def process_mkinitcpio_file(mk_path: Path) -> None:
     original_content = mk_path.read_text(encoding="utf-8")
     
     def patch_modules(match: re.Match) -> str:
-        # comments=True safely drops inline bash comments so they don't break the flattened array
         mods = shlex.split(match.group(1), comments=True, posix=True)
         for req in ['vfio_pci', 'vfio', 'vfio_iommu_type1']:
             if req not in mods:
@@ -365,7 +391,6 @@ def process_mkinitcpio_file(mk_path: Path) -> None:
                 hooks.insert(hooks.index('kms'), 'modconf')
         return f"HOOKS=({' '.join(hooks)})"
 
-    # [^)]* slurps everything up to the closing parenthesis, catching multi-line arrays cleanly.
     content = re.sub(r'^MODULES=\(([^)]*)\)', patch_modules, original_content, flags=re.MULTILINE)
     content = re.sub(r'^HOOKS=\(([^)]*)\)', patch_hooks, content, flags=re.MULTILINE)
 
@@ -375,7 +400,6 @@ def process_mkinitcpio_file(mk_path: Path) -> None:
     else:
         console.print(f"[dim green]  ✓ Config {mk_path.name} is already optimal[/dim green]")
 
-
 def configure_mkinitcpio() -> None:
     """Coordinates initramfs hardening across the primary config and all active drop-ins."""
     console.print("\n[bold blue]==>[/bold blue] [bold]Hardening initramfs via mkinitcpio.conf & drop-ins...[/bold]")
@@ -384,13 +408,10 @@ def configure_mkinitcpio() -> None:
     if not main_conf.exists():
         bail(f"{main_conf} does not exist. Ensure mkinitcpio is installed.")
 
-    # 1. Process the primary configuration file
     process_mkinitcpio_file(main_conf)
 
-    # 2. Dynamically scan and process all drop-in configurations
     conf_d = Path("/etc/mkinitcpio.conf.d")
     if conf_d.exists() and conf_d.is_dir():
-        # Process sequentially and alphabetically, exactly mirroring mkinitcpio's parse priority
         for drop_in in sorted(conf_d.glob("*.conf")):
             process_mkinitcpio_file(drop_in)
 
@@ -398,15 +419,23 @@ def configure_mkinitcpio() -> None:
 # MODPROBE KERNEL RULES
 # ==============================================================================
 def write_modprobe_rules(vfio_ids: list[str]) -> None:
-    """Generates the absolute Ring 0 isolation rules for the VFIO framework."""
+    """Generates the absolute Ring 0 isolation rules, merging seamlessly with existing VFIO devices."""
     vfio_conf = Path("/etc/modprobe.d/vfio.conf")
     console.print("\n[bold blue]==>[/bold blue] [bold]Generating static kernel driver rules...[/bold]")
     
-    id_str = ",".join(vfio_ids)
     content = vfio_conf.read_text(encoding="utf-8") if vfio_conf.exists() else ""
     
-    if re.search(r'^options vfio-pci ids=.*', content, re.MULTILINE):
-        content = re.sub(r'^options vfio-pci ids=.*', f'options vfio-pci ids={id_str}', content, flags=re.MULTILINE)
+    # 1. Merge VFIO IDs safely to prevent destroying non-GPU passthrough
+    existing_ids = set()
+    id_match = re.search(r'^options\s+vfio-pci\s+ids=([0-9a-fA-F:,]+)', content, re.MULTILINE)
+    if id_match:
+        existing_ids.update(filter(None, id_match.group(1).split(",")))
+        
+    existing_ids.update(vfio_ids)
+    id_str = ",".join(sorted(existing_ids))
+    
+    if re.search(r'^options\s+vfio-pci\s+ids=.*', content, re.MULTILINE):
+        content = re.sub(r'^options\s+vfio-pci\s+ids=.*', f'options vfio-pci ids={id_str}', content, flags=re.MULTILINE)
     else:
         content += f"\noptions vfio-pci ids={id_str}\n"
 

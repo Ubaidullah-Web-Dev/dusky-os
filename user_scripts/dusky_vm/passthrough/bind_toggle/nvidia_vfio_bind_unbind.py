@@ -90,7 +90,6 @@ def get_cpu_iommu_flag() -> str:
 
 def get_vfio_ids() -> str:
     """Dynamically extracts hardware IDs from Phase 3 configs or active cmdlines."""
-    # Priority 1: Modprobe configuration
     paths = [Path("/etc/modprobe.d/vfio.conf"), Path("/etc/modprobe.d/vfio.conf.disabled")]
     for p in paths:
         if p.exists():
@@ -99,7 +98,6 @@ def get_vfio_ids() -> str:
             if match:
                 return match.group(1)
                 
-    # Priority 2: Fallback to static or live cmdline strings
     cmd_paths = [Path("/etc/kernel/cmdline"), Path("/proc/cmdline")]
     for p in cmd_paths:
         if p.exists():
@@ -143,7 +141,6 @@ def get_systemd_boot_target() -> tuple[Path, str, str]:
     except Exception:
         pass
 
-    # Legacy Directory Fallback
     boot_dir = resolve_boot_path()
     entries_dir = boot_dir / "loader" / "entries"
     
@@ -158,40 +155,58 @@ def get_systemd_boot_target() -> tuple[Path, str, str]:
 # STATE MANAGEMENT
 # ==============================================================================
 def generate_parameter_string(current_opts: list[str], state: str, vfio_ids: str) -> str:
-    """Deduplicates and recalculates the kernel parameters based on target state."""
+    """Deduplicates and recalculates kernel parameters, safely merging state."""
     new_opts: list[str] = []
-    existing_bl: set[str] = set()
-    cpu_flag = get_cpu_iommu_flag()
     
-    strip_keys = {cpu_flag, "iommu", "vfio-pci.ids"}
-    vfio_targets = {"nouveau", "nvidia", "nvidia_drm", "nvidia_modeset", "nvidia_uvm"}
-
+    merged_params: dict[str, set[str]] = {
+        "intel_iommu": set(),
+        "amd_iommu": set(),
+        "iommu": set(),
+        "vfio-pci.ids": set(),
+        "module_blacklist": set(),
+        "modprobe.blacklist": set()
+    }
+    
+    # 1. Parse current cmdline
     for opt in current_opts:
         if "=" in opt:
             k, v = opt.split("=", 1)
-            if k in strip_keys:
-                continue
-            elif k == "module_blacklist":
-                existing_bl.update(v.split(","))
+            norm_k = k.replace("vfio_pci", "vfio-pci")
+            if norm_k in merged_params:
+                merged_params[norm_k].update(filter(None, v.split(",")))
             else:
                 new_opts.append(opt)
         else:
-            if opt in strip_keys:
+            norm_opt = opt.replace("vfio_pci", "vfio-pci")
+            if norm_opt in merged_params:
                 continue
             new_opts.append(opt)
             
+    cpu_flag = get_cpu_iommu_flag()
+    target_ids = set(filter(None, vfio_ids.split(",")))
+    vfio_targets = {"nouveau", "nvidia", "nvidia_drm", "nvidia_modeset", "nvidia_uvm"}
+
     if state == "bind":
-        new_opts.extend([f"{cpu_flag}=on", "iommu=pt", f"vfio-pci.ids={vfio_ids}"])
-        merged_bl = existing_bl.union(vfio_targets)
-        merged_bl.discard("")
-        if merged_bl:
-            new_opts.append(f"module_blacklist={','.join(sorted(merged_bl))}")
-            
+        merged_params[cpu_flag].add("on")
+        merged_params["iommu"].add("pt")
+        merged_params["vfio-pci.ids"].update(target_ids)
+        merged_params["module_blacklist"].update(vfio_targets)
     elif state == "unbind":
-        merged_bl = existing_bl - vfio_targets
-        merged_bl.discard("")
-        if merged_bl:
-            new_opts.append(f"module_blacklist={','.join(sorted(merged_bl))}")
+        # Remove ONLY the GPU IDs, preserving other VFIO devices
+        merged_params["vfio-pci.ids"].difference_update(target_ids)
+        merged_params["module_blacklist"].difference_update(vfio_targets)
+        merged_params["modprobe.blacklist"].difference_update(vfio_targets)
+        
+    # Cross-vendor cleanup
+    if cpu_flag == "intel_iommu":
+        merged_params["amd_iommu"].clear()
+    elif cpu_flag == "amd_iommu":
+        merged_params["intel_iommu"].clear()
+
+    # Reconstruct
+    for k, vals in merged_params.items():
+        if vals:
+            new_opts.append(f"{k}={','.join(sorted(vals))}")
 
     return " ".join(new_opts)
 
