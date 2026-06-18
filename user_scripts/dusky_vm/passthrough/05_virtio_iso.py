@@ -9,7 +9,9 @@ import os
 import sys
 import pwd
 import grp
+import glob
 import shutil
+import readline
 import importlib
 import subprocess
 import urllib.request
@@ -21,12 +23,16 @@ from typing import Never
 # PRE-FLIGHT (Strict Standard Library Only)
 # ==============================================================================
 def require_root_and_unlocked() -> None:
-    """Hard enforcement of eUID 0 and unlocked pacman DB before anything executes."""
+    """Hard enforcement of eUID 0. Auto-elevates via sudo if executed as standard user."""
     if os.geteuid() != 0:
-        print("\n[FATAL] This staging script must be executed as root.")
-        print("        Run with: sudo ./kvm_stage_one.py\n")
-        sys.exit(1)
-        
+        print("\n[INFO] Administrative privileges required. Elevating via sudo...")
+        try:
+            # Replace the current process with a sudo call, preserving exact binary and args
+            os.execvp("sudo", ["sudo", sys.executable] + sys.argv)
+        except OSError as e:
+            print(f"\n[FATAL] Failed to elevate privileges dynamically: {e}")
+            sys.exit(1)
+            
     if Path("/var/lib/pacman/db.lck").exists():
         print("\n[FATAL] Pacman database is currently locked (/var/lib/pacman/db.lck).")
         print("        Ensure no other package managers are running and try again.\n")
@@ -175,6 +181,25 @@ def download_iso_stream(url: str, dest: Path) -> None:
             dest.unlink()
         bail(f"Unexpected IO error: {e}")
 
+def path_completer(text: str, state: int) -> str | None:
+    """Tab completion for file paths, intelligently routing '~/' to the human user's home."""
+    if text.startswith('~/'):
+        sudo_user = os.environ.get("SUDO_USER", "")
+        if sudo_user:
+            try:
+                home_dir = pwd.getpwnam(sudo_user).pw_dir
+                expanded = os.path.join(home_dir, text[2:])
+            except KeyError:
+                expanded = os.path.expanduser(text)
+        else:
+            expanded = os.path.expanduser(text)
+    else:
+        expanded = os.path.expanduser(text)
+        
+    matches = glob.glob(expanded + '*')
+    matches = [m + '/' if os.path.isdir(m) else m for m in matches]
+    return matches[state] if state < len(matches) else None
+
 def stage_iso(aur_success: bool) -> None:
     """Idempotent staging of the VirtIO ISO to the libvirt pool."""
     target_dir = Path("/var/lib/libvirt/images")
@@ -206,11 +231,38 @@ def stage_iso(aur_success: bool) -> None:
         
     # 3. Interactive fallback / Direct Download
     console.print("[yellow]  ⚠ VirtIO ISO not found in standard paths.[/yellow]")
+    
+    # Stage the Readline Environment
+    readline.set_completer_delims(' \t\n;')
+    readline.parse_and_bind("tab: complete")
+    readline.set_completer(path_completer)
+    
     while True:
-        choice = Prompt.ask(
-            "[bold cyan]Provide absolute path to local ISO[/bold cyan], or leave blank to download from Fedora Project"
-        ).strip(' "\'')
+        console.print("\n[bold cyan]Provide absolute path to local ISO (Tab-completion enabled)[/bold cyan]")
+        console.print("[dim]Or leave blank to stream directly from the Fedora Project network:[/dim]")
         
+        try:
+            choice = input("Path > ").strip(' "\'')
+        except EOFError:
+            choice = ""
+        except KeyboardInterrupt:
+            console.print("\n\n[bold red]⚠ Process interrupted by operator. Exiting cleanly.[/bold red]\n")
+            sys.exit(130)
+            
+        # Resolve '~/' to the actual human user home for the final Path check
+        if choice.startswith('~/'):
+            sudo_user = os.environ.get("SUDO_USER", "")
+            if sudo_user:
+                try:
+                    home_dir = pwd.getpwnam(sudo_user).pw_dir
+                    choice = os.path.join(home_dir, choice[2:])
+                except KeyError:
+                    choice = os.path.expanduser(choice)
+            else:
+                choice = os.path.expanduser(choice)
+        else:
+            choice = os.path.expanduser(choice)
+            
         match choice:
             case "":
                 url = "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso"
@@ -226,6 +278,9 @@ def stage_iso(aur_success: bool) -> None:
                 break
             case _:
                 console.print("[bold red]  ✖ Invalid path or file does not exist. Try again.[/bold red]")
+                
+    # Unbind Readline Environment
+    readline.set_completer(None)
 
 # ==============================================================================
 # MAIN EXECUTION
