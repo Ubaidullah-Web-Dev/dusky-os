@@ -703,7 +703,6 @@ Description=Trigger ${SNAPSHOT_TIMER_FREQUENCY} Snapper Snapshots
 Documentation=man:snapper(8)
 
 [Timer]
-OnBootSec=5m
 OnUnitActiveSec=${SNAPSHOT_TIMER_FREQUENCY}
 Persistent=true
 RandomizedDelaySec=5m
@@ -721,7 +720,9 @@ EOF
     remove_array_value ACTIVE_TEMP_FILES "$tmp_timer"
 
     sudo systemctl daemon-reload
-    sudo systemctl enable --now dusky_snapshot.timer
+    sudo systemctl start dusky_snapshot.service
+    sudo systemctl enable dusky_snapshot.timer
+    sudo systemctl restart dusky_snapshot.timer
     info "Custom ${SNAPSHOT_TIMER_FREQUENCY} snapshot timer deployed and enabled."
 }
 
