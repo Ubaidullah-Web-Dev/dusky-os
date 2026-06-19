@@ -86,7 +86,6 @@ Media       | vlc                   | The ultimate media player for all formats
 Media       | vlc-plugins-all       | Plugins for VLC
 Games       | pipes-rs-bin          | Rust port of the classic pipes screensaver
 Games       | 2048.c                | The 2048 sliding tile game in C
-Games       | edex-ui-bin           | Sci-Fi/Tron-inspired terminal emulator
 Games       | clidle-bin            | Wordle clone for the command line
 Games       | maze-tui              | Visual maze generator and solver
 Games       | vitetris              | Classic Tetris clone for the terminal
