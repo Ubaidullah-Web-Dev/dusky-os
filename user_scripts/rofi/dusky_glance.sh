@@ -67,6 +67,7 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     printf "  \e[32m--timer [time]\e[0m             Start Timer (e.g., 90s, 15m)\n"
     printf "  \e[32m--stopwatch\e[0m                Start the stopwatch\n"
     printf "  \e[32m--clock\e[0m                    Show the live clock\n"
+    printf "  \e[32m--clock-short\e[0m              Show the live clock (no seconds)\n"
     printf "  \e[32m--cpu\e[0m                      Show live CPU usage\n"
     printf "  \e[32m--ram\e[0m                      Show live RAM usage\n"
     printf "  \e[32m--temp\e[0m                     Show CPU temperature\n"
@@ -376,8 +377,18 @@ case "$choice" in
         fi
         ;;
 
+    '󰥔  Live Clock')
+        c_opts=("󰥔  With Seconds" "󰥔  Without Seconds")
+        cchoice=$(printf '%s\n' "${c_opts[@]}" | "${ROFI_SUB[@]}" -p "Clock") || exit 0
+        
+        if [[ "$cchoice" == *"With Seconds"* ]]; then
+            "$DAEMON_SCRIPT" --clock & disown
+        elif [[ "$cchoice" == *"Without Seconds"* ]]; then
+            "$DAEMON_SCRIPT" --clock-short & disown
+        fi
+        ;;
+
     '󱑎  Stopwatch')      "$DAEMON_SCRIPT" --stopwatch & disown ;;
-    '󰥔  Live Clock')     "$DAEMON_SCRIPT" --clock & disown ;;
     '  CPU Usage')      "$DAEMON_SCRIPT" --cpu & disown ;;
     '󰘚  Memory (RAM)')
         m_opts=("󰘚  System RAM Usage" "󰘚  RAM Temperature" "󰘚  ZRAM Usage")

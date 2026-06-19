@@ -100,6 +100,14 @@ case "$MODE" in
             sleep 1
         done
         ;;
+
+    --clock-short)
+        while true; do
+            printf -v current_time '%(%I:%M)T' -1
+            send_osd "$current_time"
+            sleep 1
+        done
+        ;;
         
     --stopwatch)
         while true; do
