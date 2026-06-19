@@ -100,6 +100,7 @@ INSTALL_SEQUENCE=(
     "S | 195_firefox_symlink_parition.sh"
     "S | 200_tlp_config.sh"
     "S | 205_zram_configuration.sh"
+    "S | 206_zram_tmpfs_mounts.py --zram"
     "S | 210_zram_optimize_swappiness.sh"
     "S | 211_systemd_oomd_zram.sh"
     "S | 212_thp_sysfs_optimizer.sh"
