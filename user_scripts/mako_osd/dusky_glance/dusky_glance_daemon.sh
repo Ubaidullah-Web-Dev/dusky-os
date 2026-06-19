@@ -188,7 +188,7 @@ case "$MODE" in
             
             if (( prev_total > 0 && diff_total > 0 )); then
                 usage=$(( 100 * (diff_total - diff_idle) / diff_total ))
-                send_osd "CPU ${usage}%"
+                send_osd "${usage}%"
             fi
             
             prev_idle=$idle
