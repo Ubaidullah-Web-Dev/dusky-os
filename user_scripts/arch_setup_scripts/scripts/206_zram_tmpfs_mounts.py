@@ -3,8 +3,8 @@
 # Elite Arch Linux Hybrid Memory Mount Configurator
 # Target: Arch Linux Cutting-Edge (Kernel 7.1+, Python 3.14+, systemd 260+)
 # Scope: Platinum Grade. High-Performance RAM Disks via Tmpfs or ZRAM block.
-# Updates: [Patched] Asynchronous polling loop added to eliminate findmnt 
-#          race conditions and false "Reboot Required" warnings.
+# Updates: Decoupled. Strictly handles mount states. Recompression timer 
+#          delegated to standalone global daemon script.
 # =============================================================================
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def die(msg: str, code: int = 1) -> "typing.NoReturn": # noqa: F821
 parser = argparse.ArgumentParser(description="Elite Arch Linux Hybrid Memory Mount Configurator")
 group = parser.add_mutually_exclusive_group()
 group.add_argument("--tmpfs", action="store_true", help="Autonomously deploy pure Tmpfs mapping")
-group.add_argument("--zram", action="store_true", help="Autonomously deploy Ext2 ZRAM block mapping")
+group.add_argument("--zram", action="store_true", help="Autonomously deploy Ext4 ZRAM block mapping")
 parser.add_argument("--no-color", action="store_true", help="Disable ANSI color output")
 
 args = parser.parse_args()
@@ -66,9 +66,10 @@ escalate_privileges()
 
 # --- Core Constants ---
 MOUNT_POINT = "/mnt/zram1"
-ZRAM_SIZE_EXPR = "min(ram, 8192) + max(ram - 10192, 0)"
-COMPRESSION_ALGORITHM = "zstd"
-FS_OPTIONS = "rw,nosuid,nodev,discard,X-mount.mode=1777"
+ZRAM_SIZE_EXPR = "ram"
+ZRAM_RESIDENT_LIMIT_EXPR = "ram * 4 / 5"
+COMPRESSION_ALGORITHM = "zstd(level=3) zstd(level=12) (type=idle)"
+FS_OPTIONS = "rw,nosuid,nodev,discard,noatime,lazytime,X-mount.mode=1777"
 CMD_TIMEOUT = 15
 
 # --- Target User Identification (Wayland/Hyprland Safety) ---
@@ -82,7 +83,6 @@ if TARGET_UID == 0:
 
 # --- Utility Functions ---
 def run_cmd(cmd: list[str], ignore_errors: bool = False) -> str:
-    """Executes a shell command safely with timeouts."""
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=not ignore_errors, timeout=CMD_TIMEOUT)
         return result.stdout.strip()
@@ -96,7 +96,6 @@ def run_cmd(cmd: list[str], ignore_errors: bool = False) -> str:
         return ""
 
 def write_file_atomic(path: Path, content: str, mode: int = 0o644) -> None:
-    """Writes a file atomically to prevent partial reads by systemd."""
     if path.exists() and path.read_text() == content:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -195,10 +194,8 @@ WantedBy=local-fs.target
     run_cmd(["systemctl", "enable", mount_unit_name], ignore_errors=True)
     run_cmd(["systemctl", "start", mount_unit_name], ignore_errors=True)
     
-    # Asynchronous polling buffer to catch kernel mount completion
     for _ in range(6):
-        if get_mount_source() == "tmpfs":
-            break
+        if get_mount_source() == "tmpfs": break
         time.sleep(0.5)
     
     if get_mount_source() == "tmpfs":
@@ -211,10 +208,10 @@ def configure_zram(mount_unit_name: str, mount_unit_path: Path) -> None:
     zram_conf = config_dir / "99-elite-zram1.conf"
 
     if get_mount_source() in ("/dev/zram1", "zram1") and zram_conf.exists():
-        ok(f"Ext2 ZRAM architecture is already active and perfectly configured at {MOUNT_POINT}. No action required.")
+        ok(f"Ext4 ZRAM architecture is already active and perfectly configured at {MOUNT_POINT}. No action required.")
         return
 
-    info(f"Initializing Ext2 ZRAM Block Mount for: {C.BOLD}{MOUNT_POINT}{C.RST}")
+    info(f"Initializing Ext4 ZRAM Block Mount for: {C.BOLD}{MOUNT_POINT}{C.RST}")
     resolve_live_conflicts("zram", mount_unit_name)
 
     if mount_unit_path.exists():
@@ -224,13 +221,23 @@ def configure_zram(mount_unit_name: str, mount_unit_path: Path) -> None:
     zram_content = f"""# Managed by Elite Arch Linux Configurator.
 [zram1]
 zram-size = {ZRAM_SIZE_EXPR}
-fs-type = ext2
+zram-resident-limit = {ZRAM_RESIDENT_LIMIT_EXPR}
+fs-type = ext4
 mount-point = {MOUNT_POINT}
 compression-algorithm = {COMPRESSION_ALGORITHM}
 options = {FS_OPTIONS}
 """
     write_file_atomic(zram_conf, zram_content)
     ok(f"ZRAM pool configuration written atomically to {zram_conf}")
+
+    override_dir = Path("/etc/systemd/system/systemd-zram-setup@zram1.service.d")
+    override_dir.mkdir(parents=True, exist_ok=True)
+    override_conf = override_dir / "override.conf"
+    override_content = """[Service]
+ExecStartPost=/usr/sbin/tune2fs -O ^has_journal /dev/%i
+"""
+    write_file_atomic(override_conf, override_content)
+    ok(f"Journal-less Ext4 systemd override deployed to {override_conf}")
 
     info("Reloading systemd generators...")
     run_cmd(["systemctl", "daemon-reload"])
@@ -239,14 +246,12 @@ options = {FS_OPTIONS}
     info("Engaging ZRAM generator pipeline...")
     run_cmd(["systemctl", "restart", "systemd-zram-setup@zram1.service"], ignore_errors=True)
 
-    # Asynchronous polling buffer to catch kernel mount completion
     for _ in range(6):
-        if get_mount_source() in ("/dev/zram1", "zram1"):
-            break
+        if get_mount_source() in ("/dev/zram1", "zram1"): break
         time.sleep(0.5)
 
     if get_mount_source() in ("/dev/zram1", "zram1"):
-        ok(f"Live memory: Ext2 ZRAM successfully attached to {MOUNT_POINT}.")
+        ok(f"Live memory: Ext4 ZRAM successfully attached to {MOUNT_POINT}.")
     else:
         warn("Live ZRAM configuration delayed. Reboot the system to finalize the architecture.")
 
@@ -265,7 +270,7 @@ def ask_backend() -> str:
 
     print(f"\n  {C.CYN}[ Select backend for {MOUNT_POINT} ]{C.RST}")
     print(f"   {C.BOLD}1{C.RST}) tmpfs (Pure RAM Mapping){tmpfs_tag}")
-    print(f"   {C.BOLD}2{C.RST}) zram  (Ext2 Compressed Block){zram_tag}")
+    print(f"   {C.BOLD}2{C.RST}) zram  (Ext4 Compressed Block){zram_tag}")
     while True:
         raw = input("  > ").strip().lower()
         if raw in ("1", "tmpfs"): return "tmpfs"
@@ -281,12 +286,9 @@ def main() -> None:
     pre_flight_checks()
 
     match (args.tmpfs, args.zram):
-        case (True, False):
-            backend = "tmpfs"
-        case (False, True):
-            backend = "zram"
-        case _:
-            backend = ask_backend()
+        case (True, False): backend = "tmpfs"
+        case (False, True): backend = "zram"
+        case _: backend = ask_backend()
 
     for cmd in ["systemctl", "systemd-escape", "findmnt", "umount"]:
         if subprocess.call(["command", "-v", cmd], stdout=subprocess.DEVNULL, shell=True) != 0:
@@ -298,10 +300,8 @@ def main() -> None:
     prepare_mount_directory()
 
     match backend:
-        case "tmpfs":
-            configure_tmpfs(mount_unit_name, mount_unit_path)
-        case "zram":
-            configure_zram(mount_unit_name, mount_unit_path)
+        case "tmpfs": configure_tmpfs(mount_unit_name, mount_unit_path)
+        case "zram": configure_zram(mount_unit_name, mount_unit_path)
             
     ok(f"Subsystem configured. Target is ready for high-I/O workloads.")
 

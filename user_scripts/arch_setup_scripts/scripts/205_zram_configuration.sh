@@ -4,7 +4,7 @@
 # Target: Arch Linux Cutting-Edge (Kernel 7.0+, Bash 5.3+, systemd 260+)
 # Scope: Platinum Grade. Maximum Memory Efficiency via pure ZRAM Swap.
 # Updates: Decoupled. Strictly handles ZSWAP annihilation and zram0 swap block.
-#          Integrated Kernel 7.0 Direct Writeback Pipeline (Pure zstd, 20-min flush)
+#          Integrated 75% Resident Limit and Multi-Algorithm Zstd Recompression.
 # =============================================================================
 
 set -euo pipefail
@@ -48,8 +48,6 @@ print_help() {
     cat <<EOF
 ${C_BOLD}Usage:${C_RESET} ${SCRIPT_NAME} [OPTIONS]
 
-  --writeback, -w <dev> Set physical block device for Kernel 7.0 ZRAM writeback 
-                        (e.g., /dev/disk/by-partuuid/xxxx)
   --help, -h            Show this help menu
 EOF
 }
@@ -57,18 +55,8 @@ EOF
 usage_error() { log_error "$1"; print_help >&2; exit 2; }
 
 # --- CLI Parsing ---
-WRITEBACK_DEV=""
-
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --writeback|-w)
-            if [[ -n "${2:-}" ]]; then
-                WRITEBACK_DEV="$2"
-                shift 2
-            else
-                usage_error "Missing argument for $1"
-            fi
-            ;;
         --help|-h) print_help; exit 0 ;;
         *) usage_error "Unknown argument: $1" ;;
     esac
@@ -92,7 +80,8 @@ readonly CONFIG_FILE="${CONFIG_DIR}/99-elite-zram.conf"
 
 readonly ZRAM_SWAP_DEV="/dev/zram0"
 readonly ZRAM_SIZE_EXPR="ram"
-readonly COMPRESSION_ALGORITHM="zstd" 
+readonly ZRAM_RESIDENT_LIMIT_EXPR="ram * 3 / 4"
+readonly COMPRESSION_ALGORITHM="zstd(level=1) zstd(level=8) (type=idle)" 
 
 readonly GENERATOR_BIN="/usr/lib/systemd/system-generators/zram-generator"
 readonly SWAP_SETUP_UNIT="systemd-zram-setup@zram0.service"
@@ -179,46 +168,11 @@ cat > "$tmp_config" <<EOF
 # Managed by Elite Arch Linux ZRAM Configurator.
 [zram0]
 zram-size = ${ZRAM_SIZE_EXPR}
+zram-resident-limit = ${ZRAM_RESIDENT_LIMIT_EXPR}
 compression-algorithm = ${COMPRESSION_ALGORITHM}
 swap-priority = 100
 options = discard
 EOF
-
-# Integrate Kernel 7.0 Writeback & Timer if specified
-if [[ -n "$WRITEBACK_DEV" ]]; then
-    log_info "Integrating Kernel 7.0 Direct Writeback device: $WRITEBACK_DEV"
-    echo "writeback-device = $WRITEBACK_DEV" >> "$tmp_config"
-    
-    # Create the recurring NVMe flush service
-    cat > "/etc/systemd/system/zram-writeback.service" <<EOF
-[Unit]
-Description=ZRAM Kernel 7.0 Idle Writeback Flush
-After=systemd-zram-setup@zram0.service
-Requires=systemd-zram-setup@zram0.service
-
-[Service]
-Type=oneshot
-# Ensure writeback limits are respected, then trigger idle flush directly to NVMe
-ExecStartPre=/usr/bin/bash -c 'echo 1 > /sys/block/zram0/writeback_limit_enable 2>/dev/null || true'
-ExecStart=/usr/bin/bash -c 'echo idle > /sys/block/zram0/writeback || true'
-EOF
-
-    # Timer runs every 20 minutes specifically as requested
-    cat > "/etc/systemd/system/zram-writeback.timer" <<EOF
-[Unit]
-Description=ZRAM Writeback Flush (Every 20 Minutes)
-
-[Timer]
-OnCalendar=*:0/20
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
-    systemctl daemon-reload
-    systemctl enable --now zram-writeback.timer >/dev/null 2>&1 || true
-    log_success "ZRAM Writeback timer configured and enabled (Every 20 minutes)."
-fi
 
 install -Dm0644 "$tmp_config" "$CONFIG_FILE"
 log_success "ZRAM pool configuration written to ${CONFIG_FILE}"
@@ -233,7 +187,7 @@ if systemctl is-active --quiet "$SWAP_UNIT"; then
     log_info "$SWAP_UNIT is currently active."
 fi
 
-log_success "Platinum ZRAM (Pure ZSTD + Writeback) swap architecture installed safely."
+log_success "Platinum ZRAM (Pure Multi-Algorithm ZSTD) swap architecture installed safely."
 log_info "Reboot the system to apply the new memory topology natively."
 
 exit 0

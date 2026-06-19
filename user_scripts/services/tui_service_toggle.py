@@ -97,6 +97,10 @@ CORE_SYSTEM_DEFS = {
         "3 Day Auto Snapshots (Backup)",
         "Triggers a snapshot automaticaly every 3 days, while automatically cleaning up the oldest snapshot (max 6)."
     ),
+    "zram-recompress.timer": (
+        "ZRAM 1H Cold Pages Compressor",
+        "Auto compresses cold pages in both zram0 and zram1 with zstd level 12 every hour to reclaim memory"
+    ),
     "ufw.service": (
         "Firewall (UFW)",
         "Uncomplicated Firewall. A user-friendly front-end for iptables to manage network access rules."
