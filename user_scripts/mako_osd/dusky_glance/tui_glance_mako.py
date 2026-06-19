@@ -214,7 +214,7 @@ def build_standard_glance(suffix, label_name, group_name="Modules"):
             extended_help="**Corner Arc Smoothing**\n\nPixel curvature for the widget's corners. Highly visible if the background color opacity is raised above zero."
         ),
         ConfigItem(
-            label="Size",
+            label="Border Size",
             key="border-size",
             scope=scope,
             type_="int",
@@ -225,7 +225,18 @@ def build_standard_glance(suffix, label_name, group_name="Modules"):
             parent_ref=uid,
             extended_help="**Stroke Thickness**\n\nDetermines the width of the framing border. Usually disabled (`0`) for the floating text look."
         ),
-        
+        ConfigItem(
+            label="Border Color",
+            key="border-color",
+            scope=scope,
+            type_="color",
+            default="{{colors.outline.default.hex}}",
+            options=COLOR_OPTIONS,
+            hints=COLOR_HINTS,
+            parent_ref=uid,
+            extended_help="**Widget Stroke Color**\n\nThe color of the outer stroke. This relies on `border-size` being greater than 0." + ALPHA_HELP
+        ),
+
         # ----------------- ELEMENTS & BEHAVIOR -----------------
         ConfigItem(
             label="Icons",
@@ -303,17 +314,6 @@ def build_standard_glance(suffix, label_name, group_name="Modules"):
             parent_ref=uid,
             extended_help="**Active Metrics Typography**\n\nColor utilized for rendering the live RAM, CPU, and Network metrics." + ALPHA_HELP
         ),
-        ConfigItem(
-            label="BorderClr",
-            key="border-color",
-            scope=scope,
-            type_="color",
-            default="{{colors.outline.default.hex}}",
-            options=COLOR_OPTIONS,
-            hints=COLOR_HINTS,
-            parent_ref=uid,
-            extended_help="**Widget Stroke Color**\n\nThe color of the outer stroke. This relies on `border-size` being greater than 0." + ALPHA_HELP
-        )
     ]
 
 def build_alert_glance():
@@ -408,7 +408,7 @@ def build_alert_glance():
             extended_help="**Alert Softening Arc**\n\nApplies curvature to the harsh warning box corners."
         ),
         ConfigItem(
-            label="Size",
+            label="Border Size",
             key="border-size",
             scope=scope,
             type_="int",
@@ -419,7 +419,18 @@ def build_alert_glance():
             parent_ref=uid,
             extended_help="**Alert Structural Framing**\n\nPixel thickness of the bounding stroke around the warning popup."
         ),
-        
+        ConfigItem(
+            label="Border Color",
+            key="border-color",
+            scope=scope,
+            type_="color",
+            default="{{colors.secondary.default.hex}}",
+            options=COLOR_OPTIONS,
+            hints=COLOR_HINTS,
+            parent_ref=uid,
+            extended_help="**Warning Stroke Color**\n\nColor forming the outline barrier of the popup." + ALPHA_HELP
+        ),
+
         ConfigItem(
             label="Font",
             key="font",
@@ -479,17 +490,6 @@ def build_alert_glance():
             parent_ref=uid,
             extended_help="**Warning Typography**\n\nHigh-contrast color utilized for the critical alert text." + ALPHA_HELP
         ),
-        ConfigItem(
-            label="BorderClr",
-            key="border-color",
-            scope=scope,
-            type_="color",
-            default="{{colors.secondary.default.hex}}",
-            options=COLOR_OPTIONS,
-            hints=COLOR_HINTS,
-            parent_ref=uid,
-            extended_help="**Warning Stroke Color**\n\nColor forming the outline barrier of the popup." + ALPHA_HELP
-        )
     ]
 
 # =============================================================================
