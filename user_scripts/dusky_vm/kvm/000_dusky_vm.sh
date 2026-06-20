@@ -17,7 +17,7 @@
 
 # Directories to search for scripts (in order — first match wins)
 SCRIPT_SEARCH_DIRS=(
-  "${HOME}/user_scripts/dusky_vm"
+  "${HOME}/user_scripts/dusky_vm/kvm"
 )
 
 # Delay (in seconds) after each successful script. Set to 0 to disable.
