@@ -603,6 +603,11 @@ main() {
     detect_environment
 
     if [[ $# -eq 0 ]]; then
+        if [[ ! -t 0 || ! -t 1 ]]; then
+            log_info "Non-interactive environment detected. Auto-falling back to state application."
+            main "--apply-state"
+            return 0
+        fi
         run_tui
     else
         case "$1" in
