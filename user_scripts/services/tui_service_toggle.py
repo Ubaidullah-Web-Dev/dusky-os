@@ -69,10 +69,6 @@ CORE_SYSTEM_DEFS = {
         "TLP Power Management",
         "Advanced power management for Linux. Applies various battery-saving tweaks to the kernel, PCI, and USB devices."
     ),
-    "greetd.service": (
-        "Login Greeter",
-        "Disabling this will get rid of the login prompt and allow you to auto login"
-    ),
     "tlp-pd.service": (
         "TLP Daemon",
         "Daemon for TLP power management. Should generally be enabled alongside tlp.service."
