@@ -6,9 +6,9 @@ set -Eeuo pipefail
 export LC_ALL=C
 
 # --- USER CONFIGURATION ---
-# Set how often to take autonomous snapshots using systemd Calendar syntax.
-# Examples: "*-*-1/3 00:00:00" (every 3 days), "daily", "weekly"
-SNAPSHOT_CALENDAR="*-*-1/3 00:00:00"
+# Set the exact time of day to take the daily snapshot using 24-hour format.
+# Example: "20:00" is 8:00 PM.
+SNAPSHOT_TIME="20:00"
 
 # Set the strict limit on how many automated snapshots to keep per configuration
 SNAPSHOT_RETENTION_LIMIT=6
@@ -712,7 +712,7 @@ Description=Trigger Automated Snapper Snapshots
 Documentation=man:snapper(8)
 
 [Timer]
-OnCalendar=${SNAPSHOT_CALENDAR}
+OnCalendar=*-*-* ${SNAPSHOT_TIME}:00
 Persistent=true
 RandomizedDelaySec=5m
 
@@ -725,7 +725,7 @@ EOF
         mkdir -p /etc/systemd/system/timers.target.wants
         ln -sf ../dusky_snapshot.timer /etc/systemd/system/timers.target.wants/dusky_snapshot.timer
     fi
-    info "Custom scheduled snapshot timer deployed and enabled."
+    info "Custom scheduled snapshot timer deployed for ${SNAPSHOT_TIME}."
 }
 
 preflight_checks() {
