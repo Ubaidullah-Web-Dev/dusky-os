@@ -413,7 +413,7 @@ def fetch_notifications() -> list[NotificationData]:
         try: blacklist = set(bl_path.read_text(encoding="utf-8").splitlines())
         except OSError: pass
 
-    ignored_apps = {"OSD", "dusky-keys", "dusky-cava", "dusky-cava-alert", "dusky-glance", "dusky-glance-alert", "dusky-recorder", "Spotify"}
+    ignored_apps = {"OSD", "dusky-keys", "dusky-cava", "dusky-cava-alert", "dusky-recorder", "Spotify"}
 
     def _fetch_mako_json(cmd: list[str]) -> list[dict]:
         r = run_command(cmd, timeout=1.0, capture_stdout=True)
@@ -440,7 +440,7 @@ def fetch_notifications() -> list[NotificationData]:
                 nid = int(item.get("id", -1))
                 if nid < 0 or str(nid) in blacklist: continue
                 app = item.get("app-name", item.get("app_name", ""))
-                if app in ignored_apps: continue
+                if app in ignored_apps or app.startswith("dusky-glance"): continue
                 summary = item.get("summary", "")
                 if not summary: continue
                 
