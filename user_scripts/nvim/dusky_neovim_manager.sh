@@ -474,9 +474,8 @@ main() {
         
         trap - INT TERM EXIT
         echo ""
-        log_success "Autonomous deployment complete. Bootstrapping Neovim..."
-        sleep 1
-        exec nvim
+        log_success "Autonomous deployment complete. You can now start Neovim."
+        exit 0
         
     else
         # INTERACTIVE FALLBACK (Classic Flow)
@@ -574,10 +573,8 @@ main() {
 
         trap - INT TERM EXIT
         echo ""
-        log_success "Operations complete. Bootstrapping Neovim..."
-        sleep 1
-        
-        exec nvim
+        log_success "Operations complete. You can now start Neovim."
+        exit 0
     fi
 }
 

@@ -26,6 +26,7 @@ SCRIPT_SEARCH_DIRS=(
     "${HOME}/user_scripts/theme_matugen/firefox"
     "${HOME}/user_scripts/tts_stt/dusky_kokoro"
     "${HOME}/user_scripts/tts_stt/dusky_parakeet"
+    "${HOME}/user_scripts/nvim"
     # "${HOME}/my_other_scripts"
     # "/opt/shared_team_scripts"
 )
@@ -167,6 +168,7 @@ INSTALL_SEQUENCE=(
     "U | wallpaper_selector.py --build-cache"
     "U | kokoro_installer.sh"
     "U | parakeet_installer.sh"
+    "U | dusky_neovim_manager.sh -a -t dusky"
 
 )
 

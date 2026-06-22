@@ -24,6 +24,7 @@ SCRIPT_SEARCH_DIRS=(
     "${HOME}/user_scripts/theme_matugen"
     "${HOME}/user_scripts/theme_matugen/config"
     "${HOME}/user_scripts/theme_matugen/firefox"
+    "${HOME}/user_scripts/nvim"
     # "${HOME}/my_other_scripts"
     # "/opt/shared_team_scripts"
 )
@@ -167,6 +168,7 @@ INSTALL_SEQUENCE=(
 # ------ CUSTOM PATH SCRIPTS -------
 
     "U | wallpaper_selector.py --build-cache"
+#    "U | dusky_neovim_manager.sh"
 )
 
 # ==============================================================================
