@@ -114,6 +114,8 @@ INSTALL_SEQUENCE=(
 
     "U | 237_text_editer_switcher.sh --mousepad"
     "U | 238_terminal_switcher.sh --kitty"
+    "U | 241_thunar_defaults.py"
+    "U | 242_file_manager_bookmarks_sidepane.py"
     "U | 243_mousepad_defaults.py"
 #    "S | 245_asusd_service_fix.sh"
 #    "S | 250_ftp_arch.sh"
