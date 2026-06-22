@@ -69,10 +69,7 @@ CORE_SYSTEM_DEFS = {
         "TLP Power Management",
         "Advanced power management for Linux. Applies various battery-saving tweaks to the kernel, PCI, and USB devices."
     ),
-    "tlp-pd.service": (
-        "TLP Daemon",
-        "Daemon for TLP power management. Should generally be enabled alongside tlp.service."
-    ),
+
     "swayosd-libinput-backend.service": (
         "SwayOSD Input Backend",
         "Backend service for SwayOSD. Handles raw libinput events to render volume/brightness overlays without relying on the window manager."

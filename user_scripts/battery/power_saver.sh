@@ -340,7 +340,7 @@ set_hardware_profiles() {
         fi
 
         # SYNCHRONIZATION BARRIER:
-        # Give tlp-pd and asusd 1 full second to finish broadcasting and processing 
+        # Give TLP and asusd 1 full second to finish broadcasting and processing 
         # ACPI/D-Bus power-state events before we explicitly override the asusctl profile.
         sleep 1
 

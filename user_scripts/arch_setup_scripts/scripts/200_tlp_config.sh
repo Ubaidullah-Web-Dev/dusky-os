@@ -121,7 +121,7 @@ main() {
     # ---------------------------------------------------------
     # B. Dependency Installation (Idempotent)
     # ---------------------------------------------------------
-    local -r pkgs=("tlp" "tlp-pd" "tlp-rdw")
+    local -r pkgs=("tlp" "tlp-rdw")
     log_info "Ensuring required packages are installed: ${pkgs[*]}"
     
     if sudo pacman -S --needed --noconfirm "${pkgs[@]}"; then
@@ -178,8 +178,8 @@ main() {
     # ---------------------------------------------------------
     log_info "Enabling and starting required systemd services..."
     
-    if systemctl enable --now tlp.service tlp-pd.service; then
-         log_success "Services (tlp.service, tlp-pd.service) enabled and active."
+    if systemctl enable --now tlp.service; then
+         log_success "Service (tlp.service) enabled and active."
     else
          log_error "Failed to enable or start TLP services."
          exit 1
