@@ -506,6 +506,115 @@ CONFIG
 # ▼ PHASE 7: MATUGEN TOML INTEGRATION ▼
 # =============================================================================
 
+_replace_toml_block() {
+    local toml_file="$1"
+    local target_key="$2"
+    local new_block="$3"
+    local is_remove="${4:-0}"
+    
+    local tmp_toml
+    tmp_toml=$(mktemp)
+    
+    TARGET_KEY="$target_key" NEW_BLOCK="$new_block" IS_REMOVE="$is_remove" \
+    LC_ALL=C awk '
+    function is_blank(line) { return line ~ /^[[:space:]]*$/ }
+    function is_comment(line) { return line ~ /^[[:space:]]*#/ }
+    function strip_comment_prefix(line,    t) {
+        t = line; sub(/^[[:space:]]*#[[:space:]]?/, "", t); return t
+    }
+    function is_toml_header(line,    t) {
+        t = line; sub(/^[[:space:]]*#?[[:space:]]*/, "", t); return t ~ /^\[.*\][[:space:]]*(#.*)?$/
+    }
+    function template_name(line,    t) {
+        t = line; sub(/^[[:space:]]*#?[[:space:]]*/, "", t)
+        if (t !~ /^\[templates\.[^]]+\][[:space:]]*(#.*)?$/) return ""
+        sub(/^\[templates\./, "", t); sub(/\][[:space:]]*(#.*)?$/, "", t); return t
+    }
+    function count_token(str, tok,    n, p, step, rest) {
+        n = 0; rest = str; step = length(tok); p = index(rest, tok)
+        while (p) { n++; rest = substr(rest, p + step); p = index(rest, tok) }
+        return n
+    }
+    function update_multiline_state(line,    s, c) {
+        s = strip_comment_prefix(line)
+        if (!in_multiline) {
+            c = count_token(s, triple_sq)
+            if (c % 2 == 1) { in_multiline = 1; multiline_token = triple_sq; return }
+            c = count_token(s, triple_dq)
+            if (c % 2 == 1) { in_multiline = 1; multiline_token = triple_dq }
+            return
+        }
+        c = count_token(s, multiline_token)
+        if (c % 2 == 1) { in_multiline = 0; multiline_token = "" }
+    }
+
+    { lines[++line_count] = $0 }
+
+    END {
+        triple_sq = sprintf("%c%c%c", 39, 39, 39)
+        triple_dq = "\"\"\""
+        start = 0; end = line_count
+        in_multiline = 0; multiline_token = ""
+        is_commented_block = 0
+
+        for (i = 1; i <= line_count; i++) {
+            if (template_name(lines[i]) == ENVIRON["TARGET_KEY"]) {
+                start = i
+                if (is_comment(lines[i])) is_commented_block = 1
+                break
+            }
+        }
+
+        if (start) {
+            for (i = start + 1; i <= line_count; i++) {
+                if (!in_multiline && is_toml_header(lines[i])) { end = i - 1; break }
+                if (!in_multiline && is_blank(lines[i]) && i + 3 <= line_count) {
+                    c1 = lines[i + 1]; c2 = lines[i + 2]; c3 = lines[i + 3]
+                    s1 = strip_comment_prefix(c1); s2 = strip_comment_prefix(c2); s3 = strip_comment_prefix(c3)
+                    
+                    is_c1_header = is_comment(c1) || c1 ~ /^[-=]{3,}$/
+                    is_c2_header = is_comment(c2) || c2 !~ /^#/
+                    is_c3_header = is_comment(c3) || c3 ~ /^[-=]{3,}$/
+
+                    if (is_c1_header && is_c2_header && is_c3_header && s1 ~ /^[-=]{3,}$/ && s2 !~ /^[[:space:]]*$/ && s2 !~ /^[[:space:]]*\[/ && s3 ~ /^[-=]{3,}$/) {
+                        j = i + 4; while (j <= line_count && is_blank(lines[j])) j++
+                        if (j > line_count || is_toml_header(lines[j])) { end = i - 1; break }
+                    }
+                }
+                update_multiline_state(lines[i])
+            }
+        }
+
+        if (!start) {
+            if (ENVIRON["IS_REMOVE"] != "1") {
+                for (i = 1; i <= line_count; i++) print lines[i]
+                print ""
+                print ENVIRON["NEW_BLOCK"]
+            } else {
+                for (i = 1; i <= line_count; i++) print lines[i]
+            }
+        } else {
+            for (i = 1; i < start; i++) print lines[i]
+            
+            if (ENVIRON["IS_REMOVE"] != "1") {
+                n = split(ENVIRON["NEW_BLOCK"], new_lines, "\n")
+                for (k = 1; k <= n; k++) {
+                    if (is_commented_block) {
+                        if (new_lines[k] == "") print "#"
+                        else print "# " new_lines[k]
+                    } else { print new_lines[k] }
+                }
+            }
+            
+            for (i = end + 1; i <= line_count; i++) print lines[i]
+        }
+    }
+    ' "$toml_file" > "$tmp_toml"
+
+    cp "$tmp_toml" "$toml_file"
+    rm -f "$tmp_toml"
+}
+
 update_matugen_toml() {
     local toml_file="$HOME/.config/matugen/config.toml"
     
@@ -530,29 +639,15 @@ update_matugen_toml() {
         return 0
     fi
 
-    local tmp_toml
-    tmp_toml=$(mktemp)
-    
-    awk '
-    /^[ \t]*\[[ \t]*templates\.firefox_websites[ \t]*\]/ { skip = 1; next }
-    /^[ \t]*\[{1,2}[a-zA-Z0-9_.-]+(\.[a-zA-Z0-9_.-]+)*\]{1,2}[ \t]*$/ && skip { skip = 0 }
-    !skip { print }
-    ' "$toml_file" | awk 'NF > 0 {last = NR} {lines[NR] = $0} END {for (i = 1; i <= last; i++) print lines[i]}' > "$tmp_toml"
-
-    echo "" >> "$tmp_toml"
-
-    cat <<EOF >> "$tmp_toml"
-[templates.firefox_websites]
+    local new_block="[templates.firefox_websites]
 input_path = '~/.config/matugen/templates/firefox_websites.css'
 output_path = '~/.config/matugen/generated/firefox_websites.css'
 post_hook = '''
-$hook_cmds'''
-EOF
+${hook_cmds}'''"
 
-    cp "$tmp_toml" "$toml_file"
-    rm -f "$tmp_toml"
+    _replace_toml_block "$toml_file" "firefox_websites" "$new_block" 0
     
-    log_success "Matugen TOML updated securely (old configuration overwritten cleanly)."
+    log_success "Matugen TOML updated securely (in-place replacement)."
 }
 
 # =============================================================================
@@ -665,15 +760,7 @@ perform_uninstall() {
     local toml_file="$HOME/.config/matugen/config.toml"
     if [[ -f "$toml_file" ]] && command -v awk &>/dev/null; then
         log_info "Removing Firefox block from Matugen TOML..."
-        local tmp_toml
-        tmp_toml=$(mktemp)
-        awk '
-        /^[ \t]*\[[ \t]*templates\.firefox_websites[ \t]*\]/ { skip = 1; next }
-        /^[ \t]*\[{1,2}[a-zA-Z0-9_.-]+(\.[a-zA-Z0-9_.-]+)*\]{1,2}[ \t]*$/ && skip { skip = 0 }
-        !skip { print }
-        ' "$toml_file" | awk 'NF > 0 {last = NR} {lines[NR] = $0} END {for (i = 1; i <= last; i++) print lines[i]}' > "$tmp_toml"
-        cp "$tmp_toml" "$toml_file"
-        rm -f "$tmp_toml"
+        _replace_toml_block "$toml_file" "firefox_websites" "" 1
         log_success "Cleaned Matugen TOML."
     fi
 
