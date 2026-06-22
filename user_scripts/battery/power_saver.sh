@@ -17,7 +17,6 @@ fi
 # --- CONSTANTS & PATHS ---
 readonly STATE_DIR="${HOME}/.config/dusky/settings/power_saver"
 readonly GUI_STATE_FILE="${HOME}/.config/dusky/settings/power_saver_state"
-readonly TLP_GUI_STATE_FILE="${HOME}/.config/dusky/settings/performance_profile"
 
 # Hardware Limits
 readonly BRIGHTNESS_PS_LEVEL="1%"
@@ -207,10 +206,10 @@ set_hardware_profiles() {
         # 1. STATE CAPTURE (Must occur before daemons cross-communicate)
         
         # TLP Tracker
-        if has_cmd tlpctl; then
+        if [[ -x "${HOME}/user_scripts/battery/tlp/tlp_mode_toggle.sh" ]]; then
             if [[ ! -f "${STATE_DIR}/tlp_profile.state" ]]; then
                 local tlp_out
-                tlp_out=$(tlpctl get 2>/dev/null || echo "performance")
+                tlp_out=$("${HOME}/user_scripts/battery/tlp/tlp_mode_toggle.sh" status 2>/dev/null || echo "performance")
                 save_state "tlp_profile" "$tlp_out"
             fi
         fi
@@ -229,14 +228,13 @@ set_hardware_profiles() {
             fi
         fi
         
-        # 2. APPLY TLPCTL (This may trigger D-Bus events for asusd)
-        if has_cmd tlpctl; then
-            log_info "Setting tlpctl to power-saver..."
-            sudo tlpctl power-saver || true
-            printf "power-saver" > "${TLP_GUI_STATE_FILE}"
+        # 2. APPLY TLP
+        if [[ -x "${HOME}/user_scripts/battery/tlp/tlp_mode_toggle.sh" ]]; then
+            log_info "Setting TLP to power-saver..."
+            "${HOME}/user_scripts/battery/tlp/tlp_mode_toggle.sh" power-saver || true
         elif has_cmd tlp; then
             sudo tlp bat || true
-            printf "power-saver" > "${TLP_GUI_STATE_FILE}"
+            printf "power-saver" > "${HOME}/.config/dusky/settings/tlp_state"
         fi
 
         # 3. APPLY ASUSCTL
@@ -324,23 +322,21 @@ set_hardware_profiles() {
     else
         log_step "Restoring Hardware Performance Profiles..."
 
-        # TLPCTL (Stateful Restore + GUI Sync)
-        if has_cmd tlpctl; then
+        # TLP (Stateful Restore + GUI Sync)
+        if [[ -x "${HOME}/user_scripts/battery/tlp/tlp_mode_toggle.sh" ]]; then
             local prev_tlp
             prev_tlp=$(get_state "tlp_profile")
             if [[ -n "$prev_tlp" ]]; then
-                log_info "Restoring tlpctl to ${prev_tlp}..."
-                sudo tlpctl set "$prev_tlp" || true
-                printf "%s" "$prev_tlp" > "${TLP_GUI_STATE_FILE}"
+                log_info "Restoring TLP to ${prev_tlp}..."
+                "${HOME}/user_scripts/battery/tlp/tlp_mode_toggle.sh" "$prev_tlp" || true
                 clear_state "tlp_profile"
             else
-                log_info "Setting tlpctl to performance..."
-                sudo tlpctl performance || true
-                printf "performance" > "${TLP_GUI_STATE_FILE}"
+                log_info "Setting TLP to performance..."
+                "${HOME}/user_scripts/battery/tlp/tlp_mode_toggle.sh" performance || true
             fi
         elif has_cmd tlp; then
             sudo tlp ac || true
-            printf "performance" > "${TLP_GUI_STATE_FILE}"
+            printf "performance" > "${HOME}/.config/dusky/settings/tlp_state"
         fi
 
         # SYNCHRONIZATION BARRIER:
