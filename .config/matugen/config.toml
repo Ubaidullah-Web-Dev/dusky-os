@@ -340,5 +340,5 @@ input_path  = '/dev/null'
 output_path = '/dev/null'
 post_hook   = '''
   hyprctl reload config-only || :
-  notify-send -i applications-graphics-symbolic "Theme Updated" || :
+  notify-send -a "matugen-theme" -i applications-graphics-symbolic "Theme Updated" "Theme applied successfully" || :
 '''
