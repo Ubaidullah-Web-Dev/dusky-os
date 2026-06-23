@@ -119,14 +119,14 @@ declare -g REPO_MODE=0  # 1 = Standard Arch, 2 = CachyOS
 _setup_colors() {
   BOLD='' GREEN='' YELLOW='' RED='' CYAN='' MAGENTA='' DIM='' RESET=''
   if [[ -z "${NO_COLOR:-}" ]] && [[ -t 1 ]] && command -v tput &>/dev/null; then
-    BOLD=$(tput bold)
-    GREEN=$(tput setaf 2)
-    YELLOW=$(tput setaf 3)
-    RED=$(tput setaf 1)
-    CYAN=$(tput setaf 6)
-    MAGENTA=$(tput setaf 5)
+    BOLD=$(tput bold 2>/dev/null || true)
+    GREEN=$(tput setaf 2 2>/dev/null || true)
+    YELLOW=$(tput setaf 3 2>/dev/null || true)
+    RED=$(tput setaf 1 2>/dev/null || true)
+    CYAN=$(tput setaf 6 2>/dev/null || true)
+    MAGENTA=$(tput setaf 5 2>/dev/null || true)
     DIM=$(tput dim 2>/dev/null || true)
-    RESET=$(tput sgr0)
+    RESET=$(tput sgr0 2>/dev/null || true)
   fi
   readonly BOLD GREEN YELLOW RED CYAN MAGENTA DIM RESET
 }
@@ -407,7 +407,6 @@ _pacman_isolated() {
     --gpgdir    '/etc/pacman.d/gnupg' \
     --config    "${ISOLATED_DB_DIR}/pacman.conf" \
     --disable-sandbox                 \
-    --disable-download-timeout        \
     --noconfirm                       \
     --color     auto                  \
     "$@"
@@ -431,10 +430,16 @@ _init_isolated_db() {
     if [[ -f "${ISOLATED_DB_DIR}/pacman.d/cachyos-v3-mirrorlist" ]]; then
         sed -i 's/\$arch_v3/x86_64_v3/g' "${ISOLATED_DB_DIR}/pacman.d/cachyos-v3-mirrorlist"
         sed -i 's/\$arch/x86_64_v3/g'    "${ISOLATED_DB_DIR}/pacman.d/cachyos-v3-mirrorlist"
+    else
+        echo "Server = https://mirror.cachyos.org/repo/x86_64_v3/\$repo" > "${ISOLATED_DB_DIR}/pacman.d/cachyos-v3-mirrorlist"
     fi
+
     if [[ -f "${ISOLATED_DB_DIR}/pacman.d/cachyos-mirrorlist" ]]; then
         sed -i 's/\$arch/x86_64/g'       "${ISOLATED_DB_DIR}/pacman.d/cachyos-mirrorlist"
+    else
+        echo "Server = https://mirror.cachyos.org/repo/x86_64/\$repo" > "${ISOLATED_DB_DIR}/pacman.d/cachyos-mirrorlist"
     fi
+
     if [[ -f "${ISOLATED_DB_DIR}/pacman.d/mirrorlist" ]]; then
         sed -i 's/\$arch/x86_64/g'       "${ISOLATED_DB_DIR}/pacman.d/mirrorlist"
     fi
@@ -442,7 +447,7 @@ _init_isolated_db() {
     awk -v sandbox="${ISOLATED_DB_DIR}" '
     /^#?VerbosePkgLists/ { print "VerbosePkgLists"; next }
     /^#?Color/ { print "Color\nILoveCandy"; next }
-    /^#?ParallelDownloads/ { print "ParallelDownloads = 10"; next }
+    /^#?ParallelDownloads/ { print "ParallelDownloads = 5"; next }
     /^\[options\]/ {
         print
         print "Architecture = x86_64_v3 x86_64"
@@ -455,16 +460,16 @@ _init_isolated_db() {
         skip_cachy = 0
         print "# --- INJECTED CACHYOS v3 REPOSITORIES ---"
         print "[cachyos-v3]"
-        print "Server = https://mirror.cachyos.org/repo/x86_64_v3/$repo"
+        print "Include = " sandbox "/pacman.d/cachyos-v3-mirrorlist"
         print ""
         print "[cachyos-core-v3]"
-        print "Server = https://mirror.cachyos.org/repo/x86_64_v3/$repo"
+        print "Include = " sandbox "/pacman.d/cachyos-v3-mirrorlist"
         print ""
         print "[cachyos-extra-v3]"
-        print "Server = https://mirror.cachyos.org/repo/x86_64_v3/$repo"
+        print "Include = " sandbox "/pacman.d/cachyos-v3-mirrorlist"
         print ""
         print "[cachyos]"
-        print "Server = https://mirror.cachyos.org/repo/x86_64/$repo"
+        print "Include = " sandbox "/pacman.d/cachyos-mirrorlist"
         print "# ----------------------------------------"
         print ""
         print "[core]"
@@ -493,13 +498,29 @@ _init_isolated_db() {
     awk -v sandbox="${ISOLATED_DB_DIR}" '
     /^#?VerbosePkgLists/ { print "VerbosePkgLists"; next }
     /^#?Color/ { print "Color\nILoveCandy"; next }
-    /^#?ParallelDownloads/ { print "ParallelDownloads = 10"; next }
+    /^#?ParallelDownloads/ { print "ParallelDownloads = 5"; next }
     { print }
     ' /etc/pacman.conf | grep -vE '^\s*(IgnorePkg|IgnoreGroup)\s*=' > "${ISOLATED_DB_DIR}/pacman.conf"
   fi
   
   log_step "Downloading sync databases into sandbox..."
-  _pacman_isolated -Sy || die "Sync failed. (Check internet connection or host keyring)."
+  
+  local -i sync_retries=5
+  local -i sync_attempt=1
+  local -i sync_success=0
+
+  while (( sync_attempt <= sync_retries )); do
+    if _pacman_isolated -Sy; then
+      sync_success=1
+      break
+    else
+      log_warn "Sync interrupted (attempt ${sync_attempt}/${sync_retries}). Retrying in 3 seconds..."
+      sleep 3
+      (( sync_attempt++ )) || true
+    fi
+  done
+  
+  (( sync_success == 1 )) || die "Sync failed after ${sync_retries} attempts. (Check internet connection or host keyring)."
   
   log_ok "Sandbox ready."
 }
@@ -565,9 +586,23 @@ _generate_whitelist_filenames() {
 _download_packages() {
   log_info "Downloading packages → ${OFFLINE_REPO_DIR}"
   
-  _pacman_isolated \
-    -Sw --cachedir "${OFFLINE_REPO_DIR}" -- "${MASTER_PKGS[@]}" \
-    || die "Download failed."
+  local -i max_retries=15
+  local -i attempt=1
+  local -i success=0
+
+  while (( attempt <= max_retries )); do
+    if _pacman_isolated -Sw --cachedir "${OFFLINE_REPO_DIR}" -- "${MASTER_PKGS[@]}"; then
+      success=1
+      break
+    else
+      log_warn "Download interrupted or stalled (attempt ${attempt}/${max_retries})."
+      log_info "Retrying in 5 seconds to auto-reconnect and resume..."
+      sleep 5
+      (( attempt++ )) || true
+    fi
+  done
+
+  (( success == 1 )) || die "Download failed after ${max_retries} attempts. Please check your connection."
 
   local -i pkg_count
   pkg_count=$(find "${OFFLINE_REPO_DIR}" -maxdepth 1 -name '*.pkg.tar.*' ! -name '*.sig' -type f | wc -l)
