@@ -592,14 +592,34 @@ _download_packages() {
 
   while (( attempt <= max_retries )); do
     if _pacman_isolated -Sw --cachedir "${OFFLINE_REPO_DIR}" -- "${MASTER_PKGS[@]}"; then
-      success=1
-      break
+      local corrupt=0
+      local pkg
+      for pkg in "${OFFLINE_REPO_DIR}"/*.pkg.tar.*; do
+        [[ -f "$pkg" ]] || continue
+        [[ "$pkg" == *.sig || "$pkg" == *.part ]] && continue
+
+        if [[ "$pkg" == *.zst ]]; then
+          zstd -t -q "$pkg" </dev/null &>/dev/null || { rm -f -- "$pkg" "${pkg}.sig"; corrupt=1; log_delete "Corrupt ZST removed: ${pkg##*/}"; }
+        elif [[ "$pkg" == *.xz ]]; then
+          xz -t -q "$pkg" </dev/null &>/dev/null || { rm -f -- "$pkg" "${pkg}.sig"; corrupt=1; log_delete "Corrupt XZ removed: ${pkg##*/}"; }
+        else
+          bsdtar -tqf "$pkg" </dev/null &>/dev/null || { rm -f -- "$pkg" "${pkg}.sig"; corrupt=1; log_delete "Corrupt archive removed: ${pkg##*/}"; }
+        fi
+      done
+
+      if (( corrupt == 1 )); then
+        log_warn "Corrupt packages were found and removed. Resuming download..."
+      else
+        success=1
+        break
+      fi
     else
       log_warn "Download interrupted or stalled (attempt ${attempt}/${max_retries})."
-      log_info "Retrying in 5 seconds to auto-reconnect and resume..."
-      sleep 5
-      (( attempt++ )) || true
     fi
+    
+    log_info "Retrying in 5 seconds to auto-reconnect and resume..."
+    sleep 5
+    (( attempt++ )) || true
   done
 
   (( success == 1 )) || die "Download failed after ${max_retries} attempts. Please check your connection."
