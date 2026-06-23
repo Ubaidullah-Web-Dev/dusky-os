@@ -74,9 +74,12 @@ main() {
     fi
 
     # 6. Service Restart
-    log_info "Restarting $SERVICE_NAME..."
-    if systemctl restart "$SERVICE_NAME"; then
-        log_success "Service restarted successfully."
+    log_info "Reloading DBus and restarting $SERVICE_NAME..."
+    systemctl daemon-reload || true
+    systemctl reload dbus-broker 2>/dev/null || systemctl reload dbus 2>/dev/null || true
+
+    if systemctl restart --no-block "$SERVICE_NAME"; then
+        log_success "Service restart initiated (non-blocking)."
     else
         log_warn "Service restart failed. You may need to start it manually."
     fi
