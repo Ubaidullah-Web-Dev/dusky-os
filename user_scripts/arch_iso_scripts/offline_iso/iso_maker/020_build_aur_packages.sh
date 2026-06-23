@@ -598,17 +598,19 @@ _build_aur_package() {
         awk '/^build\(\)/ { in_build=1 } in_build && /^}/ { print "    /usr/bin/gradle --stop 2>/dev/null || true"; print "    ./gradlew --stop 2>/dev/null || true"; in_build=0 } { print }' "${pkgbuild_dir}/PKGBUILD" > "${pkgbuild_dir}/PKGBUILD.tmp" && mv "${pkgbuild_dir}/PKGBUILD.tmp" "${pkgbuild_dir}/PKGBUILD"
     fi
 
-    local -a pre_build_pkgs=()
-    mapfile -t pre_build_pkgs < <(find "$OFFLINE_REPO_DIR" -maxdepth 1 -name '*.pkg.tar.*' ! -name '*.sig' -type f 2>/dev/null | sort)
-
     local build_work_dir="${CLONE_BASE_DIR}/work_${pkg}"
     local temp_pkgdest="${build_work_dir}/pkgdest"
     mkdir -p -- "${build_work_dir}" "${build_work_dir}/src" "${temp_pkgdest}"
 
     log_step "Building '${pkg}' → PKGDEST=${OFFLINE_REPO_DIR}"
 
+    local -a new_pkg_files=()
+
     for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         local build_rc=0
+        
+        # Refresh sudo credentials in the foreground so paru's background sudoloop doesn't hang
+        sudo -v || true
         
         PKGDEST="${temp_pkgdest}" BUILDDIR="${build_work_dir}" SRCDEST="${build_work_dir}/src" \
         timeout "${BUILD_TIMEOUT_SEC}" paru -B "$pkgbuild_dir" \
@@ -624,7 +626,10 @@ _build_aur_package() {
 
         if (( build_rc == 0 )); then
             for built_pkg in "$temp_pkgdest"/*.pkg.tar.*; do
-                [[ -f "$built_pkg" ]] && mv -- "$built_pkg" "$OFFLINE_REPO_DIR/"
+                [[ -f "$built_pkg" ]] || continue
+                local dest_file="${OFFLINE_REPO_DIR}/${built_pkg##*/}"
+                mv -f -- "$built_pkg" "$dest_file"
+                new_pkg_files+=("$dest_file")
             done
             break
         fi
@@ -634,22 +639,8 @@ _build_aur_package() {
         sleep "${TIMEOUT_SEC}"
     done
 
-    local -a post_build_pkgs=()
-    mapfile -t post_build_pkgs < <(find "$OFFLINE_REPO_DIR" -maxdepth 1 -name '*.pkg.tar.*' ! -name '*.sig' -type f 2>/dev/null | sort)
-
-    local -a new_pkg_files=()
-    local f b found_in_pre
-    for f in "${post_build_pkgs[@]}"; do
-        found_in_pre=0
-        for b in "${pre_build_pkgs[@]+"${pre_build_pkgs[@]}"}"; do
-            [[ "$f" == "$b" ]] && { found_in_pre=1; break; }
-        done
-        (( found_in_pre )) || new_pkg_files+=("$f")
-    done
-
     if (( ${#new_pkg_files[@]} == 0 )); then
-        mapfile -t new_pkg_files < <(find "$OFFLINE_REPO_DIR" -maxdepth 1 -name "${pkg}-${aur_version}-*.pkg.tar.*" ! -name '*.sig' -type f 2>/dev/null)
-        if (( ${#new_pkg_files[@]} == 0 )); then return 1; fi
+        return 1
     fi
 
     for nf in "${new_pkg_files[@]}"; do log_ok "Built: ${nf##*/}"; done
