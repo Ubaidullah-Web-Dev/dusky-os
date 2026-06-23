@@ -116,6 +116,7 @@ function scripts() {
         "3.  Copy to clipboard"
         "4. 󰆧 Copy & Type in terminal"
         "5.  Edit in Neovim"
+        "6. 󰉋 Reveal in Yazi"
     )
 
     # 7. Secondary FZF Action Menu
@@ -216,6 +217,12 @@ function scripts() {
             # with Neovim targeting the securely expanded absolute path.
             print -P "\n%F{blue} Opening in Neovim:%f $portable_path\n"
             nvim "$expanded_path"
+            ;;
+        6*)
+            # ACTION 6: Reveal in Yazi
+            # Opens Yazi with the target file highlighted in its containing directory
+            print -P "\n%F{yellow}󰉋 Revealing in Yazi:%f $portable_path\n"
+            yazi "$expanded_path"
             ;;
     esac
 }
