@@ -348,9 +348,9 @@ class QuickPanalWindow(Gtk.ApplicationWindow):
             # Restored TLP Power Logic Exactly as you had it
             self.power_cmds = { "Balanced": "~/user_scripts/battery/tlp/tlp_mode_toggle.sh balanced", "Performance": "~/user_scripts/battery/tlp/tlp_mode_toggle.sh performance", "Power Saver": "~/user_scripts/battery/tlp/tlp_mode_toggle.sh power-saver" }
             self.power_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            self.btn_save = Gtk.RadioButton(); self.btn_save.set_mode(False); self.btn_save.set_image(Gtk.Image.new_from_icon_name("power-profile-power-saver-symbolic", Gtk.IconSize.BUTTON)); _add_css_class(self.btn_save, "power-ring-btn")
-            self.btn_bal = Gtk.RadioButton.new_from_widget(self.btn_save); self.btn_bal.set_mode(False); self.btn_bal.set_image(Gtk.Image.new_from_icon_name("power-profile-balanced-symbolic", Gtk.IconSize.BUTTON)); _add_css_class(self.btn_bal, "power-ring-btn")
-            self.btn_perf = Gtk.RadioButton.new_from_widget(self.btn_save); self.btn_perf.set_mode(False); self.btn_perf.set_image(Gtk.Image.new_from_icon_name("power-profile-performance-symbolic", Gtk.IconSize.BUTTON)); _add_css_class(self.btn_perf, "power-ring-btn")
+            self.btn_save = Gtk.RadioButton(); self.btn_save.set_mode(False); self.btn_save.set_image(Gtk.Image.new_from_icon_name("power-profile-power-saver-symbolic", Gtk.IconSize.BUTTON)); _add_css_class(self.btn_save, "power-ring-btn"); _add_css_class(self.btn_save, "power-saver")
+            self.btn_bal = Gtk.RadioButton.new_from_widget(self.btn_save); self.btn_bal.set_mode(False); self.btn_bal.set_image(Gtk.Image.new_from_icon_name("power-profile-balanced-symbolic", Gtk.IconSize.BUTTON)); _add_css_class(self.btn_bal, "power-ring-btn"); _add_css_class(self.btn_bal, "balanced")
+            self.btn_perf = Gtk.RadioButton.new_from_widget(self.btn_save); self.btn_perf.set_mode(False); self.btn_perf.set_image(Gtk.Image.new_from_icon_name("power-profile-performance-symbolic", Gtk.IconSize.BUTTON)); _add_css_class(self.btn_perf, "power-ring-btn"); _add_css_class(self.btn_perf, "performance")
             
             self.btn_save.connect("toggled", self._on_power_toggled, "Power Saver")
             self.btn_bal.connect("toggled", self._on_power_toggled, "Balanced")

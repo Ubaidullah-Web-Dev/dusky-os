@@ -537,7 +537,10 @@ eventbox.clickable-pill:hover box.metric-pill { background-color: rgba(255, 255,
 
 button.power-ring-btn { border: 2px solid transparent; border-radius: 15px; min-width: 30px; min-height: 30px; padding: 0; margin: 0; background-color: transparent; color: alpha(@theme_fg_color, 0.7); }
 button.power-ring-btn:hover { background-color: rgba(255, 255, 255, 0.08); }
-button.power-ring-btn:checked { background-color: alpha(@theme_selected_bg_color, 0.15); border-color: @theme_selected_bg_color; color: @theme_selected_bg_color; }
+button.power-ring-btn:checked { background-color: alpha(@theme_selected_bg_color, 0.15); border-color: @theme_selected_bg_color; color: @theme_selected_bg_color; box-shadow: 0 0 8px alpha(@theme_selected_bg_color, 0.25); }
+button.power-ring-btn.power-saver:checked { background-color: alpha(#a6e3a1, 0.15); border-color: #a6e3a1; color: #a6e3a1; box-shadow: 0 0 8px alpha(#a6e3a1, 0.25); }
+button.power-ring-btn.balanced:checked { background-color: alpha(#89b4fa, 0.15); border-color: #89b4fa; color: #89b4fa; box-shadow: 0 0 8px alpha(#89b4fa, 0.25); }
+button.power-ring-btn.performance:checked { background-color: alpha(#f38ba8, 0.15); border-color: #f38ba8; color: #f38ba8; box-shadow: 0 0 8px alpha(#f38ba8, 0.25); }
 
 /* The applying sub-state override for when the script is actively running */
 button.power-ring-btn.applying:checked {
