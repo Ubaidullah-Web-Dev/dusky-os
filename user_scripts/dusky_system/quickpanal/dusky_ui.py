@@ -552,10 +552,10 @@ button.power-ring-btn.applying:checked {
 scale.pill-scale trough, scale.pill-scale highlight { min-height: 12px; border-radius: 6px; }
 scale.pill-scale trough { background-color: rgba(255, 255, 255, 0.08); }
 scale.pill-scale slider { min-width: 0px; min-height: 0px; margin: 0px; background: transparent; border: none; box-shadow: none; }
-scale.volume highlight { background-color: #89b4fa; } scale.brightness highlight { background-color: #f9e2af; } scale.sunset highlight { background-color: #fab387; }
-.icon-volume { color: #89b4fa; } .icon-brightness { color: #f9e2af; } .icon-sunset { color: #fab387; }
+scale.volume highlight, scale.brightness highlight, scale.sunset highlight { background-color: @theme_selected_bg_color; }
+.icon-volume, .icon-brightness, .icon-sunset { color: @theme_selected_bg_color; }
 .icon-label { font-size: 18px; font-family: "Symbols Nerd Font", "JetBrainsMono Nerd Font", monospace; }
-.value-label { font-size: 14px; font-weight: 700; opacity: 0.8; font-family: "JetBrainsMono Nerd Font", monospace; font-feature-settings: "tnum"; }
+.value-label { font-size: 14px; font-weight: 700; opacity: 0.8; color: @theme_selected_bg_color; font-family: "JetBrainsMono Nerd Font", monospace; font-feature-settings: "tnum"; }
 
 /* Notifications Section */
 box.notifications-panel { background: transparent; border: none; padding: 8px 4px 0px 4px; }
