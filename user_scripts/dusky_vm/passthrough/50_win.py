@@ -237,6 +237,7 @@ Actions:
   {C_GREEN}kill{C_RESET}         Forcefully power off/destroy the VM (alias: destroy)
   {C_GREEN}reboot{C_RESET}       Reboot the VM
   {C_GREEN}status{C_RESET}       Display current running state
+  {C_GREEN}list{C_RESET}         List all defined virtual machines (alias: --list, -l)
   {C_GREEN}view{C_RESET}         Launch looking-glass-client (alias: show, lg)
   {C_GREEN}launch{C_RESET}       Start VM and automatically wait to launch Looking Glass (alias: play)
   {C_GREEN}edit{C_RESET}         Edit the VM XML topology configuration
@@ -264,6 +265,18 @@ def main():
         except IndexError:
             print_err("Missing VM name after --vm option.")
             sys.exit(1)
+
+    # Check for list option/action before VM resolution (so list command doesn't trigger prompts)
+    if action in ("list", "--list", "-l") or "--list" in sys.argv or "-l" in sys.argv:
+        vms = get_all_vms()
+        if not vms:
+            print_info("No virtual machines found in libvirt.")
+        else:
+            print(f"\n{C_BOLD}Defined Virtual Machines:{C_RESET}")
+            for idx, (name, state) in enumerate(vms):
+                color = C_GREEN if state == "running" else C_RED
+                print(f"  - {C_BOLD}{name}{C_RESET} ({color}{state}{C_RESET})")
+        sys.exit(0)
 
     vm_name = resolve_vm(specified_vm)
 
