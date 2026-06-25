@@ -140,7 +140,7 @@ hl.bind(
 
 hl.bind(
     "ALT + 1",
-    hl.dsp.exec_cmd("foot --app-id=dusky_network.sh $HOME/user_scripts/network_manager/dusky_network.sh"),
+    hl.dsp.exec_cmd("foot --app-id=tui_dusky_network.py $HOME/user_scripts/network_manager/tui_dusky_network.py"),
     { description = "Wi-Fi Manager" }
 )
 

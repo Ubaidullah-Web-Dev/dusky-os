@@ -1025,8 +1025,8 @@ hl.window_rule({
 
 --- nmcli script ---
 hl.window_rule({
-    name = "dusky_network.sh",
-    match = { class = "^(dusky_network.sh)$" },
+    name = "tui_dusky_network.py",
+    match = { class = "^(tui_dusky_network.py)$" },
     float = true,
     size = {780,530},
     center = true
