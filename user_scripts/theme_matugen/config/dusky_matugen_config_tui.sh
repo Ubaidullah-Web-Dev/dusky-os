@@ -431,15 +431,8 @@ write_value_to_file() {
                     s2 !~ /=/ &&
                     s3 ~ /^[=-]{3,}$/) {
 
-                    j = i + 4
-                    while (j <= line_count && is_blank(lines[j])) {
-                        j++
-                    }
-
-                    if (j > line_count || is_toml_header(lines[j])) {
-                        end = i - 1
-                        break
-                    }
+                    end = i - 1
+                    break
                 }
             }
 
