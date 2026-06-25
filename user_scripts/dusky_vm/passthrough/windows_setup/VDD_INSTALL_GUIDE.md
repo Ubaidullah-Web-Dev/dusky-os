@@ -1,6 +1,6 @@
 # Manual Virtual Display Driver (VDD) Installation Guide
 
-This guide describes how to manually install and configure the Virtual Display Driver (VDD) by `itsmikethetech` inside a Windows guest VM to enable virtual display output for Looking Glass.
+This guide describes how to manually install and configure the Virtual Display Driver (VDD) inside your Windows guest VM using your pre-downloaded package.
 
 ---
 
@@ -11,23 +11,17 @@ Windows requires all kernel-mode and user-mode drivers to be signed. Because the
 
 ## Step-by-Step Installation
 
-### Step 1: Download the Driver
-1. Open a browser in your Windows VM or download it on the host and copy it to the VM via the shared VirtIO-FS drive (`Z:`).
-2. Download the latest driver release package (usually the `.zip` containing driver files only, or the installer) from:
-   👉 [https://github.com/itsmikethetech/Virtual-Display-Driver/releases](https://github.com/itsmikethetech/Virtual-Display-Driver/releases)
-3. Extract the downloaded `.zip` file (e.g., to `C:\VirtualDisplayDriver`).
-
-### Step 2: Establish Certificate Trust
+### Step 1: Establish Certificate Trust
 Before Windows allows the driver to run, you must trust its signing certificate.
-1. Open **PowerShell** as **Administrator**.
+1. Open **PowerShell** as **Administrator** inside the Windows VM.
 2. Run the following commands to add the driver's catalog certificate to both the `TrustedPublisher` and `Root` stores:
 
 ```powershell
-# Update this path to the location of the extracted 'mttvdd.cat' file
-$catPath = "C:\VirtualDisplayDriver\mttvdd.cat"
+# 1. Path to the pre-downloaded driver folder on your shared drive
+$driverDir = "Z:\a\softwares\vdd\VDD.Control.25.7.23\SignedDrivers\x86\VDD"
 
-# Retrieve the signer certificate from the catalog file
-$sig = Get-AuthenticodeSignature $catPath
+# 2. Retrieve and trust the signing certificate
+$sig = Get-AuthenticodeSignature "$driverDir\mttvdd.cat"
 if ($sig.SignerCertificate) {
     # Add certificate to Trusted Publisher store
     $store1 = New-Object System.Security.Cryptography.X509Certificates.X509Store("TrustedPublisher", "LocalMachine")
@@ -43,16 +37,18 @@ if ($sig.SignerCertificate) {
 
     Write-Host "Driver certificate successfully trusted." -ForegroundColor Green
 } else {
-    Write-Error "Could not retrieve signer certificate from $catPath. Check the path and file integrity."
+    Write-Error "Could not retrieve signer certificate from $driverDir\mttvdd.cat. Check the path and file integrity."
 }
 ```
 
-### Step 3: Install the Driver via pnputil
+### Step 2: Install the Driver via pnputil
 1. In the same Administrator PowerShell window, run `pnputil` to add and install the driver:
    ```powershell
-   pnputil /add-driver "C:\VirtualDisplayDriver\MttVDD.inf" /install
+   pnputil /add-driver "Z:\a\softwares\vdd\VDD.Control.25.7.23\SignedDrivers\x86\VDD\MttVDD.inf" /install
    ```
 2. Verify that the command output reports that the driver package was successfully added and installed.
+
+*Alternatively, if you prefer to use the graphical control app, you can now launch `Z:\a\softwares\vdd\VDD.Control.25.7.23\VDD Control.exe` as Administrator and click **"Install Virtual Display Driver"** — it will now succeed because the certificate is trusted.*
 
 ---
 
