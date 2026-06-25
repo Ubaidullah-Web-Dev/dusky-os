@@ -65,6 +65,56 @@ if (-not $pythonInstalled) {
     Write-Host "`n[+] Python 3 is already installed." -ForegroundColor Green
 }
 
+# 2.5 Ensure SPICE Guest Agent (clipboard sharing) is installed
+$spiceAgent = Get-Service -Name "spice-agent" -ErrorAction SilentlyContinue
+if (-not $spiceAgent -or $spiceAgent.Status -ne "Running") {
+    Write-Host "`n[*] SPICE Guest Agent is not running." -ForegroundColor Yellow
+    
+    $choice = Read-Host "Would you like to install the SPICE Guest Agent from the VirtIO ISO? [Y/n]"
+    if ($null -eq $choice -or $choice -match '^\s*$' -or $choice.Trim().ToLower() -eq 'y') {
+        # Locate the VirtIO-Win ISO in the root of the shared Z: drive (or current directory)
+        $isoPath = Get-ChildItem -Path "Z:\" -Filter "virtio-win-*.iso" | Select-Object -First 1 -ExpandProperty FullName
+        if (-not $isoPath) {
+            $isoPath = Get-ChildItem -Path "." -Filter "virtio-win-*.iso" | Select-Object -First 1 -ExpandProperty FullName
+        }
+        
+        if ($isoPath) {
+            Write-Host "[*] Found VirtIO-Win ISO at: $isoPath" -ForegroundColor Cyan
+            Write-Host "[*] Mounting ISO to search for guest tools..." -ForegroundColor Cyan
+            try {
+                $mount = Mount-DiskImage -ImagePath $isoPath -PassThru -ErrorAction Stop
+                $driveLetter = ($mount | Get-Volume).DriveLetter
+                if ($driveLetter) {
+                    $installer = Join-Path "${driveLetter}:" "virtio-win-guest-tools.exe"
+                    if (Test-Path $installer) {
+                        Write-Host "[*] Running VirtIO guest tools installer silently..." -ForegroundColor Cyan
+                        $proc = Start-Process -FilePath $installer -ArgumentList "/quiet /norestart" -PassThru -Wait
+                        if ($proc.ExitCode -eq 0) {
+                            Write-Host "[+] SPICE Guest Agent and VirtIO tools installed successfully!" -ForegroundColor Green
+                        } else {
+                            Write-Warning "VirtIO guest tools installation completed with non-zero exit code: $($proc.ExitCode)"
+                        }
+                    } else {
+                        Write-Warning "Could not find 'virtio-win-guest-tools.exe' inside the mounted ISO. Skipping installation..."
+                    }
+                } else {
+                    Write-Warning "Could not resolve drive letter for mounted ISO. Skipping installation..."
+                }
+                Dismount-DiskImage -ImagePath $isoPath -ErrorAction SilentlyContinue | Out-Null
+            } catch {
+                Write-Warning "Failed to mount/read VirtIO ISO: $_. Skipping installation..."
+            }
+        } else {
+            Write-Warning "Could not locate virtio-win-*.iso on Z:\ or current directory. Skipping installation..."
+        }
+    } else {
+        Write-Host "[-] Skipping SPICE Guest Agent installation." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "`n[+] SPICE Guest Agent is already running." -ForegroundColor Green
+}
+
+
 # 3. Locate and execute the Python setup scripts
 $scriptDir = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent
 $sshScript = Join-Path $scriptDir "setup_ssh.py"
