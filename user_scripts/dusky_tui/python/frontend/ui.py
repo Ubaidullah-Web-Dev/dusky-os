@@ -2205,6 +2205,15 @@ class DuskyTUI(App):
 
         item.value = new_val
         item.exists_in_target = True
+        
+        # Sync duplicate items across tabs to fix state desync for multi-view schemas
+        item_uid = self._get_item_uid(item)
+        for t_idx, items in self.schema.items():
+            for i_idx, other_item in enumerate(items):
+                if other_item is not item and self._get_item_uid(other_item) == item_uid:
+                    other_item.value = new_val
+                    other_item.exists_in_target = True
+                    self._refresh_single_ui(t_idx, i_idx, other_item)
 
         val_str = item.serialize(new_val)
 

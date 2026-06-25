@@ -105,32 +105,55 @@ CORE_SYSTEM_DEFS = {
 }
 
 # --- HIGH SPEED DISCOVERY ROUTINE ---
-def _discover(scope: str, cmd: str, u_type: str = "service,timer", state: str = "") -> set:
-    """Fetches systemctl data efficiently without hanging the UI."""
-    call = ["systemctl", cmd, f"--type={u_type}", "--no-pager", "--no-legend"]
+def _fetch_all_unit_files(scope: str) -> tuple[set, set, set]:
+    """Returns (installed_services, enabled_services, installed_timers) in a single pass."""
+    call = ["systemctl", "list-unit-files", "--type=service,timer", "--no-pager", "--no-legend"]
     if scope == "user":
         call.insert(1, "--user")
-    if state:
-        call.extend(["--state", state])
+        
+    installed_srv = set()
+    enabled_srv = set()
+    installed_tmr = set()
+    
+    try:
+        res = subprocess.run(call, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=3)
+        for line in res.stdout.splitlines():
+            if not line: continue
+            parts = line.split()
+            if len(parts) < 2: continue
+            unit, state = parts[0], parts[1]
+            
+            if unit.endswith(".service"):
+                installed_srv.add(unit)
+                if state == "enabled":
+                    enabled_srv.add(unit)
+            elif unit.endswith(".timer"):
+                installed_tmr.add(unit)
+                
+        return installed_srv, enabled_srv, installed_tmr
+    except Exception:
+        return set(), set(), set()
+
+def _fetch_active_services(scope: str) -> set:
+    call = ["systemctl", "list-units", "--type=service", "--state=active", "--no-pager", "--no-legend"]
+    if scope == "user":
+        call.insert(1, "--user")
     try:
         res = subprocess.run(call, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=3)
         return {line.split()[0] for line in res.stdout.splitlines() if line}
     except Exception:
         return set()
 
-# 1. Fetch Master Lists
-installed_user = _discover("user", "list-unit-files")
-installed_sys = _discover("system", "list-unit-files")
+# 1. Fetch Master Lists (Single Pass per scope)
+installed_user_srv, enabled_user, timers_user = _fetch_all_unit_files("user")
+installed_sys_srv, enabled_sys, timers_sys = _fetch_all_unit_files("system")
 
-# 2. Fetch specific states (Intersecting with installed prevents weird transient UI artifacts)
-active_user = _discover("user", "list-units", u_type="service", state="active").intersection(installed_user)
-active_sys = _discover("system", "list-units", u_type="service", state="active").intersection(installed_sys)
+installed_user = installed_user_srv | timers_user
+installed_sys = installed_sys_srv | timers_sys
 
-enabled_user = _discover("user", "list-unit-files", u_type="service", state="enabled")
-enabled_sys = _discover("system", "list-unit-files", u_type="service", state="enabled")
-
-timers_user = _discover("user", "list-unit-files", u_type="timer")
-timers_sys = _discover("system", "list-unit-files", u_type="timer")
+# 2. Fetch Active states (Intersecting with installed prevents weird transient UI artifacts)
+active_user = _fetch_active_services("user").intersection(installed_user_srv)
+active_sys = _fetch_active_services("system").intersection(installed_sys_srv)
 
 # Tracking sets to avoid putting core/timer services into the "All" tabs
 used_user = set()
