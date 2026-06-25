@@ -1,45 +1,32 @@
 # Dusky VM Guest Setup Guide
 
-This guide details the sequence of scripts to run inside a fresh Windows VM to configure SSH, install Python 3, and set up the Virtual Display Driver (VDD) for Looking Glass.
+This guide details the sequence of scripts to run inside a fresh Windows VM to configure SSH (without DISM network hangs) and install the Virtual Display Driver (VDD) for Looking Glass.
 
 ---
 
-## Script Sequence
+## The Setup Files
 
-All scripts are located on the shared `Z:` drive (mapped to `/mnt/zram1` on the host). They are named with numerical prefixes so you can see the correct order:
+All scripts are located on the shared `Z:` drive (mapped to `/mnt/zram1` on the host) and are named descriptively to reflect their specific functions:
 
-* **`00_run_all.ps1`**: The master runner script that runs Step 1 and Step 2 sequentially.
-* **`01_setup_ssh.ps1`**: Configures SSH, requests public keys, sets VM password, and sets up PowerShell as the default SSH shell.
-* **`02_bootstrap_vdd.ps1`**: Checks for Python 3, automatically downloads and installs Python 3.13 if missing, and launches `03_install_vdd.py`.
-* **`03_install_vdd.py`**: Interactively locates and installs the Virtual Display Driver, registers the Authenticode certificate to trust the driver, and starts the Looking Glass service.
+* **`00_bootstrap.ps1`**: The main entry point script. It verifies Python 3 is installed, automatically downloads and silently installs Python 3.13 from python.org if missing, and then runs the setup scripts sequentially.
+* **`setup_ssh.py`**: The Python setup script that:
+  1. Downloads and extracts the official Microsoft Win32-OpenSSH portable package (bypassing the slow and error-prone `DISM /Add-Capability` tool entirely to avoid Windows Update hangs).
+  2. Installs and registers the SSH system service.
+  3. Configures default shell (PowerShell), inbound firewall rules, user login password, and SSH key authentication.
+* **`setup_vdd.py`**: The Python setup script that:
+  1. Auto-detects local Virtual Display Driver (VDD) files on `Z:\` and copy-stages them locally.
+  2. Registers the developer signature certificate to establish trust.
+  3. Dynamically creates the `Root\MttVDD` hardware node using `devcon.exe` (critical for fresh VM setups) and installs the driver.
 
 ---
 
-## How to Run Everything Sequentially (Recommended)
+## How to Run the Installer
 
-To run all setup scripts in a single, automated execution:
-
-1. Open **PowerShell** as **Administrator** inside the VM.
-2. Run the master wrapper script:
+1. Open **PowerShell** as **Administrator** inside the Windows VM.
+2. Run the bootstrapper script:
    ```powershell
    Set-ExecutionPolicy Bypass -Scope Process -Force
-   & "Z:\00_run_all.ps1"
+   & "Z:\00_bootstrap.ps1"
    ```
 
----
-
-## How to Run Scripts Individually
-
-If you prefer to run specific stages manually, open **PowerShell** as **Administrator** and run:
-
-### For SSH Auto-Setup alone:
-```powershell
-Set-ExecutionPolicy Bypass -Scope Process -Force
-& "Z:\01_setup_ssh.ps1"
-```
-
-### For Python & VDD Installation alone:
-```powershell
-Set-ExecutionPolicy Bypass -Scope Process -Force
-& "Z:\02_bootstrap_vdd.ps1"
-```
+The script will handle Python installation, SSH configuration, and Virtual Display Driver installation in a single, robust process.

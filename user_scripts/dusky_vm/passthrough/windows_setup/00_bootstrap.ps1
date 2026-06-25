@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-    Python Bootstrapper and VDD Installer
-    Description: Verifies Python 3 installation, installs it if missing, then launches 03_install_vdd.py.
+    Dusky VM Guest Setup Bootstrapper
+    Description: Verifies Python 3, installs it if missing, and then runs setup_ssh.py and setup_vdd.py.
     Requirements: Run as Administrator in PowerShell.
 #>
 
@@ -14,7 +14,7 @@ if (-not $isAdmin) {
 }
 
 Write-Host "==================================================" -ForegroundColor Cyan
-Write-Host "      Python 3 & VDD Setup Bootstrapper           " -ForegroundColor Cyan
+Write-Host "      Dusky VM Guest Setup Bootstrapper           " -ForegroundColor Cyan
 Write-Host "==================================================" -ForegroundColor Cyan
 
 # 2. Check for Python 3 (run it to verify it's not a fake Microsoft Store app alias)
@@ -52,7 +52,6 @@ if (-not $pythonInstalled) {
     
     if ($process.ExitCode -eq 0) {
         Write-Host "[+] Python 3 installed successfully!" -ForegroundColor Green
-        # Clean up installer
         Remove-Item $installerPath -Force
         
         # Force refresh PATH environment variables for the current session
@@ -63,24 +62,32 @@ if (-not $pythonInstalled) {
         Exit 1
     }
 } else {
-    Write-Host "`n[+] Python 3 is already installed: $($pythonCheck.Source)" -ForegroundColor Green
+    Write-Host "`n[+] Python 3 is already installed." -ForegroundColor Green
 }
 
-# 3. Locate and execute the Python installer script
+# 3. Locate and execute the Python setup scripts
 $scriptDir = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent
-$pythonScript = Join-Path $scriptDir "03_install_vdd.py"
+$sshScript = Join-Path $scriptDir "setup_ssh.py"
+$vddScript = Join-Path $scriptDir "setup_vdd.py"
 
-if (-not (Test-Path $pythonScript)) {
-    # If not found in the same folder, look in the current working directory
-    $pythonScript = Join-Path (Get-Location) "03_install_vdd.py"
-}
+if (-not (Test-Path $sshScript)) { $sshScript = Join-Path (Get-Location) "setup_ssh.py" }
+if (-not (Test-Path $vddScript)) { $vddScript = Join-Path (Get-Location) "setup_vdd.py" }
 
-if (Test-Path $pythonScript) {
-    Write-Host "`n[*] Launching Python VDD Installer..." -ForegroundColor Cyan
-    # Run the Python installer
-    & python $pythonScript
+if (Test-Path $sshScript) {
+    Write-Host "`n[*] Launching SSH Configuration Script..." -ForegroundColor Cyan
+    & python $sshScript
 } else {
-    Write-Error "Could not find '03_install_vdd.py' in $scriptDir or current directory."
-    Read-Host "Press Enter to exit..."
-    Exit 1
+    Write-Warning "Could not find 'setup_ssh.py' in $scriptDir or current directory."
 }
+
+if (Test-Path $vddScript) {
+    Write-Host "`n[*] Launching VDD Setup Script..." -ForegroundColor Cyan
+    & python $vddScript
+} else {
+    Write-Warning "Could not find 'setup_vdd.py' in $scriptDir or current directory."
+}
+
+Write-Host "`n==================================================" -ForegroundColor Green
+Write-Host "      ALL VM GUEST SETUPS COMPLETED SUCCESSFULLY! " -ForegroundColor Green
+Write-Host "==================================================" -ForegroundColor Green
+Read-Host "Press Enter to close..."

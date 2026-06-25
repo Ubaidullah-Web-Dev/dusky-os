@@ -3,7 +3,6 @@ import sys
 import ctypes
 import shutil
 import subprocess
-import time
 
 def is_admin():
     try:
@@ -30,9 +29,9 @@ def safe_input(prompt="", default=""):
 def main():
     elevate_privileges()
     
-    print("=" * 50)
+    print("=" * 60)
     print("   Virtual Display Driver (VDD) Python Setup Tool   ")
-    print("=" * 50)
+    print("=" * 60)
     
     # 1. Driver path auto-detection
     common_paths = [
@@ -57,11 +56,11 @@ def main():
             
     while not driver_path:
         print(f"\n[-] Please enter the folder path containing 'MttVDD.inf' and 'mttvdd.cat':")
-        input_path = safe_input("Path: ", "").strip()
+        input_path = safe_input("Path: ").strip()
         if not input_path:
             print("[FATAL] Standard input not available and path not provided. Exiting.")
+            safe_input("\nPress Enter to exit...", "")
             sys.exit(1)
-        # Clean quotes if user dragged and dropped
         input_path = input_path.replace('"', '').replace("'", "")
         
         if os.path.exists(os.path.join(input_path, "MttVDD.inf")):
@@ -89,7 +88,7 @@ def main():
             if os.path.isfile(s_file):
                 shutil.copy2(s_file, d_file)
         
-        # Also copy devcon.exe from the Dependencies folder if found
+        # Copy devcon.exe from the Dependencies folder if found
         devcon_src = None
         possible_devcon_paths = [
             os.path.join(driver_path, "..", "..", "..", "Dependencies", "devcon.exe"),
@@ -142,7 +141,7 @@ def main():
         safe_input("\nPress Enter to exit...", "")
         sys.exit(1)
         
-    # 4. Register and Install Driver (with DevCon device creation fallback for fresh VMs)
+    # Check if the device already exists in the system
     device_exists = False
     try:
         check_cmd = r'Get-PnpDevice -HardwareID "Root\MttVDD" -ErrorAction SilentlyContinue'
@@ -196,8 +195,8 @@ def main():
             print(f"  [ERROR] Failed to update driver: {e}")
             safe_input("\nPress Enter to exit...", "")
             sys.exit(1)
-        
-    # 5. Restart Looking Glass Service
+            
+    # Restart Looking Glass Service
     print("\n[*] Querying Looking Glass service...")
     ps_service_cmd = """
     $lgService = Get-Service -Name "Looking Glass (host)" -ErrorAction SilentlyContinue
@@ -224,10 +223,9 @@ def main():
     except Exception:
         pass
         
-    # 6. Verify Installation
-    print("\n" + "=" * 50)
-    print("               INSTALLATION DIAGNOSTICS           ")
-    print("=" * 50)
+    print("\n" + "=" * 60)
+    print("                  INSTALLATION STATUS                     ")
+    print("=" * 60)
     ps_verify_cmd = """
     $dev = Get-PnpDevice -Class Display | Where-Object { $_.FriendlyName -like "*Virtual Display*" -or $_.FriendlyName -like "*IddSampleDriver*" }
     if ($dev) {
@@ -246,7 +244,7 @@ def main():
         if "NotFound" not in out:
             print(out)
             if "Status: OK" in out:
-                print("\n[SUCCESS] Driver is active and running!")
+                print("\n[SUCCESS] Virtual Display Driver is active and running!")
             else:
                 print("\n[WARNING] Driver detected but has a status issue. Check Device Manager.")
         else:
@@ -254,8 +252,8 @@ def main():
     except Exception as e:
         print(f"Error querying status: {e}")
         
-    print("=" * 50)
-    safe_input("\nPress Enter to exit...", "")
+    print("=" * 60)
+    safe_input("\nPress Enter to complete VDD installation...", "")
 
 if __name__ == "__main__":
     main()
