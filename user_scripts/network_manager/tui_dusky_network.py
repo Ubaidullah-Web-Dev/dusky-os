@@ -7,6 +7,7 @@ TARGET_FILE = "~/.cache/dusky_tui/wifi_cache.json"
 APP_TITLE = "Dusky Network Manager"
 DEFAULT_MODE = "auto"
 THEME_FILE = "~/.config/matugen/generated/dusky_tui.json"
+ENABLE_USER_PRESETS = False
 
 TABS = ["Networks", "Saved", "Hotspot", "Status"]
 
