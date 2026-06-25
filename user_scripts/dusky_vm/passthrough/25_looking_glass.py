@@ -119,11 +119,30 @@ def install_looking_glass_packages(user: str) -> None:
     packages = ["looking-glass-git", "freerdp"]
     console.print("\n[bold blue]==>[/bold blue] [bold]Synchronizing Looking Glass packages...[/bold]")
     
+    missing_packages = []
+    for pkg in packages:
+        res = subprocess.run(["pacman", "-Qq", pkg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if res.returncode != 0:
+            missing_packages.append(pkg)
+            
+    if not missing_packages:
+        reinstall = Prompt.ask(
+            "[bold cyan]Looking Glass packages are already installed. Reinstall them?[/bold cyan]",
+            choices=["y", "n"],
+            default="n"
+        ).strip().lower()
+        if reinstall != "y":
+            console.print("[bold green]  ✓ Packages already installed. Skipping installation.[/bold green]")
+            return
+        packages_to_install = packages
+    else:
+        packages_to_install = missing_packages
+
     if not shutil.which("paru"):
         bail("'paru' not found in PATH. Cannot install AUR packages.")
         
     # Drop privileges to standard user to run paru
-    cmd = ["sudo", "-u", user, "paru", "-S", "--needed", "--noconfirm", "--skipreview"] + packages
+    cmd = ["sudo", "-u", user, "paru", "-S", "--needed", "--noconfirm", "--skipreview"] + packages_to_install
     
     try:
         subprocess.run(cmd, check=True)
