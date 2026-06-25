@@ -103,7 +103,7 @@ def print_err(msg: str):
 def load_state() -> dict:
     """Loads the state dictionary from the state file."""
     state_file, _, _ = get_state_file_info()
-    state = {"vm": "", "key": "KEY_F6"}  # Default escape key is KEY_F6
+    state = {"vm": "", "key": "KEY_RIGHTCTRL"}  # Default escape key is KEY_RIGHTCTRL
     if state_file.exists():
         try:
             content = state_file.read_text(encoding="utf-8").strip()
@@ -151,7 +151,7 @@ def save_cached_vm(vm_name: str):
 def load_cached_key() -> str:
     """Loads the cached escape key from the state file."""
     state = load_state()
-    return state.get("key", "KEY_F6")
+    return state.get("key", "KEY_RIGHTCTRL")
 
 
 def save_cached_key(key: str):
@@ -368,8 +368,9 @@ Actions:
   {C_GREEN}select{C_RESET}       Change the default preferred VM
 
 Options:
-  --vm <name>  Override the default VM and run the action on <name>
-  --help, -h   Show this help manual
+  --vm <name>    Override the default VM and run the action on <name>
+  --key, -k <key> Override and cache the Looking Glass escape key (e.g. F6, rightctrl)
+  --help, -h     Show this help manual
 """)
 
 
@@ -390,6 +391,17 @@ def main():
             print_err("Missing VM name after --vm option.")
             sys.exit(1)
 
+    # Parse key option
+    specified_key = None
+    if "--key" in sys.argv or "-k" in sys.argv:
+        key_flag = "--key" if "--key" in sys.argv else "-k"
+        try:
+            idx = sys.argv.index(key_flag)
+            specified_key = sys.argv[idx + 1]
+        except IndexError:
+            print_err(f"Missing key name after {key_flag} option.")
+            sys.exit(1)
+
     # Check for list option/action before VM resolution (so list command doesn't trigger prompts)
     if action in ("list", "--list", "-l") or "--list" in sys.argv or "-l" in sys.argv:
         vms = get_all_vms()
@@ -403,6 +415,14 @@ def main():
         sys.exit(0)
 
     vm_name = resolve_vm(specified_vm)
+
+    # Resolve escape key
+    if specified_key:
+        active_key = normalize_key(specified_key)
+        save_cached_key(active_key)
+        print_info(f"Escape key set to: {C_BOLD}{active_key}{C_RESET}")
+    else:
+        active_key = load_cached_key()
 
     if action == "select":
         # Clear default VM and trigger selection prompt
@@ -455,8 +475,8 @@ def main():
         if state != "running":
             print_warn(f"VM '{vm_name}' is currently {state}. Connection might fail.")
             
-        print_info("Launching Looking Glass Client...")
-        subprocess.run(["looking-glass-client"])
+        print_info(f"Launching Looking Glass Client (escape key: {active_key})...")
+        subprocess.run(["looking-glass-client", "-m", active_key])
 
     elif action in ("launch", "play"):
         if not shutil.which("looking-glass-client"):
@@ -477,11 +497,11 @@ def main():
             # A tiny sleep gives the virtual display driver (VDD) in the guest 
             # time to complete its handshakes after SPICE wakes up
             time.sleep(1.0)
-            print_success("Graphics server online. Launching Looking Glass Client...")
-            subprocess.run(["looking-glass-client"])
+            print_success(f"Graphics server online. Launching Looking Glass Client (escape key: {active_key})...")
+            subprocess.run(["looking-glass-client", "-m", active_key])
         else:
-            print_err("Timed out waiting for graphics server. Launching fallback...")
-            subprocess.run(["looking-glass-client"])
+            print_err(f"Timed out waiting for graphics server. Launching fallback (escape key: {active_key})...")
+            subprocess.run(["looking-glass-client", "-m", active_key])
 
     else:
         print_err(f"Unknown action: {action}")
