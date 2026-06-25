@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Python Bootstrapper and VDD Installer
-    Description: Verifies Python 3 installation, installs it if missing, then launches install_vdd.py.
+    Description: Verifies Python 3 installation, installs it if missing, then launches 03_install_vdd.py.
     Requirements: Run as Administrator in PowerShell.
 #>
 
@@ -60,11 +60,11 @@ if (-not $pythonCheck) {
 
 # 3. Locate and execute the Python installer script
 $scriptDir = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent
-$pythonScript = Join-Path $scriptDir "install_vdd.py"
+$pythonScript = Join-Path $scriptDir "03_install_vdd.py"
 
 if (-not (Test-Path $pythonScript)) {
     # If not found in the same folder, look in the current working directory
-    $pythonScript = Join-Path (Get-Location) "install_vdd.py"
+    $pythonScript = Join-Path (Get-Location) "03_install_vdd.py"
 }
 
 if (Test-Path $pythonScript) {
@@ -72,7 +72,7 @@ if (Test-Path $pythonScript) {
     # Run the Python installer
     & python $pythonScript
 } else {
-    Write-Error "Could not find 'install_vdd.py' in $scriptDir or current directory."
+    Write-Error "Could not find '03_install_vdd.py' in $scriptDir or current directory."
     Read-Host "Press Enter to exit..."
     Exit 1
 }
