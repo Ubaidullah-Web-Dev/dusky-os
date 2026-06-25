@@ -65,6 +65,25 @@ if cache_path.exists():
     except Exception:
         pass
 
+if len(SCHEMA[0]) <= 1:
+    SCHEMA[0].append(ConfigItem(
+        label="  ⟳  Scanning available networks...",
+        key="loading_networks",
+        scope="network",
+        type_="action",
+        default=":",
+        group="Available Networks"
+    ))
+
+SCHEMA[1].append(ConfigItem(
+    label="  ⟳  Loading saved profiles...",
+    key="loading_saved",
+    scope="saved",
+    type_="action",
+    default=":",
+    group="Saved Connections"
+))
+
 # ============================================================================
 #  Tab 2: Hotspot — static layout, labels updated dynamically by engine
 # ============================================================================
