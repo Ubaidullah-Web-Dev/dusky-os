@@ -88,6 +88,23 @@ def main():
             d_file = os.path.join(local_target, item)
             if os.path.isfile(s_file):
                 shutil.copy2(s_file, d_file)
+        
+        # Also copy devcon.exe from the Dependencies folder if found
+        devcon_src = None
+        possible_devcon_paths = [
+            os.path.join(driver_path, "..", "..", "..", "Dependencies", "devcon.exe"),
+            os.path.join(driver_path, "devcon.exe"),
+            r"Z:\a\softwares\vdd\VDD.Control.25.7.23\Dependencies\devcon.exe"
+        ]
+        for p in possible_devcon_paths:
+            normalized = os.path.abspath(p)
+            if os.path.exists(normalized):
+                devcon_src = normalized
+                break
+        if devcon_src:
+            shutil.copy2(devcon_src, os.path.join(local_target, "devcon.exe"))
+            print("  - Staged devcon.exe utility locally.")
+            
         inf_file = os.path.join(local_target, "MttVDD.inf")
         cat_file = os.path.join(local_target, "mttvdd.cat")
         
@@ -125,19 +142,60 @@ def main():
         safe_input("\nPress Enter to exit...", "")
         sys.exit(1)
         
-    # 4. Register and Install Driver via pnputil
-    print("\n[3/3] Installing driver via pnputil...")
+    # 4. Register and Install Driver (with DevCon device creation fallback for fresh VMs)
+    device_exists = False
     try:
+        check_cmd = r'Get-PnpDevice -HardwareID "Root\MttVDD" -ErrorAction SilentlyContinue'
         res = subprocess.run(
-            ["pnputil", "/add-driver", inf_file, "/install"],
+            ["powershell", "-NoProfile", "-Command", check_cmd],
             capture_output=True, text=True, check=True
         )
-        print("  [OK] Driver registered and installed successfully.")
-        print(res.stdout.strip())
-    except Exception as e:
-        print(f"  [ERROR] Failed to register driver: {e}")
-        safe_input("\nPress Enter to exit...", "")
-        sys.exit(1)
+        if "MttVDD" in res.stdout:
+            device_exists = True
+    except Exception:
+        pass
+
+    if not device_exists:
+        print("\n[3/3] Fresh VM detected. Creating device node and installing driver via devcon...")
+        devcon_path = os.path.join(local_target, "devcon.exe")
+        if os.path.exists(devcon_path):
+            try:
+                res = subprocess.run(
+                    [devcon_path, "install", inf_file, "Root\\MttVDD"],
+                    capture_output=True, text=True, check=True
+                )
+                print("  [OK] Device node created and driver installed successfully.")
+                print(res.stdout.strip())
+            except Exception as e:
+                print(f"  [ERROR] devcon failed to create device node: {e}")
+                safe_input("\nPress Enter to exit...", "")
+                sys.exit(1)
+        else:
+            print("  [WARNING] devcon.exe not found. Attempting fallback via standard pnputil...")
+            try:
+                res = subprocess.run(
+                    ["pnputil", "/add-driver", inf_file, "/install"],
+                    capture_output=True, text=True, check=True
+                )
+                print("  [OK] Driver registered successfully via pnputil (device node may still need creation).")
+                print(res.stdout.strip())
+            except Exception as e:
+                print(f"  [ERROR] Failed to register driver: {e}")
+                safe_input("\nPress Enter to exit...", "")
+                sys.exit(1)
+    else:
+        print("\n[3/3] Existing device detected. Updating driver via pnputil...")
+        try:
+            res = subprocess.run(
+                ["pnputil", "/add-driver", inf_file, "/install"],
+                capture_output=True, text=True, check=True
+            )
+            print("  [OK] Driver registered and updated successfully.")
+            print(res.stdout.strip())
+        except Exception as e:
+            print(f"  [ERROR] Failed to update driver: {e}")
+            safe_input("\nPress Enter to exit...", "")
+            sys.exit(1)
         
     # 5. Restart Looking Glass Service
     print("\n[*] Querying Looking Glass service...")
