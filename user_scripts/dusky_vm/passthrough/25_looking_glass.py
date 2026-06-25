@@ -407,8 +407,8 @@ def wait_for_vm_shutdown(vm_name: str) -> None:
     console.print(f"[bold green]  ✓ VM '{vm_name}' has successfully shutdown.[/bold green]")
 
 def prompt_vm_start(vm_name: str) -> None:
-    """Prompt the user to power the VM back up to apply settings."""
-    choice = Prompt.ask(f"\n[bold cyan]Would you like to start the VM '{vm_name}' back up now?[/bold cyan]", choices=["y", "n"], default="y").strip().lower()
+    """Prompt the user to turn the VM back on to apply settings."""
+    choice = Prompt.ask(f"\n[bold cyan]Would you like to turn the VM '{vm_name}' back on now?[/bold cyan]", choices=["y", "n"], default="y").strip().lower()
     if choice == "y":
         console.print(f"[cyan]Powering on VM '{vm_name}'...[/cyan]")
         if run_cmd(["virsh", "-c", "qemu:///system", "start", vm_name], check=False) == 0:
