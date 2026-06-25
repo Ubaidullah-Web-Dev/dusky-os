@@ -424,8 +424,8 @@ noScreensaver=yes
 borderless=yes
 
 [input]
-; escapeKey uses Linux input event codes (97 = KEY_RIGHTCTRL)
-escapeKey=97
+; escapeKey uses Linux input event codes (64 = KEY_F6)
+escapeKey=64
 ; Use raw mouse input — essential for accurate gaming
 rawMouse=yes
 hideCursor=yes
@@ -439,16 +439,16 @@ looking-glass-client
 
 No CLI flags are required. The client will connect to `/dev/shm/looking-glass` automatically and utilize the OpenGL Wayland pipelines to render the Windows desktop.
 
-**Default key bindings (escape key = Right Ctrl):**
+**Default key bindings (escape key = F6):**
 
 | Combo | Action |
 | :--- | :--- |
-| `RCtrl` | Toggle mouse/keyboard capture mode |
-| `RCtrl` + `Q` | Quit Looking Glass |
-| `RCtrl` + `F` | Toggle fullscreen |
-| `RCtrl` + `D` | Toggle FPS overlay |
-| `RCtrl` + `O` | Enter overlay/configuration mode |
-| `RCtrl` + `I` | Toggle SPICE input |
+| `F6` | Toggle mouse/keyboard capture mode |
+| `F6` + `Q` | Quit Looking Glass |
+| `F6` + `F` | Toggle fullscreen |
+| `F6` + `D` | Toggle FPS overlay |
+| `F6` + `O` | Enter overlay/configuration mode |
+| `F6` + `I` | Toggle SPICE input |
 
 ---
 
@@ -464,7 +464,7 @@ Looking Glass opens but the window is black. The NVIDIA GPU is not sending frame
 2. Start it again: `sudo virsh start win_10_dusky`
 3. Launch the client: `looking-glass-client`
 4. Click the black LG window to focus it.
-5. Press `Right Ctrl` to enter capture mode (cursor disappears).
+5. Press `F6` to enter capture mode (cursor disappears).
 6. Blindly send `Win` + `P`, wait 1 second, then press `Down`, `Down`, `Enter`.
 
 This navigates the Windows "Project" menu from "PC screen only" to "Extend", waking the NVIDIA driver and starting frame output into the shared memory.

@@ -101,7 +101,7 @@ def load_state() -> dict:
     state_file, _, _ = get_state_file_info()
     state = {
         "vm": "",
-        "key": "KEY_RIGHTCTRL",
+        "key": "KEY_F6",
         "rdp_user": "",
         "rdp_ip": ""
     }

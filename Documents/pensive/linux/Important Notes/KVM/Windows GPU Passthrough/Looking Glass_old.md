@@ -174,12 +174,12 @@ sudo chmod 0660 /dev/shm/looking-glass
 
 ### 2. Launch Client
 
-Since laptop keyboards often lack a **Scroll Lock** key (the default capture key), we remap the capture key to **Right Ctrl**.
+Since laptop keyboards often lack a **Scroll Lock** key (the default capture key), we remap the capture key to **F6**.
 
 -f: Force use of the specific shared memory file
 -m: Remap the "Capture Key" to Right Control
 ```bash
-looking-glass-client -f /dev/shm/looking-glass -m KEY_RIGHTCTRL
+looking-glass-client -f /dev/shm/looking-glass -m KEY_F6
 ```
 
 ## 🧠 Phase 5: Troubleshooting
@@ -196,7 +196,7 @@ If Looking Glass opens but the window remains black, Windows has "forgotten" to 
     
 3. **Focus:** Click the Looking Glass window (it will be black).
     
-4. **Capture:** Press **Right Ctrl** (to capture keyboard input).
+4. **Capture:** Press **F6** (to capture keyboard input).
     
 5. **The Blind Shortcut:**
     

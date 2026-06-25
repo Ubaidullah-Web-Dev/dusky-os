@@ -114,7 +114,7 @@ def print_err(msg: str):
 def load_state() -> dict:
     """Loads the state dictionary from the state file."""
     state_file, _, _ = get_state_file_info()
-    state = {"vm": "", "key": "KEY_RIGHTCTRL"}  # Default escape key is KEY_RIGHTCTRL
+    state = {"vm": "", "key": "KEY_F6"}  # Default escape key is KEY_F6
     if state_file.exists():
         try:
             content = state_file.read_text(encoding="utf-8").strip()
@@ -162,7 +162,7 @@ def save_cached_vm(vm_name: str):
 def load_cached_key() -> str:
     """Loads the cached escape key from the state file."""
     state = load_state()
-    return state.get("key", "KEY_RIGHTCTRL")
+    return state.get("key", "KEY_F6")
 
 
 def save_cached_key(key: str):
