@@ -248,7 +248,8 @@ ensure_matugen_integration() {
     local tmp_cfg
     tmp_cfg=$(mktemp)
 
-    export HOOK_CMD="    ln -nfs \"$HOME/.config/matugen/generated/firefox_websites.css\" \"${FF_PROFILE}/chrome/colors.css\""
+    local rel_profile="${FF_PROFILE/#$HOME/\$HOME}"
+    export HOOK_CMD="    ln -nfs \"\$HOME/.config/matugen/generated/firefox_websites.css\" \"${rel_profile}/chrome/colors.css\""
 
     LC_ALL=C awk '
     BEGIN {
