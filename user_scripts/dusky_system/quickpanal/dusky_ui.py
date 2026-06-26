@@ -419,11 +419,40 @@ class NotificationsPanel(Gtk.Box):
             self._render_notifs_list(initial_notifs)
 
     def _render_notifs_list(self, notifs: list[NotificationData]):
-        import datetime
+        import datetime, json, os
+        cache_file = "/tmp/dusky_notif_times.json"
+        
+        if not hasattr(self, "_notif_times_loaded"):
+            self._notif_times_loaded = True
+            if os.path.exists(cache_file):
+                try:
+                    with open(cache_file, "r") as f:
+                        self.notif_times = json.load(f)
+                except Exception:
+                    pass
+
         now_str = datetime.datetime.now().strftime("%H:%M")
+        changed = False
+        active_ids = {str(n.id) for n in notifs}
+        
         for n in notifs:
-            if n.id not in self.notif_times:
-                self.notif_times[n.id] = now_str
+            str_id = str(n.id)
+            if str_id not in self.notif_times:
+                self.notif_times[str_id] = now_str
+                changed = True
+                
+        keys_to_remove = [k for k in self.notif_times.keys() if k not in active_ids]
+        if keys_to_remove:
+            for k in keys_to_remove:
+                del self.notif_times[k]
+            changed = True
+            
+        if changed:
+            try:
+                with open(cache_file, "w") as f:
+                    json.dump(self.notif_times, f)
+            except Exception:
+                pass
                 
         groups = {}
         for n in notifs[:50]:
@@ -440,13 +469,13 @@ class NotificationsPanel(Gtk.Box):
                 self.listbox.add(header)
                 
                 for n in group_notifs:
-                    row = NotificationRow(n, self._on_row_closed, show_app_name=False, time_str=self.notif_times.get(n.id, ""))
+                    row = NotificationRow(n, self._on_row_closed, show_app_name=False, time_str=self.notif_times.get(str(n.id), ""))
                     if not is_expanded:
                         row.set_no_show_all(True)
                         row.hide()
                     self.listbox.add(row)
             else:
-                self.listbox.add(NotificationRow(group_notifs[0], self._on_row_closed, show_app_name=True, time_str=self.notif_times.get(group_notifs[0].id, "")))
+                self.listbox.add(NotificationRow(group_notifs[0], self._on_row_closed, show_app_name=True, time_str=self.notif_times.get(str(group_notifs[0].id), "")))
 
     def _on_stack_toggled(self, app_name: str, expanded: bool):
         if expanded:
