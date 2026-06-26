@@ -305,7 +305,7 @@ class NotificationRow(Gtk.ListBoxRow):
         self.add(main_box)
 
 class NotificationStackHeader(Gtk.ListBoxRow):
-    def __init__(self, app_name: str, count: int, toggle_cb):
+    def __init__(self, app_name: str, count: int, toggle_cb, on_close_stack: Callable[[str], None]):
         super().__init__()
         self.app_name = app_name
         self.expanded = False
@@ -331,9 +331,21 @@ class NotificationStackHeader(Gtk.ListBoxRow):
         
         main_box.pack_start(text_box, True, True, 0)
         
+        right_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        right_box.set_valign(Gtk.Align.CENTER)
+        
+        close_btn = Gtk.Button()
+        close_btn.set_image(Gtk.Image.new_from_icon_name("window-close-symbolic", Gtk.IconSize.MENU))
+        _add_css_class(close_btn, "notif-close-btn")
+        close_btn.set_relief(Gtk.ReliefStyle.NONE)
+        close_btn.set_can_focus(False)
+        close_btn.connect("clicked", lambda _: on_close_stack(self.app_name))
+        right_box.pack_start(close_btn, False, False, 0)
+        
         self.icon = Gtk.Image.new_from_icon_name("pan-end-symbolic", Gtk.IconSize.MENU)
-        self.icon.set_valign(Gtk.Align.CENTER)
-        main_box.pack_end(self.icon, False, False, 0)
+        right_box.pack_start(self.icon, False, False, 0)
+        
+        main_box.pack_end(right_box, False, False, 0)
         
         self.add(main_box)
         
@@ -423,7 +435,7 @@ class NotificationsPanel(Gtk.Box):
         for app, group_notifs in groups.items():
             if len(group_notifs) > 1:
                 is_expanded = app in self.expanded_apps
-                header = NotificationStackHeader(app, len(group_notifs), self._on_stack_toggled)
+                header = NotificationStackHeader(app, len(group_notifs), self._on_stack_toggled, self._on_stack_closed)
                 header.set_expanded(is_expanded)
                 self.listbox.add(header)
                 
@@ -512,6 +524,29 @@ class NotificationsPanel(Gtk.Box):
         self.listbox.remove(row)
         
         # Collapse module dynamically if the last one was closed
+        if not self.listbox.get_children():
+            self.set_no_show_all(True)
+            self.hide()
+        else:
+            self.refresh_async()
+
+    def _on_stack_closed(self, app_name: str):
+        """Triggered by the 'X' button on a stack header. Dismisses all notifications in the group."""
+        bl_path = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "mako_rofi_blacklist"
+        for child in self.listbox.get_children():
+            if isinstance(child, NotificationRow):
+                n = child.notif
+                n_app = n.app_name if n.app_name else "Unknown"
+                if n_app == app_name:
+                    try:
+                        with open(bl_path, "a") as f: f.write(f"{n.id}\n")
+                    except Exception: pass
+                    execute_cmd(f"makoctl dismiss -n {n.id}")
+                    self.listbox.remove(child)
+            elif isinstance(child, NotificationStackHeader) and child.app_name == app_name:
+                self.listbox.remove(child)
+
+        self.expanded_apps.discard(app_name)
         if not self.listbox.get_children():
             self.set_no_show_all(True)
             self.hide()
