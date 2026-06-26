@@ -234,7 +234,7 @@ options = {FS_OPTIONS}
     override_dir.mkdir(parents=True, exist_ok=True)
     override_conf = override_dir / "override.conf"
     override_content = """[Service]
-ExecStartPre=-/bin/sh -c 'echo "algo=zstd priority=1" > /sys/block/%i/recomp_algorithm && echo "algo=zstd priority=1 level=15" > /sys/block/%i/algorithm_params'
+ExecStartPre=-/bin/sh -c 'echo "algo=zstd priority=1" > /sys/block/%i/recomp_algorithm && echo "algo=zstd priority=1 level=12" > /sys/block/%i/algorithm_params'
 ExecStartPost=/usr/sbin/tune2fs -O ^has_journal /dev/%i
 """
     write_file_atomic(override_conf, override_content)

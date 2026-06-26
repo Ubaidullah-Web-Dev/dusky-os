@@ -183,7 +183,7 @@ log_info "Writing ZRAM setup override to prevent generator warnings..."
 install -d -m 0755 -- "$OVERRIDE_DIR"
 cat <<EOF | install -Dm0644 /dev/stdin "$OVERRIDE_FILE"
 [Service]
-ExecStartPre=-/bin/sh -c 'echo "algo=zstd priority=1" > /sys/block/%i/recomp_algorithm && echo "algo=zstd priority=1 level=15" > /sys/block/%i/algorithm_params'
+ExecStartPre=-/bin/sh -c 'echo "algo=zstd priority=1" > /sys/block/%i/recomp_algorithm && echo "algo=zstd priority=1 level=12" > /sys/block/%i/algorithm_params'
 EOF
 log_success "ZRAM setup override successfully installed."
 
