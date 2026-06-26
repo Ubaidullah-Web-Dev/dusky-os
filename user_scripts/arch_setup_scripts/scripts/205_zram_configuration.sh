@@ -81,7 +81,7 @@ readonly CONFIG_FILE="${CONFIG_DIR}/99-elite-zram.conf"
 readonly ZRAM_SWAP_DEV="/dev/zram0"
 readonly ZRAM_SIZE_EXPR="ram"
 readonly ZRAM_RESIDENT_LIMIT_EXPR="ram * 3 / 4"
-readonly COMPRESSION_ALGORITHM="zstd(level=1)" 
+readonly COMPRESSION_ALGORITHM="zstd(level=3)" 
 
 readonly GENERATOR_BIN="/usr/lib/systemd/system-generators/zram-generator"
 readonly SWAP_SETUP_UNIT="systemd-zram-setup@zram0.service"
