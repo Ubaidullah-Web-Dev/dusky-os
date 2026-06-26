@@ -197,7 +197,7 @@ declare -ra UPDATE_SEQUENCE=(
 #    "U | 003_network_connect.sh"
     "U | 005_hypr_custom_config_setup.py"
     "U | 006_animation_default.sh"
-    "U | 005_hypr_custom_config_setup.py --force --workspace_rules"
+#    "U | 005_hypr_custom_config_setup.py --force --workspace_rules"
     "U | 010_package_removal.sh --auto"
 
 
