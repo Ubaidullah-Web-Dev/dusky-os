@@ -131,6 +131,9 @@ alias darkmode='~/user_scripts/theme_matugen/matugen_config.sh --mode dark'
 alias lightmode='~/user_scripts/theme_matugen/matugen_config.sh --mode light'
 alias run_sysbench='~/user_scripts/performance/sysbench_benchmark.sh'
 
+# Memory Optimization
+alias mem_optimize='sudo systemctl start boot-memory-reclaim.service'
+
 # Networking
 alias iphone_vnc='~/user_scripts/networking/iphone_vnc.sh'
 alias wifi_security='~/user_scripts/networking/ax201_wifi_testing.sh'
