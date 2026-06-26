@@ -2,28 +2,28 @@
 # ------------------------------------------------------------------------------
 # safe_pkill.sh — Race-safe SIGRTMIN+8 delivery for Waybar
 #
-# Purpose:  Prevent boot-time crashes by verifying Waybar has registered its
-#           SIGRTMIN+8 handler before delivering the signal. Reads the SigCgt
-#           (caught signals) bitmask from /proc/<pid>/status.
+# Zero forks. Pure bash builtins + /proc reads. kill is a bash builtin.
+# Invoked per-notification by Mako on-notify. Not a daemon.
 #
-# Execution model:
-#           NOT a daemon. Invoked per-notification by Mako's on-notify hook.
-#           Runs for ~3ms and exits. Zero memory/CPU usage between invocations.
-#
-# Kernel:   Linux 7.0+ (x86_64). SIGRTMIN=34, so SIGRTMIN+8=42, bit 41.
+# Bash 5.3+ · Linux 7.0+ · x86_64 (SIGRTMIN=34, +8=42, bit 41)
 # ------------------------------------------------------------------------------
 
 set -euo pipefail
+shopt -s nullglob
+exec 2>/dev/null
 
-# SIGRTMIN+8 = signal 42 on x86_64 Linux (glibc NPTL: SIGRTMIN=34)
-# SigCgt bitmask bit position = signal_number - 1 = 41
 readonly SIG=42
 readonly BIT_POS=41
 
-pids=$(pgrep -x waybar) || exit 0
+for cf in /proc/[0-9]*/comm; do
+    read -r name < "$cf" 2>/dev/null || continue
+    [[ $name == waybar ]] || continue
 
-for pid in $pids; do
-    cgt=$(awk '/^SigCgt:/{print $2}' /proc/"$pid"/status 2>/dev/null) || continue
-    [[ -n "$cgt" ]] || continue
-    (( 16#${cgt} & (1 << BIT_POS) )) && kill -"${SIG}" "$pid"
+    pid=${cf%/comm}
+    pid=${pid##*/}
+
+    status=$(<"/proc/$pid/status") 2>/dev/null || continue
+    [[ $status =~ SigCgt:[[:space:]]+([0-9a-fA-F]+) ]] || continue
+
+    (( 16#${BASH_REMATCH[1]} & (1 << BIT_POS) )) && kill -"$SIG" "$pid"
 done
