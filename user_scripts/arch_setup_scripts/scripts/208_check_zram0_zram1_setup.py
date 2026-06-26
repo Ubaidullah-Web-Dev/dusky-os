@@ -143,7 +143,7 @@ for dev in ["zram0", "zram1"]:
     algo_path = Path(f"/sys/block/{dev}/recomp_algorithm")
     if algo_path.exists():
         algo_data = algo_path.read_text().strip()
-        if "algo=zstd" in algo_data and "priority=1" in algo_data:
+        if "#1:" in algo_data and "[zstd]" in algo_data:
             ok(f"{dev} multi-tier recompression arrays are actively staged.")
         else:
             warn(f"{dev} recompression data unexpected: {algo_data}")

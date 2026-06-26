@@ -109,6 +109,8 @@ declare -i EXPECTED_VFS_PRESSURE
 declare -i EXPECTED_SCALE_FACTOR
 declare -i EXPECTED_DIRTY_BYTES
 declare -i EXPECTED_DIRTY_BG_BYTES
+declare -i EXPECTED_DIRTY_WRITEBACK
+declare -i EXPECTED_DIRTY_EXPIRE
 declare -i EXPECTED_MGLRU_TTL
 
 # The 30 GB Demarcation Line
@@ -119,6 +121,8 @@ if [[ "$MODE" == "AGGRESSIVE" ]] || [[ "$MODE" == "AUTO" && SYSTEM_RAM_GB -ge 30
     EXPECTED_SCALE_FACTOR=100
     EXPECTED_DIRTY_BYTES=1073741824
     EXPECTED_DIRTY_BG_BYTES=268435456
+    EXPECTED_DIRTY_WRITEBACK=500
+    EXPECTED_DIRTY_EXPIRE=3000
     EXPECTED_MGLRU_TTL=3000
 else
     EXPECTED_MODE="STRICT_RAM_SAVINGS (<32GB)"
@@ -127,6 +131,8 @@ else
     EXPECTED_SCALE_FACTOR=50       # 0.5% Emergency Buffer (40MB on 8GB RAM). Prevents UI direct reclaim stall.
     EXPECTED_DIRTY_BYTES=134217728 # 128MB max. Prevents massive file transfers from bloating RAM.
     EXPECTED_DIRTY_BG_BYTES=33554432 # 32MB bg threshold. Flushes data to disk sooner to free memory.
+    EXPECTED_DIRTY_WRITEBACK=100    # 1s dirty background page writeback interval
+    EXPECTED_DIRTY_EXPIRE=500       # 5s dirty page expiry limit (flushes cache aggressively)
     EXPECTED_MGLRU_TTL=2000         # Perfect CPU/ZRAM thrash shield balance.
 fi
 
@@ -179,6 +185,8 @@ vm.page-cluster = ${EXPECTED_PAGE_CLUSTER}
 vm.vfs_cache_pressure = ${EXPECTED_VFS_PRESSURE}
 vm.dirty_bytes = ${EXPECTED_DIRTY_BYTES}
 vm.dirty_background_bytes = ${EXPECTED_DIRTY_BG_BYTES}
+vm.dirty_writeback_centisecs = ${EXPECTED_DIRTY_WRITEBACK}
+vm.dirty_expire_centisecs = ${EXPECTED_DIRTY_EXPIRE}
 
 # --- MEMORY ALLOCATION & COMPACTION ---
 vm.watermark_scale_factor = ${EXPECTED_SCALE_FACTOR}

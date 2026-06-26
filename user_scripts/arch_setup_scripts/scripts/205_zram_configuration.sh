@@ -81,7 +81,7 @@ readonly CONFIG_FILE="${CONFIG_DIR}/99-elite-zram.conf"
 readonly ZRAM_SWAP_DEV="/dev/zram0"
 readonly ZRAM_SIZE_EXPR="ram"
 readonly ZRAM_RESIDENT_LIMIT_EXPR="ram * 3 / 4"
-readonly COMPRESSION_ALGORITHM="zstd(level=1) zstd(level=8) (type=idle)" 
+readonly COMPRESSION_ALGORITHM="zstd(level=1)" 
 
 readonly GENERATOR_BIN="/usr/lib/systemd/system-generators/zram-generator"
 readonly SWAP_SETUP_UNIT="systemd-zram-setup@zram0.service"
@@ -176,6 +176,16 @@ EOF
 
 install -Dm0644 "$tmp_config" "$CONFIG_FILE"
 log_success "ZRAM pool configuration written to ${CONFIG_FILE}"
+
+readonly OVERRIDE_DIR="/etc/systemd/system/systemd-zram-setup@zram0.service.d"
+readonly OVERRIDE_FILE="${OVERRIDE_DIR}/override.conf"
+log_info "Writing ZRAM setup override to prevent generator warnings..."
+install -d -m 0755 -- "$OVERRIDE_DIR"
+cat <<EOF | install -Dm0644 /dev/stdin "$OVERRIDE_FILE"
+[Service]
+ExecStartPre=-/bin/sh -c 'echo "algo=zstd priority=1" > /sys/block/%i/recomp_algorithm && echo "algo=zstd priority=1 level=15" > /sys/block/%i/algorithm_params'
+EOF
+log_success "ZRAM setup override successfully installed."
 
 log_info "Reloading systemd daemon to ingest new architecture..."
 systemctl daemon-reload

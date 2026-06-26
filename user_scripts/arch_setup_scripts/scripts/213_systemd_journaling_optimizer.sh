@@ -81,14 +81,14 @@ cat > "$tmp_conf" <<EOF
 # Scope: Prevent systemd-journald log payloads from consuming RAM and Disk.
 
 [Journal]
-# Volatile Storage (RAM in /run/log/journal): Hard cap at 50MB.
-RuntimeMaxUse=50M
+# Volatile Storage (RAM in /run/log/journal): Hard cap at 16MB.
+RuntimeMaxUse=16M
 
-# Persistent Storage (Disk in /var/log/journal): Hard cap at 250MB.
-SystemMaxUse=250M
+# Persistent Storage (Disk in /var/log/journal): Hard cap at 100MB.
+SystemMaxUse=100M
 
 # Rotate files frequently to keep read times instantaneous.
-SystemMaxFileSize=50M
+SystemMaxFileSize=16M
 
 # Housekeeping: Discard logs older than 1 week to shrink VFS slab (inode) cache.
 MaxRetentionSec=1week
@@ -126,11 +126,11 @@ cat > "$tmp_svc" <<EOF
 # Prevents mmap cache bloat regardless of journal file size.
 
 [Service]
-# Aggressively throttle the daemon if its RSS exceeds 50MB
-MemoryHigh=50M
+# Aggressively throttle the daemon if its RSS exceeds 16MB
+MemoryHigh=16M
 
-# Absolute hard-kill boundary. If the daemon leaks >100MB, execute OOM kill.
-MemoryMax=100M
+# Absolute hard-kill boundary. If the daemon leaks >32MB, execute OOM kill.
+MemoryMax=32M
 
 # systemd.service(5): Ensures clean termination and flush on OOM pressure.
 # Daemon will automatically respawn via Restart=always and empty its RAM buffers.
@@ -184,11 +184,9 @@ fi
 
 # --- 6. Live Vacuuming ---
 log_info "Vacuuming current journals to enforce payload limits immediately..."
-journalctl --vacuum-size=250M >/dev/null 2>&1 || true
+journalctl --vacuum-size=100M >/dev/null 2>&1 || true
 journalctl --vacuum-time=1weeks >/dev/null 2>&1 || true
 
 log_success "Logging topology is fully optimized for absolute maximum RAM efficiency."
 
 exit 0
-
-```eof

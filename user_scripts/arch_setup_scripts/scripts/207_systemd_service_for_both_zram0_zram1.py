@@ -74,8 +74,8 @@ Description=Trigger ZRAM idle page deep recompression
 
 [Service]
 Type=oneshot
-ExecStart=-/bin/sh -c 'echo type=idle > /sys/block/zram0/recompress'
-ExecStart=-/bin/sh -c 'echo type=idle > /sys/block/zram1/recompress'
+ExecStart=-/bin/sh -c 'echo 600 > /sys/block/zram0/idle && echo type=idle > /sys/block/zram0/recompress'
+ExecStart=-/bin/sh -c 'echo 600 > /sys/block/zram1/idle && echo type=idle > /sys/block/zram1/recompress'
 """
     write_file_atomic(recomp_service_path, recomp_service_content)
     ok(f"Service payload written to {recomp_service_path}")
