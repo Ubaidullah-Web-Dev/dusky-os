@@ -118,5 +118,3 @@ export LIBVIRT_DEFAULT_URI='qemu:///system'
 # Enables PRIME Render Offload, allowing you to run specific applications
 # on the NVIDIA GPU while the desktop session runs on the Intel iGPU.
 #export __NV_PRIME_RENDER_OFFLOAD=1
-
-
