@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import NoReturn
 
 # --- Presentation (Zero-Dependency ANSI) ---
 class C:
@@ -30,7 +32,7 @@ class C:
 def info(msg: str) -> None: print(f"{C.BLU}[INFO]{C.RST} {msg}")
 def ok(msg: str) -> None: print(f"{C.GRN}[ OK ]{C.RST} {msg}")
 def err(msg: str) -> None: print(f"{C.RED}[FAIL]{C.RST} {msg}", file=sys.stderr)
-def die(msg: str, code: int = 1) -> "typing.NoReturn": # noqa: F821
+def die(msg: str, code: int = 1) -> NoReturn:
     err(msg)
     sys.exit(code)
 
@@ -85,26 +87,45 @@ def perform_reclaim() -> None:
             continue
             
         try:
-            current_bytes = int(current_file.read_text().strip())
-            # Reclaim 50% of current memory usage (targeting only cold anon & shmem pages)
-            reclaim_bytes = int(current_bytes * 0.50)
+            # Capture real state before reclaim request
+            before_bytes = int(current_file.read_text().strip())
             
-            if reclaim_bytes > 0:
-                # Forcefully reclaim cold memory using swappiness=200
-                reclaim_command = f"{reclaim_bytes} swappiness=200"
+            # Request 50% eviction
+            target_reclaim = int(before_bytes * 0.50)
+            
+            if target_reclaim > 0:
+                # Synchronous kernel command
+                reclaim_command = f"{target_reclaim} swappiness=200"
                 reclaim_file.write_text(reclaim_command)
-                reclaimed_total_bytes += reclaim_bytes
-                ok(f"Reclaimed {reclaim_bytes / (1024*1024):.1f} MB of cold memory from {slice_name}")
+                
+                # Capture real state after kernel processing to calculate the true delta
+                after_bytes = int(current_file.read_text().strip())
+                actual_reclaimed = before_bytes - after_bytes
+                
+                if actual_reclaimed > 0:
+                    reclaimed_total_bytes += actual_reclaimed
+                    ok(f"Reclaimed {actual_reclaimed / (1024*1024):.1f} MB of cold memory from {slice_name}")
+                else:
+                    info(f"Kernel refused eviction for {slice_name}. No cold pages available.")
+                    
         except Exception as e:
             info(f"Failed to reclaim memory from {slice_name}: {e}")
             
     ok(f"Targeted cold memory sweep completed. Swapped ~{reclaimed_total_bytes / (1024*1024):.1f} MB of cold pages to ZRAM.")
 
-
-
 # --- Installer Logic ---
 def deploy_systemd_units() -> None:
     info("Deploying boot-time memory reclaim systemd units...")
+    
+    # Secure Self-Installation prevents dead systemd units if the source file is moved/deleted
+    install_path = Path("/usr/local/bin/dusky_boot_mem_reclaim")
+    current_script = Path(os.path.abspath(__file__))
+    
+    if current_script != install_path:
+        install_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(current_script, install_path)
+        os.chmod(install_path, 0o755)
+        ok(f"Binary securely installed to {install_path}")
     
     service_path = Path("/etc/systemd/system/dusky_boot_mem_reclaim.service")
     service_content = f"""[Unit]
@@ -113,7 +134,7 @@ After=local-fs.target
 
 [Service]
 Type=oneshot
-ExecStart={sys.executable} {os.path.abspath(__file__)} --run
+ExecStart={sys.executable} {install_path} --run
 """
     write_file_atomic(service_path, service_content)
     ok(f"Service unit written to {service_path}")
@@ -123,7 +144,7 @@ ExecStart={sys.executable} {os.path.abspath(__file__)} --run
 Description=Trigger Boot-time Cold Memory Reclaimer 1 minute after boot
 
 [Timer]
-OnActiveSec=1min
+OnBootSec=1min
 
 [Install]
 WantedBy=timers.target
@@ -138,7 +159,6 @@ WantedBy=timers.target
     subprocess.run(["systemctl", "enable", "--now", "dusky_boot_mem_reclaim.timer"], check=True)
     
     ok("Boot-time reclaimer timer is active. Cold memory will be purged 1 minute after boot.")
-
 
 def main() -> None:
     if sys.version_info < (3, 14):
