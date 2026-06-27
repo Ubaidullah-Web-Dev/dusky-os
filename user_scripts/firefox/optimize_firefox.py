@@ -49,23 +49,9 @@ def get_total_ram_gb() -> float:
 
 
 def get_sudo_password(cmd_pass: str | None) -> str | None:
-    """Verifies or prompts for sudo password to run privileged pacman installations."""
+    """Prompts for sudo password securely to run privileged pacman installations."""
     if cmd_pass:
         return cmd_pass
-
-    # Try default provided user password '2345'
-    try:
-        res = subprocess.run(
-            ["sudo", "-S", "true"],
-            input="2345\n",
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-        if res.returncode == 0:
-            return "2345"
-    except Exception:
-        pass
 
     # Prompt if interactive, otherwise return None
     if sys.stdout.isatty():
@@ -117,13 +103,15 @@ def install_package_dependencies(sudo_pass: str | None, dry_run: bool) -> bool:
         logger.error("Sudo password is required to install system packages. Aborting installation.")
         return False
 
-    logger.info("Updating package databases and installing packages...")
+    logger.info("Installing packages (pacman -S)...")
     res = run_sudo_cmd(["pacman", "-S", "--noconfirm", "--needed"] + missing, verified_pass)
     if res.returncode == 0:
         logger.info("Successfully installed packages.")
         return True
     else:
         logger.error(f"Failed to install packages: {res.stderr}")
+        logger.error("Note: A 404 error means your local pacman database is outdated.")
+        logger.error("Please run 'sudo pacman -Syu' manually to sync and update your system, then rerun this script.")
         return False
 
 
@@ -313,26 +301,7 @@ def update_user_js(profile_dir: Path, prefs: dict[str, str | int | bool], dry_ru
 
 
 def remove_user_js_optimizations(profile_dir: Path, dry_run: bool) -> None:
-    """Removes the optimization preferences block from the profile's user.js file."""
-    user_js_path = profile_dir / "user.js"
-    if not user_js_path.exists():
-        return
-
-    logger.info(f"Removing optimization configurations from {user_js_path}")
-    try:
-        content = user_js_path.read_text()
-    except Exception as e:
-        logger.error(f"Failed to read {user_js_path}: {e}")
-        return
-
-    # Strip block
-    pattern = re.compile(
-        r"\n?" + re.escape(USER_JS_BEGIN) + ".*?" + re.escape(USER_JS_END) + r"\n?",
-        re.DOTALL,
-    )
-    content = pattern.sub("\n", content)
-
-    # Scrub orphaned markers or leftover managed keys
+    """Removes the optimization preferences block from user.js and scrubs baked-in settings from prefs.js."""
     managed_keys = [
         "browser.cache.memory.enable",
         "browser.cache.memory.capacity",
@@ -362,28 +331,58 @@ def remove_user_js_optimizations(profile_dir: Path, dry_run: bool) -> None:
         "browser.cache.disk.parent_directory",
     ]
 
-    lines_to_keep = []
-    for line in content.splitlines():
-        if USER_JS_BEGIN in line or USER_JS_END in line:
-            continue
-        if any(f'"{k}"' in line or f"'{k}'" in line for k in managed_keys):
-            continue
-        lines_to_keep.append(line)
-
-    new_content = "\n".join(lines_to_keep).strip() + "\n"
-
-    if dry_run:
-        logger.info(f"[Dry Run] Would remove optimization block from {user_js_path}")
-    else:
+    # 1. Clean user.js
+    user_js_path = profile_dir / "user.js"
+    if user_js_path.exists():
+        logger.info(f"Removing optimization configurations from {user_js_path}")
         try:
-            if not new_content.strip():
-                user_js_path.unlink()
-                logger.info(f"Deleted empty {user_js_path}")
+            content = user_js_path.read_text()
+            pattern = re.compile(
+                r"\n?" + re.escape(USER_JS_BEGIN) + ".*?" + re.escape(USER_JS_END) + r"\n?",
+                re.DOTALL,
+            )
+            content = pattern.sub("\n", content)
+
+            lines_to_keep = []
+            for line in content.splitlines():
+                if USER_JS_BEGIN in line or USER_JS_END in line:
+                    continue
+                if any(f'"{k}"' in line or f"'{k}'" in line for k in managed_keys):
+                    continue
+                lines_to_keep.append(line)
+
+            new_content = "\n".join(lines_to_keep).strip() + "\n"
+
+            if dry_run:
+                logger.info(f"[Dry Run] Would remove optimization block from {user_js_path}")
             else:
-                user_js_path.write_text(new_content)
-                logger.info(f"Cleaned optimization block from {user_js_path}")
+                if not new_content.strip():
+                    user_js_path.unlink()
+                    logger.info(f"Deleted empty {user_js_path}")
+                else:
+                    user_js_path.write_text(new_content)
+                    logger.info(f"Cleaned optimization block from {user_js_path}")
         except Exception as e:
             logger.error(f"Failed to update/delete {user_js_path}: {e}")
+
+    # 2. Clean prefs.js natively to revert baked-in states
+    prefs_js_path = profile_dir / "prefs.js"
+    if prefs_js_path.exists():
+        try:
+            prefs_content = prefs_js_path.read_text()
+            lines_to_keep = []
+            for line in prefs_content.splitlines():
+                if any(f'"{k}"' in line for k in managed_keys):
+                    continue
+                lines_to_keep.append(line)
+
+            if dry_run:
+                logger.info(f"[Dry Run] Would scrub baked-in managed keys from {prefs_js_path}")
+            else:
+                prefs_js_path.write_text("\n".join(lines_to_keep) + "\n")
+                logger.info(f"Cleaned baked-in optimization preferences from {prefs_js_path}")
+        except Exception as e:
+            logger.error(f"Failed to clean {prefs_js_path}: {e}")
 
 
 def configure_uwsm_env(dry_run: bool, remove: bool = False) -> None:
@@ -567,7 +566,9 @@ WantedBy=timers.target
 
 def disable_optimizations(dry_run: bool) -> None:
     """Disables all optimizations, deleting generated files and cleaning user configs."""
-    # 1. Clean user.js configs
+    logger.warning("Please ensure Firefox is completely closed before proceeding, or reversion changes may be overwritten.")
+    
+    # 1. Clean user.js and prefs.js configs
     profiles = find_firefox_profiles()
     if not profiles:
         logger.warning("No Firefox profiles located during disable phase.")
@@ -688,6 +689,9 @@ def main() -> None:
 
     if not should_optimize:
         sys.exit(0)
+
+    # Safety check for profile locking
+    logger.warning("Please ensure Firefox is completely closed before proceeding to prevent SQLite database locks or profile corruption.")
 
     # 3. Install packages (psd and profile-cleaner)
     success = install_package_dependencies(args.sudo_pass, args.dry_run)
