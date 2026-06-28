@@ -128,7 +128,7 @@ case "$MODE" in
             left=$((TARGET_SEC - SECONDS))
             if (( left <= 0 )); then
                 # Leaving 'dusky-glance-alert' intact as requested via config overrides
-                notify-send -u critical -a "dusky-glance-alert" "Time's Up!" "Your timer has finished."
+                notify-send -u critical -a "dusky-glance-alert" -h string:x-canonical-private-synchronous:dusky-timer-alert "󰔛  Time's Up!"
                 play_sound "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
                 
                 for _ in {1..5}; do
@@ -163,17 +163,17 @@ case "$MODE" in
             
             if (( left <= 0 )); then
                 if [[ "$PHASE" == "WORK" ]] && (( BREAK_SEC > 0 )); then
-                    notify-send -u critical -a "dusky-glance-alert" "Break Time!" "Time to take a break!"
+                    notify-send -u critical -a "dusky-glance-alert" -h string:x-canonical-private-synchronous:dusky-timer-alert "󰦖  Break Time!"
                     play_sound "/usr/share/sounds/gnome/default/alarms/glass-bell.oga"
                     
                     PHASE="BREAK"
                     TARGET_SEC=$((SECONDS + BREAK_SEC))
                     continue
                 else
-                    msg="Work session finished."
-                    (( BREAK_SEC > 0 )) && msg="Break is over. Back to work!"
+                    msg="Session Finished"
+                    (( BREAK_SEC > 0 )) && msg="Back to Work!"
                     
-                    notify-send -u critical -a "dusky-glance-alert" "Pomodoro Cycle" "$msg"
+                    notify-send -u critical -a "dusky-glance-alert" -h string:x-canonical-private-synchronous:dusky-timer-alert "󰔚  $msg"
                     play_sound "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
                     
                     PHASE="WORK"
