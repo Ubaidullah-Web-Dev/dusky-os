@@ -29,11 +29,11 @@ while true; do
         
         # Unconditional SIGKILL per specification
         if kill -9 "$pid" 2>/dev/null; then
-            /usr/bin/notify-send -u normal -i dialog-information \
+            /usr/bin/notify-send -r 3308 -u normal -i dialog-information \
                 "Process Killed" \
                 "Successfully terminated PID ${pid}."
         else
-            /usr/bin/notify-send -u normal -i dialog-error \
+            /usr/bin/notify-send -r 3308 -u normal -i dialog-error \
                 "Kill Failed" \
                 "Could not terminate PID ${pid}. It may be a kernel thread or already dead."
         fi
