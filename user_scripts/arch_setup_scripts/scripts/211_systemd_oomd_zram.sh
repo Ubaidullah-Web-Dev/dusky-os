@@ -2,10 +2,10 @@
 # =============================================================================
 # Elite Arch Linux systemd-oomd & UWSM Optimizer
 # Target: Arch Linux Cutting-Edge (systemd 261+, Bash 5.3+, Kernel 7.1+)
-# Scope: Platinum Grade. Arms oomd with surgical kill policies, shields Hyprland.
-# Priority: Recalibrated for aggressive ZRAM. 10s kill-switch prevents system hangs.
-# Updates: Restored critical documentation, fixed UWSM template pathing, and
-#          stripped illegal unprivileged kernel adjustments.
+# Scope: Arms oomd with early PSI detection, shields Hyprland compositor.
+# Priority: Low PSI threshold (30%) and short window (2s) trigger oomd action
+#           before swap exhaustion, allowing app scopes to be killed instead of
+#           the compositor.
 # =============================================================================
 
 set -euo pipefail
@@ -20,10 +20,6 @@ readonly OOMD_CONF="${OOMD_DIR}/99-zram-tuning.conf"
 readonly USER_SVC_DIR="/etc/systemd/system/user@.service.d"
 readonly USER_SVC_CONF="${USER_SVC_DIR}/99-oomd-kill-policy.conf"
 
-readonly USER_SLICE_DIR="/etc/systemd/user/session.slice.d"
-readonly USER_SLICE_CONF="${USER_SLICE_DIR}/99-oomd-avoid.conf"
-
-# Modern UWSM (Universal Wayland Session Manager) specific shield
 readonly UWSM_SLICE_DIR="/etc/systemd/user/app-graphical-session.slice.d"
 readonly UWSM_SLICE_CONF="${UWSM_SLICE_DIR}/99-oomd-avoid.conf"
 
@@ -99,24 +95,26 @@ fi
 # --- 3. Temp File Generation ---
 tmp_oomd="$(umask 077 && mktemp)"
 tmp_user_svc="$(umask 077 && mktemp)"
-tmp_session_slice="$(umask 077 && mktemp)"
 tmp_uwsm_slice="$(umask 077 && mktemp)"
 tmp_hyprland_svc="$(umask 077 && mktemp)"
-trap 'rm -f "$tmp_oomd" "$tmp_user_svc" "$tmp_session_slice" "$tmp_uwsm_slice" "$tmp_hyprland_svc"' EXIT
+trap 'rm -f "$tmp_oomd" "$tmp_user_svc" "$tmp_uwsm_slice" "$tmp_hyprland_svc"' EXIT
 
-# A. Global OOMD Limits (The Recalibrated Hair-Trigger)
+# A. Global OOMD Limits (PSI-Only Detection)
 cat > "$tmp_oomd" <<EOF
 # Managed by ${SCRIPT_NAME}
 [OOM]
-# ZRAM Architecture: High swap usage is expected and desired.
-# Pushed to 96% to prevent premature kills of healthy, heavily compressed systems.
-SwapUsedLimit=96%
+# SwapUsedLimit is intentionally omitted. When a single cgroup (e.g. the
+# compositor's) contains most of the system's memory+swap, SwapUsedLimit
+# kills that cgroup regardless of ManagedOOMPreference=avoid. PSI-based
+# killing evaluates system-wide pressure and is more selective.
 
-# Pressure Stall Information (PSI):
-# Increased limit (70%) and duration (10s) to allow CPU time to heavily compress
-# ZRAM memory during load spikes without triggering false-positive OOM kills or system hangs.
-DefaultMemoryPressureLimit=70%
-DefaultMemoryPressureDurationSec=10s
+# PSI: Low threshold (30%) and short window (2s) trigger oomd action
+# before swap is exhausted, giving it time to kill app scopes instead
+# of the compositor. NOTE: this only works if apps have their own
+# cgroups (via uwsm-app) — memory hogs inside the compositor's cgroup
+# will still get the compositor killed.
+DefaultMemoryPressureLimit=30%
+DefaultMemoryPressureDurationSec=2s
 EOF
 
 # B. User Service Policy (The Fangs)
@@ -128,34 +126,31 @@ ManagedOOMMemoryPressure=kill
 ManagedOOMSwap=kill
 EOF
 
-# C. Desktop Session Shields (The Shield)
-cat > "$tmp_session_slice" <<EOF
+# C. UWSM Graphical Session Shield
+cat > "$tmp_uwsm_slice" <<EOF
 # Managed by ${SCRIPT_NAME}
+# NOTE: session.slice drop-in was intentionally removed — it protected the
+# compositor AND all app scopes equally, preventing oomd from preferentially
+# killing app processes. Only the compositor service gets ManagedOOMPreference=avoid.
 [Slice]
-# Instructs systemd-oomd to heavily bias away from killing the desktop environment.
 ManagedOOMPreference=avoid
 EOF
-
-# Clone the shield for modern UWSM graphical sessions
-cp "$tmp_session_slice" "$tmp_uwsm_slice"
 
 # D. Hyprland service shield (The Core)
 cat > "$tmp_hyprland_svc" <<EOF
 # Managed by ${SCRIPT_NAME}
 [Service]
-# Shield the compositor from systemd-oomd by instructing it to avoid killing this service.
+# Deprioritize the compositor for systemd-oomd.
 ManagedOOMPreference=avoid
 
-# When the kernel OOM killer terminates a child process (e.g., firefox, kitty),
-# do NOT mark the entire unit as failed and tear down the compositor.
-# Instead, let the compositor continue running.
-OOMPolicy=continue
+# NOTE: OOMScoreAdjust=-1000 was considered but silently rejected by the
+# user systemd instance (unprivileged). ManagedOOMPreference=avoid is the
+# primary mechanism. Combined with early PSI thresholds (30%/2s), oomd
+# should act on app scopes before needing to consider the compositor.
 
-# NOTE ON OOMScoreAdjust:
-# Setting OOMScoreAdjust=-900 has been stripped from this configuration. 
-# The Linux kernel strictly prohibits unprivileged users (UID 1000) from requesting 
-# negative OOM scores. It will silently fail and default to 200. We rely entirely on
-# the systemd native 'ManagedOOMPreference=avoid' above.
+# When the kernel OOM killer terminates a child process, do NOT mark the
+# entire unit as failed and tear down the compositor.
+OOMPolicy=continue
 EOF
 
 # --- 4. Dry Run Check ---
@@ -165,9 +160,7 @@ if (( DRY_RUN == 1 )); then
     cat "$tmp_oomd"
     echo -e "\n${C_BOLD}[ ${USER_SVC_CONF} ]${C_RESET}"
     cat "$tmp_user_svc"
-    echo -e "\n${C_BOLD}[ ${USER_SLICE_CONF} (Legacy) ]${C_RESET}"
-    cat "$tmp_session_slice"
-    echo -e "\n${C_BOLD}[ ${UWSM_SLICE_CONF} (Modern UWSM) ]${C_RESET}"
+    echo -e "\n${C_BOLD}[ ${UWSM_SLICE_CONF} ]${C_RESET}"
     cat "$tmp_uwsm_slice"
     echo -e "\n${C_BOLD}[ ${HYPRLAND_SVC_CONF} (Hyprland Shield) ]${C_RESET}"
     cat "$tmp_hyprland_svc"
@@ -193,7 +186,6 @@ install_file() {
 
 install_file "$tmp_oomd" "$OOMD_CONF"
 install_file "$tmp_user_svc" "$USER_SVC_CONF"
-install_file "$tmp_session_slice" "$USER_SLICE_CONF"
 install_file "$tmp_uwsm_slice" "$UWSM_SLICE_CONF"
 install_file "$tmp_hyprland_svc" "$HYPRLAND_SVC_CONF"
 
