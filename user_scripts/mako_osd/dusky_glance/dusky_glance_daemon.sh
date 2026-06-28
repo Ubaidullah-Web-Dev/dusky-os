@@ -324,24 +324,77 @@ case "$MODE" in
             fi
         done
 
+        has_power=false
+        has_current=false
+        has_energy=false
+        has_charge=false
+        has_energy_full=false
+        has_charge_full=false
+
+        if [[ -n "$bat_dir" ]]; then
+            if [[ -f "$bat_dir/power_now" ]]; then
+                has_power=true
+                [[ -f "$bat_dir/energy_now" ]] && has_energy=true
+                [[ -f "$bat_dir/energy_full" ]] && has_energy_full=true
+            elif [[ -f "$bat_dir/current_now" && -f "$bat_dir/voltage_now" ]]; then
+                has_current=true
+                [[ -f "$bat_dir/charge_now" ]] && has_charge=true
+                [[ -f "$bat_dir/charge_full" ]] && has_charge_full=true
+            fi
+        fi
+
         while true; do
             if [[ -n "$bat_dir" ]]; then
                 read -r cap < "$bat_dir/capacity" 2>/dev/null || cap="?"
+                read -r stat < "$bat_dir/status" 2>/dev/null || stat="Unknown"
                 
                 watts_int=0; watts_frac=0
-                if [[ -f "$bat_dir/power_now" ]]; then
+                time_str=""
+                
+                if [[ "$has_power" == true ]]; then
                     read -r pwr < "$bat_dir/power_now" 2>/dev/null || pwr=0
                     watts_int=$(( pwr / 1000000 ))
                     watts_frac=$(( (pwr % 1000000) / 100000 ))
-                elif [[ -f "$bat_dir/current_now" && -f "$bat_dir/voltage_now" ]]; then
+                    
+                    if [[ "$stat" == "Discharging" && "$has_energy" == true ]]; then
+                        read -r energy_now < "$bat_dir/energy_now" 2>/dev/null || energy_now=0
+                        if (( pwr > 0 )); then
+                            total_mins=$(( (energy_now * 60) / pwr ))
+                            time_str=" $(( total_mins / 60 ))h$(( total_mins % 60 ))m"
+                        fi
+                    elif [[ "$stat" == "Charging" && "$has_energy_full" == true ]]; then
+                        read -r energy_now < "$bat_dir/energy_now" 2>/dev/null || energy_now=0
+                        read -r energy_full < "$bat_dir/energy_full" 2>/dev/null || energy_full=0
+                        if (( pwr > 0 && energy_full > energy_now )); then
+                            total_mins=$(( ((energy_full - energy_now) * 60) / pwr ))
+                            time_str=" $(( total_mins / 60 ))h$(( total_mins % 60 ))m"
+                        fi
+                    fi
+                    
+                elif [[ "$has_current" == true ]]; then
                     read -r curr < "$bat_dir/current_now" 2>/dev/null || curr=0
                     read -r volt < "$bat_dir/voltage_now" 2>/dev/null || volt=0
                     p_uw=$(( (curr / 1000) * (volt / 1000) ))
                     watts_int=$(( p_uw / 1000000 ))
                     watts_frac=$(( (p_uw % 1000000) / 100000 ))
+                    
+                    if [[ "$stat" == "Discharging" && "$has_charge" == true ]]; then
+                        read -r charge_now < "$bat_dir/charge_now" 2>/dev/null || charge_now=0
+                        if (( curr > 0 )); then
+                            total_mins=$(( (charge_now * 60) / curr ))
+                            time_str=" $(( total_mins / 60 ))h$(( total_mins % 60 ))m"
+                        fi
+                    elif [[ "$stat" == "Charging" && "$has_charge_full" == true ]]; then
+                        read -r charge_now < "$bat_dir/charge_now" 2>/dev/null || charge_now=0
+                        read -r charge_full < "$bat_dir/charge_full" 2>/dev/null || charge_full=0
+                        if (( curr > 0 && charge_full > charge_now )); then
+                            total_mins=$(( ((charge_full - charge_now) * 60) / curr ))
+                            time_str=" $(( total_mins / 60 ))h$(( total_mins % 60 ))m"
+                        fi
+                    fi
                 fi
                 
-                printf -v out_str "%s%% %d.%dW" "$cap" "$watts_int" "$watts_frac"
+                printf -v out_str "%s%% %d.%dW%s" "$cap" "$watts_int" "$watts_frac" "$time_str"
                 send_osd "$out_str"
             else
                 send_osd "Bat: N/A"
