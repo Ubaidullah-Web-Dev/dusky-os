@@ -129,7 +129,7 @@ while true; do
             -h string:x-canonical-private-synchronous:dusky-ram-hud \
             -u critical \
             -t 1500 \
-            "CRITICAL MEMORY LOW" \
+            "RAM CRITICALY LOW" \
             "RAM: ${RamUsedPct}% | ZRAM: ${ZramUsedPct}%"
     fi
     
