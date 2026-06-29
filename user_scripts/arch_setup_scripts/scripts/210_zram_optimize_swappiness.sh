@@ -123,7 +123,7 @@ if [[ "$MODE" == "AGGRESSIVE" ]] || [[ "$MODE" == "AUTO" && SYSTEM_RAM_GB -ge 30
     EXPECTED_DIRTY_BG_BYTES=268435456
     EXPECTED_DIRTY_WRITEBACK=500
     EXPECTED_DIRTY_EXPIRE=3000
-    EXPECTED_MGLRU_TTL=3000
+    EXPECTED_MGLRU_TTL=1000
 else
     EXPECTED_MODE="STRICT_RAM_SAVINGS (<32GB)"
     EXPECTED_SWAPPINESS=190        # Force immediate compression of inactive RAM (User Override)
@@ -133,7 +133,7 @@ else
     EXPECTED_DIRTY_BG_BYTES=33554432 # 32MB bg threshold. Flushes data to disk sooner to free memory.
     EXPECTED_DIRTY_WRITEBACK=100    # 1s dirty background page writeback interval
     EXPECTED_DIRTY_EXPIRE=500       # 5s dirty page expiry limit (flushes cache aggressively)
-    EXPECTED_MGLRU_TTL=2000         # Perfect CPU/ZRAM thrash shield balance.
+    EXPECTED_MGLRU_TTL=1000         # Perfect CPU/ZRAM thrash shield balance.
 fi
 
 # Static Constants

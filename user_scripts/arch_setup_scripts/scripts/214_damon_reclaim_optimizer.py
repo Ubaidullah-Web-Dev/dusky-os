@@ -26,25 +26,25 @@ RAM_DEMARCATION_GB = 30.0
 LOW_RAM_CONFIG = {
     "sample_interval": 500000,    # 500ms: How often the monitor checks what memory is used (wakes up 2 times/sec)
     "aggr_interval": 5000000,     # 5s: How often the monitor aggregates statistics to find cold memory
-    "min_age": 60000000,          # 60s (1 min): Minimum time memory must sit untouched to be considered "cold"
+    "min_age": 20000000,          # 20s (Fast 20-second threshold): Minimum time memory must sit untouched to be considered "cold"
     "wmarks_high": 500,           # 50%: Sleep the monitor if free RAM is above this percentage (500 parts per thousand)
     "wmarks_mid": 400,            # 40%: Activate the monitor if free RAM drops below this percentage (400 parts per thousand)
-    "wmarks_low": 200,            # 20%: Pause the monitor if free RAM drops below this (to protect latency, 200 parts per thousand)
-    "quota_ms": 10,               # 10ms: Limit CPU overhead to a maximum of 10ms per second
-    "quota_sz": 134217728,        # 128MB: Limit pageout throughput to 128 MB per second
+    "wmarks_low": 50,             # 5%: Pause the monitor if free RAM drops below this (to protect latency, 50 parts per thousand)
+    "quota_ms": 100,              # 100ms: Limit CPU overhead to a maximum of 100ms per second (10% CPU)
+    "quota_sz": 1073741824,       # 1GB: Limit pageout throughput to 1 GB per second
 }
 
 # --- Profile 2: High-RAM Configuration (>= 30GB) ---
 # Used for the host system (62 GB RAM) - Default production settings.
 HIGH_RAM_CONFIG = {
-    "sample_interval": 2000000,   # 2s: How often the monitor checks what memory is used (wakes up once every 2 seconds)
-    "aggr_interval": 10000000,    # 10s: How often the monitor aggregates statistics to find cold memory
-    "min_age": 300000000,         # 300s (5 min): Minimum time memory must sit untouched to be considered "cold"
+    "sample_interval": 1000000,   # 1s: How often the monitor checks what memory is used
+    "aggr_interval": 5000000,     # 5s: How often the monitor aggregates statistics
+    "min_age": 60000000,          # 60s: Minimum time memory must sit untouched to be considered "cold"
     "wmarks_high": 300,           # 30%: Sleep the monitor if free RAM is above this percentage (300 parts per thousand)
     "wmarks_mid": 200,            # 20%: Activate the monitor if free RAM drops below this percentage (200 parts per thousand)
-    "wmarks_low": 100,            # 10%: Pause the monitor if free RAM drops below this (to protect latency, 100 parts per thousand)
-    "quota_ms": 10,               # 10ms: Limit CPU overhead to a maximum of 10ms per second
-    "quota_sz": 134217728,        # 128MB: Limit pageout throughput to 128 MB per second
+    "wmarks_low": 50,             # 5%: Pause the monitor if free RAM drops below this (to protect latency, 50 parts per thousand)
+    "quota_ms": 100,              # 100ms: Limit CPU overhead to a maximum of 100ms per second (10% CPU)
+    "quota_sz": 1073741824,       # 1GB: Limit pageout throughput to 1 GB per second
 }
 
 

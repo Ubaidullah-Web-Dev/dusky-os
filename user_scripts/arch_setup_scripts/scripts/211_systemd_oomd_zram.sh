@@ -124,6 +124,7 @@ cat > "$tmp_user_svc" <<EOF
 # Grants systemd-oomd the authority to monitor and kill runaway apps in the user session.
 ManagedOOMMemoryPressure=kill
 ManagedOOMSwap=kill
+MemoryAccounting=yes
 EOF
 
 # C. UWSM Graphical Session Shield

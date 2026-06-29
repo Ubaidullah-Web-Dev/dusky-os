@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import sys
 import subprocess
@@ -81,21 +82,30 @@ def perform_reclaim() -> None:
         cgroup_dir = Path("/sys/fs/cgroup") / slice_name
         current_file = cgroup_dir / "memory.current"
         reclaim_file = cgroup_dir / "memory.reclaim"
+        stat_file = cgroup_dir / "memory.stat"
         
-        if not current_file.exists() or not reclaim_file.exists():
+        if not current_file.exists() or not reclaim_file.exists() or not stat_file.exists():
             info(f"Cgroup slice {slice_name} does not support memory reclaim. Skipping.")
             continue
             
         try:
+            # Parse anonymous memory from memory.stat to compute target for swappiness=max
+            stat_content = stat_file.read_text()
+            anon_match = re.search(r"^anon\s+(\d+)", stat_content, re.M)
+            if not anon_match:
+                info(f"Could not parse anonymous memory stats for {slice_name}. Skipping.")
+                continue
+            anon_bytes = int(anon_match.group(1))
+            
             # Capture real state before reclaim request
             before_bytes = int(current_file.read_text().strip())
             
-            # Request 50% eviction
-            target_reclaim = int(before_bytes * 0.50)
+            # Request 50% eviction of anonymous memory
+            target_reclaim = int(anon_bytes * 0.50)
             
             if target_reclaim > 0:
                 # Synchronous kernel command
-                reclaim_command = f"{target_reclaim} swappiness=200"
+                reclaim_command = f"{target_reclaim} swappiness=max"
                 reclaim_file.write_text(reclaim_command)
                 
                 # Capture real state after kernel processing to calculate the true delta
@@ -107,6 +117,8 @@ def perform_reclaim() -> None:
                     ok(f"Reclaimed {actual_reclaimed / (1024*1024):.1f} MB of cold memory from {slice_name}")
                 else:
                     info(f"Kernel refused eviction for {slice_name}. No cold pages available.")
+            else:
+                info(f"No cold anonymous pages available in {slice_name}.")
                     
         except Exception as e:
             info(f"Failed to reclaim memory from {slice_name}: {e}")
