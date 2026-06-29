@@ -131,7 +131,7 @@ else
     EXPECTED_SCALE_FACTOR=15       # 0.15% Emergency Buffer (12MB on 8GB RAM). Prevents UI direct reclaim stall.
     EXPECTED_DIRTY_BYTES=134217728 # 128MB max. Prevents massive file transfers from bloating RAM.
     EXPECTED_DIRTY_BG_BYTES=33554432 # 32MB bg threshold. Flushes data to disk sooner to free memory.
-    EXPECTED_DIRTY_WRITEBACK=100    # 1s dirty background page writeback interval
+    EXPECTED_DIRTY_WRITEBACK=1000   # 10s dirty background page writeback interval
     EXPECTED_DIRTY_EXPIRE=500       # 5s dirty page expiry limit (flushes cache aggressively)
     EXPECTED_MGLRU_TTL=100          # Set to 100 to align with CachyOS. Speeds up idle page reclamation.
 fi
