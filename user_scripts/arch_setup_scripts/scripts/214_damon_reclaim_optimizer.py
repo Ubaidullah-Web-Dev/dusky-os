@@ -27,8 +27,8 @@ LOW_RAM_CONFIG = {
     "sample_interval": 500000,    # 500ms: How often the monitor checks what memory is used (wakes up 2 times/sec)
     "aggr_interval": 5000000,     # 5s: How often the monitor aggregates statistics to find cold memory
     "min_age": 20000000,          # 20s (Fast 20-second threshold): Minimum time memory must sit untouched to be considered "cold"
-    "wmarks_high": 500,           # 50%: Sleep the monitor if free RAM is above this percentage (500 parts per thousand)
-    "wmarks_mid": 400,            # 40%: Activate the monitor if free RAM drops below this percentage (400 parts per thousand)
+    "wmarks_high": 800,           # 80%: Sleep the monitor if free RAM is above this percentage (800 parts per thousand)
+    "wmarks_mid": 700,            # 70%: Activate the monitor if free RAM drops below this percentage (700 parts per thousand)
     "wmarks_low": 50,             # 5%: Pause the monitor if free RAM drops below this (to protect latency, 50 parts per thousand)
     "quota_ms": 100,              # 100ms: Limit CPU overhead to a maximum of 100ms per second (10% CPU)
     "quota_sz": 1073741824,       # 1GB: Limit pageout throughput to 1 GB per second
@@ -40,8 +40,8 @@ HIGH_RAM_CONFIG = {
     "sample_interval": 1000000,   # 1s: How often the monitor checks what memory is used
     "aggr_interval": 5000000,     # 5s: How often the monitor aggregates statistics
     "min_age": 60000000,          # 60s: Minimum time memory must sit untouched to be considered "cold"
-    "wmarks_high": 300,           # 30%: Sleep the monitor if free RAM is above this percentage (300 parts per thousand)
-    "wmarks_mid": 200,            # 20%: Activate the monitor if free RAM drops below this percentage (200 parts per thousand)
+    "wmarks_high": 400,           # 40%: Sleep the monitor if free RAM is above this percentage (400 parts per thousand)
+    "wmarks_mid": 300,            # 30%: Activate the monitor if free RAM drops below this percentage (300 parts per thousand)
     "wmarks_low": 50,             # 5%: Pause the monitor if free RAM drops below this (to protect latency, 50 parts per thousand)
     "quota_ms": 100,              # 100ms: Limit CPU overhead to a maximum of 100ms per second (10% CPU)
     "quota_sz": 1073741824,       # 1GB: Limit pageout throughput to 1 GB per second
