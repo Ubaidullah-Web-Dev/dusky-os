@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Dusky RAM Monitor - Pure Bash Real-Time Memory HUD Daemon
-# Forensic Optimization: Zero forks, zero subshells, synchronous D-Bus repaint.
+# Forensic Optimization: Zero forks, zero subshells, synchronous D-Bus repaint, IPC Snooze.
 
 # ==============================================================================
 # CONFIGURATION SETTINGS
@@ -35,6 +35,24 @@ COOLDOWN_SECS=120
 # ==============================================================================
 hud_active=false
 grace_expire_time=0
+snooze_expire_time=0
+
+# ==============================================================================
+# IPC SIGNAL TRAP (Right-Click Snooze Handler)
+# ==============================================================================
+handle_snooze() {
+    hud_active=false
+    snooze_expire_time=$(( EPOCHSECONDS + COOLDOWN_SECS ))
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] USER SNOOZED HUD FOR ${COOLDOWN_SECS}s" >&2
+    
+    # Instantly kill the active HUD box on screen
+    /usr/bin/notify-send -a "dusky-high-ram-alert" \
+        -h string:x-canonical-private-synchronous:dusky-ram-hud \
+        -t 1 " " " " 2>/dev/null || true
+}
+
+# Catch SIGUSR1 sent by Mako's on-button-right
+trap 'handle_snooze' USR1
 
 # ==============================================================================
 # ENVIRONMENT PREPARATION
@@ -95,7 +113,11 @@ while true; do
         is_breached=1
     fi
 
-    if (( is_breached )); then
+    # 4. State Machine Execution
+    if (( EPOCHSECONDS < snooze_expire_time )); then
+        # User explicitly right-clicked to snooze. Absolute silence enforced.
+        :
+    elif (( is_breached )); then
         if [[ "$hud_active" == false ]]; then
             # Evaluate post-recovery grace period
             if (( EPOCHSECONDS < grace_expire_time && RamUsedPct < THRESHOLD_RAM_CRITICAL )); then
@@ -110,9 +132,13 @@ while true; do
         if [[ "$hud_active" == true ]]; then
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] SYSTEM RECOVERED: RAM=${RamUsedPct}% (below ${THRESHOLD_RAM_RECOVERY}%)" >&2
             
-            # Send final repaint to transition the HUD box to a recovery notice
+            # Step A: Instantly kill active red HUD surface (frees Mako left-click lock)
             /usr/bin/notify-send -a "dusky-high-ram-alert" \
                 -h string:x-canonical-private-synchronous:dusky-ram-hud \
+                -t 1 " " " "
+                
+            # Step B: Spawn fresh, independent green recovery notification
+            /usr/bin/notify-send -a "dusky-ram-recovered" \
                 -u normal \
                 -t 3000 \
                 "SYSTEM RECOVERED" \
@@ -123,13 +149,13 @@ while true; do
         fi
     fi
 
-    # 4. Render Live HUD Frame (Fires twice a second while active)
+    # 5. Render Live HUD Frame (Fires twice a second while active)
     if [[ "$hud_active" == true ]]; then
         /usr/bin/notify-send -a "dusky-high-ram-alert" \
             -h string:x-canonical-private-synchronous:dusky-ram-hud \
             -u critical \
             -t 1500 \
-            "RAM CRITICALY LOW" \
+            "CRITICAL MEMORY LOW" \
             "RAM: ${RamUsedPct}% | ZRAM: ${ZramUsedPct}%"
     fi
     
