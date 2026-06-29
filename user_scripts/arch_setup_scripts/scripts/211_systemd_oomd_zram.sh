@@ -12,6 +12,8 @@ readonly SELF_PATH="$(realpath -e -- "${BASH_SOURCE[0]}")"
 
 # --- Target Configurations ---
 readonly EARLYOOM_CONF="/etc/default/earlyoom"
+readonly SHIELD_BIN="/usr/local/bin/compositor-oom-shield.sh"
+readonly SHIELD_SVC="/etc/systemd/system/compositor-oom-shield.service"
 
 # --- Formatting ---
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
@@ -189,7 +191,9 @@ fi
 # --- 6. ATOMIC CONFIGURATION FILE GENERATION ---
 # =============================================================================
 tmp_earlyoom="$(umask 077 && mktemp)"
-trap 'rm -f "$tmp_earlyoom"' EXIT
+tmp_shield_bin="$(umask 077 && mktemp)"
+tmp_shield_svc="$(umask 077 && mktemp)"
+trap 'rm -f "$tmp_earlyoom" "$tmp_shield_bin" "$tmp_shield_svc"' EXIT
 
 # Generate earlyoom configuration payload
 # -m 10: Trigger SIGTERM at 10% available memory (SIGKILL at 5%)
@@ -197,30 +201,123 @@ trap 'rm -f "$tmp_earlyoom"' EXIT
 # --avoid: Protect compositor (Hyprland, Sway, KWin, Gnome), init, and audio services
 cat > "$tmp_earlyoom" <<'EOF'
 # Sourced by earlyoom.service
-EARLYOOM_ARGS="-m 10 -s 10 -r 3600 --avoid '(^|/)(init|systemd|Xorg|sshd|Hyprland|sway|kwin_wayland|gnome-shell|wayfire|river|niri|dbus-broker|dbus-daemon|pipewire|wireplumber)$'"
+EARLYOOM_ARGS="-m 10 -s 10 -r 3600 --avoid '(^|/)(init|systemd.*|Xorg|sshd|Hyprland|sway|kwin_wayland|gnome-shell|wayfire|river|niri|dbus-broker.*|dbus-daemon|pipewire|wireplumber|gnome-keyring.*|xdg-.*|mako|waybar|uwsm|start-hyprland|startwayland|hyprland-session|wl-clip-persist|dconf-service|at-spi2-registryd|waitpid|sd-pam|polkitd)$' --prefer '(^|/)(kitty|chrome|firefox|alacritty|discord|slack|electron)$'"
+EOF
+
+# Generate lightweight compositor shield script
+cat > "$tmp_shield_bin" <<'EOF'
+#!/usr/bin/env bash
+# Managed by 211_systemd_oomd_zram.sh
+# Lightweight kernel OOM priority management daemon.
+set -euo pipefail
+
+while true; do
+    # 1. Shield the compositor
+    if pids=$(pgrep -x "Hyprland|sway|kwin_wayland|gnome-shell|wayfire|river|niri" 2>/dev/null); then
+        for pid in $pids; do
+            if [[ -f "/proc/${pid}/oom_score_adj" ]]; then
+                current=$(cat "/proc/${pid}/oom_score_adj" 2>/dev/null || echo "0")
+                if [[ "$current" -ne -500 ]]; then
+                    echo -500 > "/proc/${pid}/oom_score_adj" 2>/dev/null || true
+                fi
+            fi
+        done
+    fi
+
+    # 2. Protect session management, portals, & DBus (set to 0 to prevent kernel OOM choice)
+    if pids=$(pgrep -f "uwsm|xdg-desktop-portal|dbus-broker|dbus-daemon" 2>/dev/null); then
+        for pid in $pids; do
+            if [[ -f "/proc/${pid}/oom_score_adj" ]]; then
+                current=$(cat "/proc/${pid}/oom_score_adj" 2>/dev/null || echo "0")
+                if [[ "$current" -gt 0 ]]; then
+                    echo 0 > "/proc/${pid}/oom_score_adj" 2>/dev/null || true
+                fi
+            fi
+        done
+    fi
+
+    # 3. Target user applications in app.slice (set to 800)
+    # Find all user@*.service/app.slice/cgroup.procs
+    while IFS= read -r -d '' proc_file; do
+        if [[ -f "$proc_file" ]]; then
+            while read -r pid; do
+                if [[ -f "/proc/${pid}/oom_score_adj" ]]; then
+                    current=$(cat "/proc/${pid}/oom_score_adj" 2>/dev/null || echo "0")
+                    if [[ "$current" -lt 800 ]]; then
+                        comm=$(cat "/proc/${pid}/comm" 2>/dev/null || echo "")
+                        if [[ ! "$comm" =~ ^(Hyprland|sway|kwin_wayland|gnome-shell|wayfire|river|niri|uwsm|systemd|dbus-broker)$ ]]; then
+                            echo 800 > "/proc/${pid}/oom_score_adj" 2>/dev/null || true
+                        fi
+                    fi
+                fi
+            done < "$proc_file"
+        fi
+    done < <(find /sys/fs/cgroup -name "app.slice" -print0 2>/dev/null || true)
+
+    sleep 5
+done
+EOF
+
+# Generate systemd system service for shield
+cat > "$tmp_shield_svc" <<'EOF'
+[Unit]
+Description=Lightweight Compositor Kernel OOM Shield
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/compositor-oom-shield.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
 # Dry run verification of config
 if (( DRY_RUN == 1 )); then
-    log_info "DRY RUN EXECUTED. Target file: ${EARLYOOM_CONF}"
+    log_info "DRY RUN EXECUTED."
+    echo -e "\n${C_BOLD}[ ${EARLYOOM_CONF} ]${C_RESET}"
     cat "$tmp_earlyoom"
+    echo -e "\n${C_BOLD}[ ${SHIELD_BIN} ]${C_RESET}"
+    cat "$tmp_shield_bin"
+    echo -e "\n${C_BOLD}[ ${SHIELD_SVC} ]${C_RESET}"
+    cat "$tmp_shield_svc"
     exit 0
 fi
 
 # Atomic Installation
 declare -i CONFIG_CHANGED=0
+declare -i SHIELD_CHANGED=0
 
-dir="$(dirname "$EARLYOOM_CONF")"
-if [[ ! -d "$dir" ]]; then
-    install -d -m 0755 "$dir"
+install_file() {
+    local src="$1" dest="$2" perm="$3"
+    local dir
+    dir="$(dirname "$dest")"
+    if [[ ! -d "$dir" ]]; then
+        install -d -m 0755 "$dir"
+    fi
+    if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
+        log_info "${dest} is already up to date."
+        return 1
+    else
+        install -m "$perm" "$src" "$dest"
+        log_success "Updated ${dest}"
+        return 0
+    fi
+}
+
+# Install EarlyOOM
+if install_file "$tmp_earlyoom" "$EARLYOOM_CONF" "0644"; then
+    CONFIG_CHANGED=1
 fi
 
-if [[ -f "$EARLYOOM_CONF" ]] && cmp -s "$tmp_earlyoom" "$EARLYOOM_CONF"; then
-    log_info "${EARLYOOM_CONF} is already up to date."
-else
-    install -m 0644 "$tmp_earlyoom" "$EARLYOOM_CONF"
-    log_success "Updated ${EARLYOOM_CONF}"
-    CONFIG_CHANGED=1
+# Install Shield Bin & Service
+if install_file "$tmp_shield_bin" "$SHIELD_BIN" "0755"; then
+    SHIELD_CHANGED=1
+fi
+if install_file "$tmp_shield_svc" "$SHIELD_SVC" "0644"; then
+    SHIELD_CHANGED=1
 fi
 
 # =============================================================================
@@ -228,13 +325,20 @@ fi
 # =============================================================================
 systemctl unmask earlyoom.service >/dev/null 2>&1 || true
 
-if (( CONFIG_CHANGED == 1 || JUST_INSTALLED == 1 )) || ! systemctl is-active --quiet earlyoom.service; then
+# Force restart to ensure active daemon matches the configuration in memory
+if true; then
     log_info "Enabling and activating earlyoom service..."
     systemctl enable earlyoom.service >/dev/null 2>&1 || log_warn "Failed to enable earlyoom."
     systemctl restart earlyoom.service >/dev/null 2>&1 || die "Failed to start/restart earlyoom."
     log_success "earlyoom service has been successfully activated and reloaded."
-else
-    log_info "earlyoom service is already active with the correct configuration. No restart needed."
+fi
+
+if true; then
+    log_info "Enabling and activating compositor-oom-shield service..."
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable compositor-oom-shield.service >/dev/null 2>&1 || log_warn "Failed to enable compositor-oom-shield."
+    systemctl restart compositor-oom-shield.service >/dev/null 2>&1 || die "Failed to start/restart compositor-oom-shield."
+    log_success "compositor-oom-shield service has been successfully activated."
 fi
 
 log_success "OOM prevention and compositor shielding successfully configured."
