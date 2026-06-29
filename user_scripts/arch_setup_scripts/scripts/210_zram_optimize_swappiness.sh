@@ -300,7 +300,10 @@ else
     # Re-exec user manager instance for active desktop sessions
     while read -r uid; do
         if [[ "$uid" =~ ^[0-9]+$ ]]; then
-            runuser -u dusk -- systemctl --user daemon-reexec >/dev/null 2>&1 || true
+            user="$(id -un "$uid" 2>/dev/null || true)"
+            if [[ -n "$user" ]]; then
+                systemctl --user -M "${user}@" daemon-reexec >/dev/null 2>&1 || true
+            fi
         fi
     done < <(pgrep -u root -f "systemd --user" | xargs -r -I {} sh -c 'cat /proc/{}/loginuid' 2>/dev/null || true)
 fi

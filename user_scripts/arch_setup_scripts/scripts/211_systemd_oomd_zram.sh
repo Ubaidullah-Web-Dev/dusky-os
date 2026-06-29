@@ -121,12 +121,12 @@ if (( CLEANED_ANY == 1 && DRY_RUN == 0 )); then
         user="$(id -un "$uid" 2>/dev/null || true)"
         [[ -z "$user" ]] && continue
         
-        # Attempt machinectl reload first, fallback to runuser
-        if systemctl --user --machine="${user}@.host" daemon-reload >/dev/null 2>&1; then
-            log_success "Reloaded user manager for ${user} (via machinectl)."
+        # Reload user manager using modern systemd machine connection API
+        if systemctl --user -M "${user}@" daemon-reload >/dev/null 2>&1; then
+            log_success "Reloaded user manager for ${user}."
         elif command -v runuser >/dev/null 2>&1 && [[ -S "/run/user/${uid}/bus" ]]; then
             if runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/${uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" systemctl --user daemon-reload >/dev/null 2>&1; then
-                log_success "Reloaded user manager for ${user} (via runuser)."
+                log_success "Reloaded user manager for ${user} (via runuser fallback)."
             fi
         fi || true 
     done
@@ -201,7 +201,7 @@ trap 'rm -f "$tmp_earlyoom" "$tmp_shield_bin" "$tmp_shield_svc"' EXIT
 # --avoid: Protect compositor (Hyprland, Sway, KWin, Gnome), init, and audio services
 cat > "$tmp_earlyoom" <<'EOF'
 # Sourced by earlyoom.service
-EARLYOOM_ARGS="-m 10 -s 100,100 -r 3600 --avoid '(^|/)(init|systemd.*|Xorg|sshd|Hyprland|sway|kwin_wayland|gnome-shell|wayfire|river|niri|dbus-broker.*|dbus-daemon|pipewire|wireplumber|gnome-keyring.*|xdg-.*|mako|uwsm|start-hyprland|startwayland|hyprland-session|wl-clip-persist|dconf-service|at-spi.*|waitpid|sd-pam|polkitd)$' --prefer '(^|/)(kitty|chrome|firefox|alacritty|discord|slack|electron|obsidian|thunar|gnome-clocks|spotify|code|mpv|vlc|foot|dolphin|gnome-text-editor|nvim|neovim)$'"
+EARLYOOM_ARGS="-m 4 -s 100,100 -r 3600 --avoid '(^|/)(init|systemd.*|Xorg|sshd|Hyprland|sway|kwin_wayland|gnome-shell|wayfire|river|niri|dbus-broker.*|dbus-daemon|pipewire|wireplumber|gnome-keyring.*|xdg-.*|mako|uwsm|start-hyprland|startwayland|hyprland-session|wl-clip-persist|dconf-service|at-spi.*|waitpid|sd-pam|polkitd)$' --prefer '(^|/)(kitty|chrome|firefox|alacritty|discord|slack|electron|obsidian|thunar|gnome-clocks|spotify|code|mpv|vlc|foot|dolphin|gnome-text-editor|nvim|neovim)$'"
 EOF
 
 # Generate lightweight compositor shield script
