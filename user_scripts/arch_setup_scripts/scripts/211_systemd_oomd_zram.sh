@@ -60,75 +60,56 @@ fi
 log_info "Initializing Platinum systemd-oomd 261 optimizer..."
 
 # =============================================================================
-# --- 3. PURGE LEGACY EARLYOOM & BASH SHIELD ---
-# =============================================================================
-log_info "Scanning and removing legacy earlyoom/bash shield configurations..."
-
-legacy_configs=(
-    "/etc/default/earlyoom"
-    "/usr/local/bin/compositor-oom-shield.sh"
-    "/etc/systemd/system/compositor-oom-shield.service"
-    "/etc/systemd/oomd.conf.d/99-zram-tuning.conf"
-    "/etc/systemd/system/user@.service.d/99-oomd-kill-policy.conf"
-    "/etc/systemd/system/user-.slice.d/99-oomd.conf"
-    "/etc/systemd/user/session.slice.d/99-oomd-avoid.conf"
-    "/etc/systemd/user/scope.d/99-oom-adjust.conf"
-    "/etc/systemd/user/wayland-wm@.service.d/99-oomd-avoid.conf"
-    "/usr/local/bin/hyprland-oom-shield.sh"
-    "/etc/systemd/system/hyprland-oom-shield.service"
-)
-
-for conf in "${legacy_configs[@]}"; do
-    if [[ -f "$conf" || -L "$conf" ]]; then
-        if (( DRY_RUN == 0 )); then
-            # Stop services if they are running
-            if [[ "$conf" == *compositor-oom-shield.service ]]; then
-                systemctl disable --now compositor-oom-shield.service >/dev/null 2>&1 || true
-            elif [[ "$conf" == *hyprland-oom-shield.service ]]; then
-                systemctl disable --now hyprland-oom-shield.service >/dev/null 2>&1 || true
-            fi
-            rm -f "$conf"
-            log_success "Cleaned up legacy file: ${conf}"
-        else
-            log_info "Would clean up legacy file: ${conf}"
-        fi
-    fi
-done
-
-if (( DRY_RUN == 0 )); then
-    # Purge earlyoom package if installed
-    if command -v earlyoom >/dev/null 2>&1; then
-        log_info "Uninstalling legacy earlyoom package..."
-        pacman -Rns --noconfirm earlyoom >/dev/null 2>&1 || log_warn "Failed to remove earlyoom package."
-    fi
-else
-    log_info "Would uninstall earlyoom package if present."
-fi
-
-# =============================================================================
-# --- 4. SYSTEMD-OOMD CONFIGURATION (SYSTEMD 261+) ---
+# --- 3. SYSTEMD-OOMD CONFIGURATION (SYSTEMD 261+) ---
 # =============================================================================
 log_info "Configuring native systemd-oomd rules for ZRAM and UWSM isolation..."
 
-tmp_oomrule="$(umask 077 && mktemp)"
+tmp_oomrule_pressure="$(umask 077 && mktemp)"
+tmp_oomrule_swap="$(umask 077 && mktemp)"
 tmp_app_slice="$(umask 077 && mktemp)"
 tmp_session_slice="$(umask 077 && mktemp)"
 tmp_wayland_wm="$(umask 077 && mktemp)"
-trap 'rm -f "$tmp_oomrule" "$tmp_app_slice" "$tmp_session_slice" "$tmp_wayland_wm"' EXIT
+trap 'rm -f "$tmp_oomrule_pressure" "$tmp_oomrule_swap" "$tmp_app_slice" "$tmp_session_slice" "$tmp_wayland_wm"' EXIT
 
-# Generate ZRAM-aware OOM rule
-cat > "$tmp_oomrule" <<'OOMRULE'
+# --- ZRAM-aware OOM rulesets (systemd 261 OOMRules=, see oomd.conf(5)) ---
+#
+# Two SEPARATE rulesets are used on purpose. Within a single .oomrule file,
+# MemoryPressureAbove= and SwapUsageMax= are combined with AND, which is a
+# trap on a zram-only system: zram's compression lets reported swap usage
+# stay well under any sane threshold even while physical RAM is fully
+# exhausted and the system is thrashing, so a single rule requiring both
+# conditions could simply never fire. Listing multiple rulesets in
+# OOMRules= evaluates them independently (effectively OR), so either
+# condition alone is enough to trigger its own action.
+
+# Primary trigger: PSI memory pressure. This is the zram-proof signal,
+# since it measures stall time, not raw memory/swap fullness.
+cat > "$tmp_oomrule_pressure" <<'OOMRULE_PRESSURE'
 [Rule]
 MemoryPressureAbove=10%
-SwapUsageMax=80%
 Action=kill-by-pgscan
 LastingSec=2s
-OOMRULE
+OOMRULE_PRESSURE
 
-# Bind to user applications via app-graphical.slice (UWSM app target)
+# Backstop: catastrophic zram (swap) saturation, independent of pressure.
+cat > "$tmp_oomrule_swap" <<'OOMRULE_SWAP'
+[Rule]
+SwapUsageMax=90%
+Action=kill-by-swap
+LastingSec=2s
+OOMRULE_SWAP
+
+# Bind to user applications via app-graphical.slice (UWSM app target).
+# ManagedOOMMemoryPressure=kill is the switch that actually registers this
+# slice's cgroup for systemd-oomd monitoring at all -- without it,
+# OOMRules= is parsed but never evaluated, and systemd-oomd will silently
+# ignore the slice (see systemd-oomd.service(8): "Cgroups of units with
+# ManagedOOMSwap= or ManagedOOMMemoryPressure= set to kill will be
+# monitored.").
 cat > "$tmp_app_slice" <<'APPSLICE'
 [Slice]
-OOMRules=10-zram-desktop
+ManagedOOMMemoryPressure=kill
+OOMRules=10-zram-desktop-pressure 10-zram-desktop-swap
 APPSLICE
 
 # Protect the graphical session slice
@@ -138,7 +119,7 @@ ManagedOOMPreference=avoid
 SESSIONSLICE
 
 # =============================================================================
-# --- 5. SYSTEM-LEVEL OOM SCORE INHERITANCE FIX ---
+# --- 4. SYSTEM-LEVEL OOM SCORE INHERITANCE FIX ---
 # =============================================================================
 # systemd --user cannot set a child's OOMScoreAdjust lower than its own.
 # By default, user@.service has OOMScoreAdjust=100.
@@ -147,7 +128,7 @@ SESSIONSLICE
 
 tmp_user_service="$(umask 077 && mktemp)"
 tmp_user_conf="$(umask 077 && mktemp)"
-trap 'rm -f "$tmp_oomrule" "$tmp_app_slice" "$tmp_session_slice" "$tmp_wayland_wm" "$tmp_user_service" "$tmp_user_conf"' EXIT
+trap 'rm -f "$tmp_oomrule_pressure" "$tmp_oomrule_swap" "$tmp_app_slice" "$tmp_session_slice" "$tmp_wayland_wm" "$tmp_user_service" "$tmp_user_conf"' EXIT
 
 cat > "$tmp_user_service" <<'USERSERVICE'
 [Service]
@@ -196,8 +177,10 @@ system_critical_services=(
 
 if (( DRY_RUN == 1 )); then
     log_info "DRY RUN EXECUTED."
-    echo -e "\n${C_BOLD}[ /etc/systemd/oomd/rules.d/10-zram-desktop.oomrule ]${C_RESET}"
-    cat "$tmp_oomrule"
+    echo -e "\n${C_BOLD}[ /etc/systemd/oomd/rules.d/10-zram-desktop-pressure.oomrule ]${C_RESET}"
+    cat "$tmp_oomrule_pressure"
+    echo -e "\n${C_BOLD}[ /etc/systemd/oomd/rules.d/10-zram-desktop-swap.oomrule ]${C_RESET}"
+    cat "$tmp_oomrule_swap"
     echo -e "\n${C_BOLD}[ /etc/systemd/user/app-graphical.slice.d/10-oomd.conf ]${C_RESET}"
     cat "$tmp_app_slice"
     echo -e "\n${C_BOLD}[ /etc/systemd/user/session-graphical.slice.d/10-oomd-avoid.conf ]${C_RESET}"
@@ -228,7 +211,8 @@ install_file() {
     fi
 }
 
-install_file "$tmp_oomrule" "/etc/systemd/oomd/rules.d/10-zram-desktop.oomrule" "0644" || true
+install_file "$tmp_oomrule_pressure" "/etc/systemd/oomd/rules.d/10-zram-desktop-pressure.oomrule" "0644" || true
+install_file "$tmp_oomrule_swap" "/etc/systemd/oomd/rules.d/10-zram-desktop-swap.oomrule" "0644" || true
 install_file "$tmp_app_slice" "/etc/systemd/user/app-graphical.slice.d/10-oomd.conf" "0644" || true
 install_file "$tmp_session_slice" "/etc/systemd/user/session-graphical.slice.d/10-oomd-avoid.conf" "0644" || true
 install_file "$tmp_user_service" "/etc/systemd/system/user@.service.d/10-oom-score.conf" "0644" || true
