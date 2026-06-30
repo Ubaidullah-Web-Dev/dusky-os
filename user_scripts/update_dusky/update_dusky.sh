@@ -239,7 +239,7 @@ declare -ra UPDATE_SEQUENCE=(
 #    "U | 155_blur_shadow_opacity.sh"
 #    "U | ignore-fail | 160_theme_ctl.py"
 #    "U | 165_qtct_config.sh"
-#    "S | 180_udev_usb_notify.sh"
+    "S | 180_udev_usb_notify.sh"
 #    "U | 185_terminal_default.sh"
 #    "S | 190_dusk_fstab.sh"
 #    "S | 195_firefox_symlink_parition.sh"
