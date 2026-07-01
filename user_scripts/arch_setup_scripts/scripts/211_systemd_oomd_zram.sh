@@ -8,7 +8,8 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="${0##*/}"
-readonly SELF_PATH="$(realpath -e -- "${BASH_SOURCE[0]}")"
+SELF_PATH="$(realpath -e -- "${BASH_SOURCE[0]}")"
+readonly SELF_PATH
 
 # --- Formatting ---
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
@@ -100,15 +101,20 @@ LastingSec=2s
 OOMRULE_SWAP
 
 # Bind to user applications via app-graphical.slice (UWSM app target).
-# ManagedOOMMemoryPressure=kill is the switch that actually registers this
-# slice's cgroup for systemd-oomd monitoring at all -- without it,
-# OOMRules= is parsed but never evaluated, and systemd-oomd will silently
-# ignore the slice (see systemd-oomd.service(8): "Cgroups of units with
-# ManagedOOMSwap= or ManagedOOMMemoryPressure= set to kill will be
-# monitored.").
+# Both ManagedOOMMemoryPressure=kill and ManagedOOMSwap=kill are set below.
+# Per systemd-oomd.service(8): "Cgroups of units with ManagedOOMSwap= or
+# ManagedOOMMemoryPressure= set to kill will be monitored" -- either alone
+# is documented as sufficient to arm monitoring (and, by extension, OOMRules=
+# evaluation) for this cgroup. Setting BOTH is not required by that reading,
+# but the upstream .oomrule documentation never states outright that a
+# custom SwapUsageMax= rule specifically requires ManagedOOMSwap=kill (as
+# opposed to ManagedOOMMemoryPressure=kill) to be armed. Since setting both
+# costs nothing and closes that gray area entirely, both are set explicitly
+# rather than betting the swap backstop rule's correctness on an inference.
 cat > "$tmp_app_slice" <<'APPSLICE'
 [Slice]
 ManagedOOMMemoryPressure=kill
+ManagedOOMSwap=kill
 OOMRules=10-zram-desktop-pressure 10-zram-desktop-swap
 APPSLICE
 
@@ -186,9 +192,13 @@ if (( DRY_RUN == 1 )); then
     echo -e "\n${C_BOLD}[ /etc/systemd/user/session-graphical.slice.d/10-oomd-avoid.conf ]${C_RESET}"
     cat "$tmp_session_slice"
     
-    echo -e "\n${C_BOLD}[ Shield applied to critical services: ]${C_RESET}"
+    echo -e "\n${C_BOLD}[ Shield applied to critical user services: ]${C_RESET}"
     for svc in "${critical_services[@]}"; do
         echo "/etc/systemd/user/${svc}.d/10-oom-shield.conf"
+    done
+    echo -e "\n${C_BOLD}[ Shield applied to critical system services: ]${C_RESET}"
+    for svc in "${system_critical_services[@]}"; do
+        echo "/etc/systemd/system/${svc}.d/10-oom-shield.conf"
     done
     cat "$tmp_wayland_wm"
     exit 0
