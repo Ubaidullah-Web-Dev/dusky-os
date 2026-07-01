@@ -170,7 +170,7 @@ hl.bind(
 
 hl.bind(
     "SUPER + SHIFT + apostrophe",
-    hl.dsp.exec_cmd(dusky_scripts .. "rofi/rofi_wallpaper_selctor.sh --next-fav"),
+    hl.dsp.exec_cmd(dusky_scripts .. "images/wallpaper_selector.py --next-fav"),
     { description = "Cycle Fav Wallpaper" }
 )
 
