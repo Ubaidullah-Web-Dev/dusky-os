@@ -182,7 +182,7 @@ sort_cards_by_pci() {
 }
 
 detect_topology() {
-    local -a card_paths=(/sys/class/drm/card+([0-9]))
+    local -a card_paths=(/sys/class/drm/card[0-9]*)
     local card_path=''
     local vendor_file=''
     local vendor_id=''
@@ -203,6 +203,7 @@ detect_topology() {
     fi
 
     for card_path in "${card_paths[@]}"; do
+        [[ "${card_path##*/}" =~ ^card[0-9]+$ ]] || continue
         vendor_file="$card_path/device/vendor"
         [[ -r $vendor_file ]] || continue
 
@@ -456,7 +457,18 @@ generate_config() {
                 fi
                 ;;
             0x10de)
-                case "${kernel_driver}" in
+                # If running inside a chroot or during install phase where the kernel module 
+                # is not loaded yet, check if the proprietary nvidia-utils package files exist.
+                local target_driver="${kernel_driver}"
+                if [[ "${target_driver}" == "unknown" ]]; then
+                    if [[ -e /usr/lib/gbm/nvidia-drm_gbm.so ]]; then
+                        target_driver="nvidia"
+                    elif [[ -e /usr/lib/libGLX_mesa.so ]]; then
+                        target_driver="nouveau"
+                    fi
+                fi
+
+                case "${target_driver}" in
                     nvidia)
                         printf '# NVIDIA Primary Session (Proprietary)\n'
                         printf 'export GBM_BACKEND=nvidia-drm\n'
@@ -473,7 +485,7 @@ generate_config() {
                         fi
                         ;;
                     *)
-                        printf '# NVIDIA Primary Session (Unknown Kernel Driver: %s)\n' "$kernel_driver"
+                        printf '# NVIDIA Primary Session (Unknown Driver: %s)\n' "$target_driver"
                         ;;
                 esac
                 ;;
