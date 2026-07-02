@@ -910,8 +910,11 @@ case "$MODE" in
                     if [[ "$pstate" == D3* ]]; then
                         send_osd "D3"
                     else
-                        used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null || echo "N/A")
-                        if [[ "$used" != "N/A" ]]; then
+                        mem_str=$(nvidia-smi --query-gpu=memory.total,memory.free --format=csv,noheader,nounits 2>/dev/null || echo "N/A")
+                        if [[ "$mem_str" != "N/A" ]]; then
+                            total=$(echo "$mem_str" | cut -d, -f1 | tr -d ' ')
+                            free=$(echo "$mem_str" | cut -d, -f2 | tr -d ' ')
+                            used=$((total - free))
                             send_osd "${used}MB"
                         else
                             send_osd "N/A"
