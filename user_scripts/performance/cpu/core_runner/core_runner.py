@@ -321,6 +321,7 @@ def print_beautiful_help() -> None:
     table.add_row("-s, --status", "None", "Show CPU core topology (P vs E cores) and online states.")
     table.add_row("-t, --type", "pcores | ecores | all", "Target hardware tier (default: pcores).")
     table.add_row("-c, --custom", "Comma/dash list (e.g. 0-2,4)", "Explicit CPU core pinning mask.")
+    table.add_row("-d, --detach", "None", "Run application and wrapper in background (detached).")
     table.add_row("command [args...]", "Exec and params", "Target command to launch with core affinity.")
 
     console.print(table)
@@ -330,7 +331,7 @@ def print_beautiful_help() -> None:
         "• [bold white]Dynamic Topology[/bold white]: Reads structure from cached system signature to avoid offline core errors.\n"
         "• [bold white]Power State Bridge[/bold white]: Wakes target offline cores via passwordless sudo helper if required.\n"
         "• [bold white]Affinity Pinning[/bold white]: Launches target applications bound to selected cores using taskset.\n"
-        "• [bold white]Core Restorations[/bold white]: Intercepts signals (SIGINT/SIGTERM) to return woken cores back to sleep.",
+        "• [bold white]Core Restorations[/bold white]: Intercepts signals (SIGINT/SIGTERM/SIGHUP) to return woken cores back to sleep.",
         border_style="dim green",
         expand=False
     ))
@@ -358,7 +359,7 @@ def run_target_command(taskset_cmd: list[str], offline_targets_to_restore: list[
     """
     proc = None
     original_handlers = {}
-    signals_to_catch = [signal.SIGINT, signal.SIGTERM, signal.SIGQUIT]
+    signals_to_catch = [signal.SIGINT, signal.SIGTERM, signal.SIGQUIT, signal.SIGHUP]
 
     def signal_handler(signum: int, frame: Any) -> None:
         if proc and proc.poll() is None:
@@ -404,6 +405,7 @@ def main() -> None:
     parser.add_argument("-s", "--status", action="store_true", help="Print detailed topology and exit")
     parser.add_argument("-t", "--type", choices=["pcores", "ecores", "all"], default="pcores", help="Target architecture tier (default: pcores)")
     parser.add_argument("-c", "--custom", type=str, help="Custom comma/dash separated core list (e.g., 0,2-4,6)")
+    parser.add_argument("-d", "--detach", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="Application executable and arguments")
     
     args = parser.parse_args()
@@ -478,6 +480,48 @@ def main() -> None:
     
     taskset_cmd = ["taskset", "-c", target_cores_str] + args.command
     
+    if args.detach:
+        try:
+            # First fork
+            pid = os.fork()
+            if pid > 0:
+                # Parent process exits immediately
+                sys.exit(0)
+        except OSError as e:
+            console.print(f"[bold red]Fork Error:[/bold red] {e}")
+            sys.exit(1)
+
+        # Decouple process session and group
+        os.setsid()
+        os.umask(0)
+
+        try:
+            # Second fork
+            pid = os.fork()
+            if pid > 0:
+                # First child exits
+                sys.exit(0)
+        except OSError as e:
+            sys.exit(1)
+
+        # Avoid keeping cwd locked
+        try:
+            os.chdir('/')
+        except OSError:
+            pass
+
+        # Redirect standard file descriptors at OS level
+        sys.stdout.flush()
+        sys.stderr.flush()
+
+        si = open(os.devnull, 'r')
+        so = open(os.devnull, 'w')
+        se = open(os.devnull, 'w')
+
+        os.dup2(si.fileno(), sys.stdin.fileno())
+        os.dup2(so.fileno(), sys.stdout.fileno())
+        os.dup2(se.fileno(), sys.stderr.fileno())
+
     exit_code = run_target_command(taskset_cmd, offline_targets)
     sys.exit(exit_code)
 
