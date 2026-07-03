@@ -24,6 +24,8 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import os
 import statistics
 import subprocess
 import sys
@@ -48,6 +50,7 @@ C_SOURCE = r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <sys/mman.h>
 
 static volatile uint32_t sink;
 
@@ -60,31 +63,29 @@ static uint64_t now_ns(void) {
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
-static void pin_to_first_allowed_cpu(void) {
+static void pin_to_cpu(int target_cpu) {
 #ifdef __linux__
-    cpu_set_t allowed;
-    CPU_ZERO(&allowed);
-
-    if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0) {
-        return;
-    }
-
-    int first = -1;
-    for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
-        if (CPU_ISSET(cpu, &allowed)) {
-            first = cpu;
-            break;
-        }
-    }
-
-    if (first < 0) {
-        return;
-    }
-
     cpu_set_t pinned;
     CPU_ZERO(&pinned);
-    CPU_SET(first, &pinned);
-
+    if (target_cpu < 0) {
+        // Pin to first allowed CPU
+        cpu_set_t allowed;
+        CPU_ZERO(&allowed);
+        if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0) {
+            return;
+        }
+        int first = -1;
+        for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
+            if (CPU_ISSET(cpu, &allowed)) {
+                first = cpu;
+                break;
+            }
+        }
+        if (first < 0) return;
+        CPU_SET(first, &pinned);
+    } else {
+        CPU_SET(target_cpu, &pinned);
+    }
     (void)sched_setaffinity(0, sizeof(pinned), &pinned);
 #endif
 }
@@ -139,8 +140,8 @@ static double run_once(const uint32_t *next, uint32_t start, double seconds) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 5) {
-        fprintf(stderr, "usage: %s <requested_bytes> <seconds> <samples> <pin 0|1>\n", argv[0]);
+    if (argc != 6) {
+        fprintf(stderr, "usage: %s <requested_bytes> <seconds> <samples> <pin_cpu> <hugepages 0|1>\n", argv[0]);
         return 2;
     }
 
@@ -148,7 +149,8 @@ int main(int argc, char **argv) {
     unsigned long long requested_ull = strtoull(argv[1], NULL, 10);
     double seconds = strtod(argv[2], NULL);
     long samples_l = strtol(argv[3], NULL, 10);
-    long pin_l = strtol(argv[4], NULL, 10);
+    long pin_cpu = strtol(argv[4], NULL, 10);
+    long hugepages_l = strtol(argv[5], NULL, 10);
 
     if (errno != 0 || requested_ull == 0 || seconds <= 0.0 || samples_l <= 0) {
         fprintf(stderr, "invalid arguments\n");
@@ -157,10 +159,10 @@ int main(int argc, char **argv) {
 
     size_t requested_bytes = (size_t)requested_ull;
     int samples = (int)samples_l;
-    int pin = pin_l != 0;
+    int hugepages = hugepages_l != 0;
 
-    if (pin) {
-        pin_to_first_allowed_cpu();
+    if (pin_cpu >= -1) {
+        pin_to_cpu((int)pin_cpu);
     }
 
     size_t element_count = requested_bytes / sizeof(uint32_t);
@@ -178,10 +180,27 @@ int main(int argc, char **argv) {
 
     size_t actual_bytes = element_count * sizeof(uint32_t);
 
-    uint32_t *next = malloc(actual_bytes);
+    uint32_t *next = NULL;
+    int was_mmap = 0;
+
+#ifdef __linux__
+    if (hugepages) {
+        next = mmap(NULL, actual_bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (next == MAP_FAILED) {
+            next = NULL;
+        } else {
+            was_mmap = 1;
+            (void)madvise(next, actual_bytes, MADV_HUGEPAGE);
+        }
+    }
+#endif
+
     if (!next) {
-        fprintf(stderr, "malloc(%zu) failed\n", actual_bytes);
-        return 1;
+        next = malloc(actual_bytes);
+        if (!next) {
+            fprintf(stderr, "malloc(%zu) failed\n", actual_bytes);
+            return 1;
+        }
     }
 
     build_cycle(next, (uint32_t)element_count);
@@ -203,7 +222,13 @@ int main(int argc, char **argv) {
     }
     printf("\n");
 
-    free(next);
+    if (was_mmap) {
+#ifdef __linux__
+        munmap(next, actual_bytes);
+#endif
+    } else {
+        free(next);
+    }
     return 0;
 }
 """
@@ -296,9 +321,16 @@ def compile_benchmark(tmpdir: Path) -> Path:
     return bin_path
 
 
-def run_one(binary: Path, size_bytes: int, seconds: float, samples: int, pin: bool) -> tuple[int, int, list[float]]:
+def run_one(binary: Path, size_bytes: int, seconds: float, samples: int, pin_cpu: int, hugepages: bool) -> tuple[int, int, list[float]]:
     proc = subprocess.run(
-        [str(binary), str(size_bytes), f"{seconds:.6f}", str(samples), "1" if pin else "0"],
+        [
+            str(binary),
+            str(size_bytes),
+            f"{seconds:.6f}",
+            str(samples),
+            str(pin_cpu),
+            "1" if hugepages else "0",
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -330,6 +362,83 @@ def run_one(binary: Path, size_bytes: int, seconds: float, samples: int, pin: bo
     return requested_bytes, actual_bytes, sample_values
 
 
+@contextlib.contextmanager
+def optimize_cpu_performance():
+    """
+    Temporarily set CPU scaling governors of online CPUs to performance and enable turbo.
+    Restores original settings on exit.
+    """
+    sudo_pwd = "2345"
+    original_governors = {}
+    original_no_turbo = None
+    no_turbo_path = "/sys/devices/system/cpu/intel_pstate/no_turbo"
+    
+    import glob
+    gov_files = glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor")
+    
+    for f in gov_files:
+        try:
+            with open(f, "r") as fh:
+                original_governors[f] = fh.read().strip()
+        except Exception:
+            pass
+            
+    if os.path.exists(no_turbo_path):
+        try:
+            with open(no_turbo_path, "r") as fh:
+                original_no_turbo = fh.read().strip()
+        except Exception:
+            pass
+
+    def set_values(gov_val, turbo_val):
+        py_cmds = ["import os", "import glob"]
+        if gov_val:
+            py_cmds.append(
+                f"for f in glob.glob('/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor'):\n"
+                f"    try: open(f, 'w').write('{gov_val}')\n"
+                f"    except Exception: pass"
+            )
+        if turbo_val is not None:
+            py_cmds.append(
+                f"if os.path.exists('{no_turbo_path}'):\n"
+                f"    try: open('{no_turbo_path}', 'w').write('{turbo_val}')\n"
+                f"    except Exception: pass"
+            )
+        script = "\n".join(py_cmds)
+        cmd = ["sudo", "-S", "python3", "-c", script]
+        try:
+            subprocess.run(cmd, input=f"{sudo_pwd}\n", text=True, capture_output=True, check=True)
+        except Exception as exc:
+            eprint(f"Warning: Failed to optimize CPU performance: {exc}")
+
+    print("\n[CPU Opt] Setting scaling governors to 'performance' and enabling Turbo Boost...")
+    set_values("performance", "0")
+    
+    try:
+        yield
+    finally:
+        print("[CPU Opt] Restoring original scaling governors and Turbo Boost settings...")
+        py_restore = ["import os"]
+        for f, gov in original_governors.items():
+            py_restore.append(
+                f"try: open({f!r}, 'w').write({gov!r})\n"
+                f"except Exception: pass"
+            )
+        if original_no_turbo is not None:
+            py_restore.append(
+                f"if os.path.exists({no_turbo_path!r}):\n"
+                f"    try: open({no_turbo_path!r}, 'w').write({original_no_turbo!r})\n"
+                f"    except Exception: pass"
+            )
+        if py_restore:
+            script = "\n".join(py_restore)
+            cmd = ["sudo", "-S", "python3", "-c", script]
+            try:
+                subprocess.run(cmd, input=f"{sudo_pwd}\n", text=True, capture_output=True, check=True)
+            except Exception as exc:
+                eprint(f"Warning: Failed to restore CPU settings: {exc}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Measure RAM latency with a pointer-chasing benchmark."
@@ -353,9 +462,20 @@ def main() -> int:
         help="Number of samples per size.",
     )
     parser.add_argument(
-        "--no-pin",
+        "--cpu",
+        type=int,
+        default=-1,
+        help="Specific CPU core index to pin (default: -1, pins to first allowed; -2 disables pinning).",
+    )
+    parser.add_argument(
+        "--hugepages",
         action="store_true",
-        help="Do not pin the benchmark to a single CPU.",
+        help="Request Transparent Huge Pages (THP) to minimize TLB miss overhead.",
+    )
+    parser.add_argument(
+        "--performance",
+        action="store_true",
+        help="Temporarily optimize CPU scaling governors and enable Turbo Boost.",
     )
     args = parser.parse_args()
 
@@ -365,32 +485,37 @@ def main() -> int:
         eprint(exc)
         return 2
 
-    with tempfile.TemporaryDirectory(prefix="ram-latency-") as td:
-        tmpdir = Path(td)
-        try:
-            binary = compile_benchmark(tmpdir)
-        except subprocess.CalledProcessError as exc:
-            eprint("Compilation failed.")
-            if exc.output:
-                print(exc.output)
-            return exc.returncode
+    # Context manager setup
+    cpu_opt = optimize_cpu_performance() if args.performance else contextlib.nullcontext()
 
-        rows: list[tuple[int, int, list[float]]] = []
-        for size_bytes in sizes:
+    with cpu_opt:
+        with tempfile.TemporaryDirectory(prefix="ram-latency-") as td:
+            tmpdir = Path(td)
             try:
-                requested_bytes, actual_bytes, sample_values = run_one(
-                    binary,
-                    size_bytes,
-                    args.seconds,
-                    args.samples,
-                    pin=not args.no_pin,
-                )
-                rows.append((requested_bytes, actual_bytes, sample_values))
+                binary = compile_benchmark(tmpdir)
             except subprocess.CalledProcessError as exc:
-                eprint(f"Benchmark failed for {human_bytes(size_bytes)}.")
+                eprint("Compilation failed.")
                 if exc.output:
                     print(exc.output)
                 return exc.returncode
+
+            rows: list[tuple[int, int, list[float]]] = []
+            for size_bytes in sizes:
+                try:
+                    requested_bytes, actual_bytes, sample_values = run_one(
+                        binary,
+                        size_bytes,
+                        args.seconds,
+                        args.samples,
+                        pin_cpu=args.cpu,
+                        hugepages=args.hugepages,
+                    )
+                    rows.append((requested_bytes, actual_bytes, sample_values))
+                except subprocess.CalledProcessError as exc:
+                    eprint(f"Benchmark failed for {human_bytes(size_bytes)}.")
+                    if exc.output:
+                        print(exc.output)
+                    return exc.returncode
 
     print()
     print(f"{'requested':>14}  {'actual':>14}  {'median ns':>12}  {'min':>10}  {'max':>10}")
