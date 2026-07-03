@@ -1,0 +1,44 @@
+# Wrapper for core_runner to support space-separated core lists
+core() {
+    # Check for help flags or empty arguments
+    if [[ "$1" == "-h" || "$1" == "--help" || $# -eq 0 ]]; then
+        python3 "$HOME/user_scripts/performance/cpu/core_runner/core_runner.py" --help
+        return 0
+    fi
+
+    # Support special direct modes like core -s / core --status / core -t ...
+    if [[ "$1" =~ ^-[a-zA-Z]+$ || "$1" =~ ^--[a-zA-Z]+$ ]]; then
+        python3 "$HOME/user_scripts/performance/cpu/core_runner/core_runner.py" "$@"
+        return $?
+    fi
+
+    local cores=()
+    local cmd=()
+    while (( $# > 0 )); do
+        if [[ "$1" =~ ^[0-9]+$ ]]; then
+            cores+=("$1")
+            shift
+        else
+            cmd+=("$@")
+            break
+        fi
+    done
+
+    if (( ${#cores[@]} == 0 )); then
+        echo "Error: No CPU cores specified." >&2
+        echo "Usage: core <core1> <core2> ... <command> [args...]" >&2
+        return 1
+    fi
+
+    if (( ${#cmd[@]} == 0 )); then
+        echo "Error: No command specified." >&2
+        echo "Usage: core <core1> <core2> ... <command> [args...]" >&2
+        return 1
+    fi
+
+    # Join cores with commas
+    local cores_str
+    cores_str="${(j:,:)cores}"
+
+    python3 "$HOME/user_scripts/performance/cpu/core_runner/core_runner.py" -c "$cores_str" "${cmd[@]}"
+}

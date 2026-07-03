@@ -9,6 +9,9 @@ import sys
 import subprocess
 import argparse
 import shutil
+import json
+import signal
+import time
 from pathlib import Path
 from typing import Any
 
@@ -16,11 +19,14 @@ try:
     from rich.console import Console
     from rich.table import Table
     from rich.panel import Panel
+    from rich import box
 except ImportError:
     print("\033[91m[X] The 'rich' library is missing. Install via: sudo pacman -S python-rich\033[0m")
     sys.exit(1)
 
 console = Console()
+
+CACHE_FILE = Path("/var/tmp/core_runner_topology.json")
 
 # ==========================================
 # Low-Level Core Utilities
@@ -59,45 +65,142 @@ def get_core_status(cpu_id: int) -> bool:
         return True  # BSP (Core 0) is permanently online and locked
     return safe_read(path, "1") == "1"
 
+def get_helper_path() -> str:
+    """Returns the absolute path of core_helper.py."""
+    return str(Path(__file__).parent.resolve() / "core_helper.py")
+
 def batch_wake_cores(cpu_ids: list[int]) -> bool:
-    """Wakes multiple sleeping cores using a single privilege execution."""
-    cmds: list[str] = []
-    for cpu_id in cpu_ids:
-        path = f"/sys/devices/system/cpu/cpu{cpu_id}/online"
-        cmds.append(f"echo 1 > {path}")
-    
-    if not cmds:
+    """Wakes multiple sleeping cores using the core_helper script via sudo."""
+    if not cpu_ids:
         return True
-        
-    full_cmd = " ; ".join(cmds)
-    
+    cpu_ids_str = ",".join(map(str, cpu_ids))
+    helper = get_helper_path()
     try:
-        if os.geteuid() == 0:
-            subprocess.run(['sh', '-c', full_cmd], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        else:
-            subprocess.run(['sudo', 'sh', '-c', full_cmd], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
-        # Verify all targets successfully woke up
-        return all(get_core_status(c) for c in cpu_ids)
-    except subprocess.CalledProcessError:
+        subprocess.run(['sudo', helper, '--online', cpu_ids_str], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Kernel state transition might be asynchronous, wait/retry check
+        for _ in range(10):
+            if all(get_core_status(c) for c in cpu_ids):
+                return True
+            time.sleep(0.05)
+        return False
+    except Exception:
+        return False
+
+def batch_offline_cores(cpu_ids: list[int]) -> bool:
+    """Offlines multiple active cores using the core_helper script via sudo."""
+    if not cpu_ids:
+        return True
+    cpu_ids_str = ",".join(map(str, cpu_ids))
+    helper = get_helper_path()
+    try:
+        subprocess.run(['sudo', helper, '--offline', cpu_ids_str], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Kernel state transition might be asynchronous, wait/retry check
+        for _ in range(10):
+            if all(not get_core_status(c) for c in cpu_ids):
+                return True
+            time.sleep(0.05)
+        return False
+    except Exception:
         return False
 
 # ==========================================
-# Topology Detection Engine
+# Topology Detection Engine with Cache & Fallbacks
 # ==========================================
+def get_system_signature() -> dict[str, Any]:
+    """Generates a system signature to validate the cached topology."""
+    cpu_model = "unknown"
+    try:
+        for line in Path("/proc/cpuinfo").read_text().splitlines():
+            if line.startswith("model name"):
+                cpu_model = line.split(":", 1)[1].strip()
+                break
+    except Exception:
+        pass
+
+    total_cores = 0
+    try:
+        possible = Path("/sys/devices/system/cpu/possible").read_text().strip()
+        cores = parse_cpu_list(possible)
+        total_cores = len(cores)
+    except Exception:
+        pass
+
+    machine_id = ""
+    for path in (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id")):
+        try:
+            if path.is_file():
+                machine_id = path.read_text().strip()
+                break
+        except Exception:
+            pass
+
+    return {
+        "cpu_model": cpu_model,
+        "total_cores": total_cores,
+        "machine_id": machine_id
+    }
+
+def load_cached_topology() -> dict[int, dict[str, Any]] | None:
+    """Loads and validates the cached topology."""
+    if not CACHE_FILE.is_file():
+        return None
+    try:
+        data = json.loads(CACHE_FILE.read_text())
+        sig = get_system_signature()
+        cached_sig = data.get("system_signature", {})
+        if sig == cached_sig:
+            topology = {}
+            for k, v in data.get("topology", {}).items():
+                topology[int(k)] = v
+            return topology
+    except Exception:
+        pass
+    return None
+
+def save_cached_topology(topology: dict[int, dict[str, Any]]) -> None:
+    """Saves the topology to the cache file with world-readable permissions."""
+    try:
+        serialized_topology = {str(k): v for k, v in topology.items()}
+        data = {
+            "system_signature": get_system_signature(),
+            "topology": serialized_topology
+        }
+        CACHE_FILE.write_text(json.dumps(data, indent=2))
+        CACHE_FILE.chmod(0o644)
+    except Exception:
+        pass
+
 def detect_topology() -> dict[int, dict[str, Any]]:
     """
     Intelligently maps physical hardware to determine 
-    Performance vs Efficiency cores using CPPC, Core Type, and SMT structures.
+    Performance vs Efficiency cores using CPPC, Core Type, SMT structures, and frequency fallbacks.
     """
-    topology: dict[int, dict[str, Any]] = {}
+    # 1. Try loading valid cached topology
+    cached = load_cached_topology()
+    if cached is not None:
+        for cpu_id, data in cached.items():
+            data["online"] = get_core_status(cpu_id)
+        return cached
+
+    # 2. Cache is missing or invalid. Check if any cores are offline.
     cpu_sysfs = Path("/sys/devices/system/cpu")
     cpu_nodes = sorted([node for node in cpu_sysfs.glob("cpu[0-9]*") if node.is_dir()], key=lambda p: int(p.name[3:]))
+    cpu_ids = [int(node.name[3:]) for node in cpu_nodes]
+
+    offline_cores = [cpu_id for cpu_id in cpu_ids if not get_core_status(cpu_id)]
+
+    woke_any = False
+    if offline_cores:
+        # Attempt to wake all offline cores temporarily to read their properties
+        woke_any = batch_wake_cores(offline_cores)
+
+    # 3. Read topology from sysfs
+    topology: dict[int, dict[str, Any]] = {}
 
     # Pre-read CPPC (ACPI) highest performance metrics if available
     cppc_perf: dict[int, int] = {}
-    for node in cpu_nodes:
-        cpu_id = int(node.name[3:])
+    for cpu_id in cpu_ids:
+        node = cpu_sysfs / f"cpu{cpu_id}"
         perf_str = safe_read(node / "acpi_cppc" / "highest_perf")
         if perf_str.isdigit():
             cppc_perf[cpu_id] = int(perf_str)
@@ -111,15 +214,28 @@ def detect_topology() -> dict[int, dict[str, Any]]:
 
     # Determine SMT sibling groups
     smt_siblings: dict[int, list[int]] = {}
-    for node in cpu_nodes:
-        cpu_id = int(node.name[3:])
+    for cpu_id in cpu_ids:
+        node = cpu_sysfs / f"cpu{cpu_id}"
         core_cpus = safe_read(node / "topology" / "core_cpus_list")
         siblings = parse_cpu_list(core_cpus) if core_cpus else [cpu_id]
         smt_siblings[cpu_id] = siblings
 
-    # Classify each node
-    for node in cpu_nodes:
-        cpu_id = int(node.name[3:])
+    # Read cpufreq max frequencies for fallback heuristics
+    max_freqs: dict[int, int] = {}
+    for cpu_id in cpu_ids:
+        freq_str = safe_read(cpu_sysfs / "cpufreq" / f"policy{cpu_id}" / "cpuinfo_max_freq")
+        if freq_str.isdigit():
+            max_freqs[cpu_id] = int(freq_str)
+
+    max_freq_midpoint = 0.0
+    if max_freqs:
+        unique_freqs = sorted(list(set(max_freqs.values())))
+        if len(unique_freqs) > 1:
+            max_freq_midpoint = (unique_freqs[0] + unique_freqs[-1]) / 2.0
+
+    # Classify each core node
+    for cpu_id in cpu_ids:
+        node = cpu_sysfs / f"cpu{cpu_id}"
         core_type_val = safe_read(node / "topology" / "core_type")
         c_type = "P"
 
@@ -131,7 +247,10 @@ def detect_topology() -> dict[int, dict[str, Any]]:
             c_type = "E"
         elif core_type_val in ("2", "0x20", "intel_core"):
             c_type = "P"
-        # Check 3: SMT Fallback heuristic
+        # Check 3: Max Frequency heuristic (Works even when offline/no-cppc)
+        elif max_freqs and max_freq_midpoint > 0:
+            c_type = "P" if max_freqs.get(cpu_id, 0) > max_freq_midpoint else "E"
+        # Check 4: SMT Fallback heuristic
         else:
             siblings = smt_siblings.get(cpu_id, [cpu_id])
             if len(siblings) > 1:
@@ -156,11 +275,66 @@ def detect_topology() -> dict[int, dict[str, Any]]:
         for data in topology.values():
             data["type"] = "P"
 
+    # Save to cache
+    save_cached_topology(topology)
+
+    # 5. Restore cores we woke up back to offline state
+    if woke_any and offline_cores:
+        batch_offline_cores(offline_cores)
+        for cpu_id in offline_cores:
+            if cpu_id in topology:
+                topology[cpu_id]["online"] = False
+
     return topology
 
-# ==========================================
-# UI and Execution Control
-# ==========================================
+def print_beautiful_help() -> None:
+    """Renders a beautiful rich help dashboard."""
+    console.print(Panel(
+        "[bold green]Dusky Core Affinity Wrapper[/bold green]",
+        border_style="green",
+        box=box.ROUNDED,
+        expand=False
+    ))
+
+    console.print("\n[bold yellow]Usage Patterns:[/bold yellow]")
+    usage_table = Table(show_header=False, box=None, padding=(0, 4, 0, 0))
+    usage_table.add_row("  [bold green]core[/bold green] [white]<core1> <core2> ... <command> [args...][/white]", "[dim]Direct core index routing[/dim]")
+    usage_table.add_row("  [bold green]core[/bold green] [white]-h | --help[/white]", "[dim]Show this help dashboard[/dim]")
+    usage_table.add_row("  [bold green]core[/bold green] [white]-s | --status[/white]", "[dim]View current CPU topology status[/dim]")
+    usage_table.add_row("  [bold green]core[/bold green] [white]-t <type> <command>[/white]", "[dim]Bind to P-Cores, E-Cores, or All[/dim]")
+    usage_table.add_row("  [bold green]core[/bold green] [white]-c <custom_list> <command>[/white]", "[dim]Bind to custom list, e.g. 0,2-4[/dim]")
+    console.print(usage_table)
+
+    table = Table(
+        title="\n[bold green]Command Line Options[/bold green]",
+        title_style="bold green",
+        show_header=True,
+        header_style="bold green",
+        box=box.ROUNDED,
+        border_style="dim green"
+    )
+    table.add_column("Flag / Option", style="bold green", width=20)
+    table.add_column("Allowed Values", style="cyan", width=25)
+    table.add_column("Description", style="white")
+
+    table.add_row("-h, --help", "None", "Display this beautiful help dashboard.")
+    table.add_row("-s, --status", "None", "Show CPU core topology (P vs E cores) and online states.")
+    table.add_row("-t, --type", "pcores | ecores | all", "Target hardware tier (default: pcores).")
+    table.add_row("-c, --custom", "Comma/dash list (e.g. 0-2,4)", "Explicit CPU core pinning mask.")
+    table.add_row("command [args...]", "Exec and params", "Target command to launch with core affinity.")
+
+    console.print(table)
+
+    console.print(Panel(
+        "[bold green]Under the Hood:[/bold green]\n"
+        "• [bold white]Dynamic Topology[/bold white]: Reads structure from cached system signature to avoid offline core errors.\n"
+        "• [bold white]Power State Bridge[/bold white]: Wakes target offline cores via passwordless sudo helper if required.\n"
+        "• [bold white]Affinity Pinning[/bold white]: Launches target applications bound to selected cores using taskset.\n"
+        "• [bold white]Core Restorations[/bold white]: Intercepts signals (SIGINT/SIGTERM) to return woken cores back to sleep.",
+        border_style="dim green",
+        expand=False
+    ))
+
 def display_status(topology: dict[int, dict[str, Any]]) -> None:
     """Renders the topology status cleanly to the terminal."""
     console.print(Panel("[bold cyan]System Hardware Topology & Current Status[/bold cyan]", expand=False))
@@ -177,18 +351,67 @@ def display_status(topology: dict[int, dict[str, Any]]) -> None:
 
     console.print(table)
 
+def run_target_command(taskset_cmd: list[str], offline_targets_to_restore: list[int]) -> int:
+    """
+    Executes the command, forwards SIGINT, SIGTERM, and SIGQUIT to the child process,
+    and cleans up core states in a finally block.
+    """
+    proc = None
+    original_handlers = {}
+    signals_to_catch = [signal.SIGINT, signal.SIGTERM, signal.SIGQUIT]
+
+    def signal_handler(signum: int, frame: Any) -> None:
+        if proc and proc.poll() is None:
+            try:
+                proc.send_signal(signum)
+            except OSError:
+                pass
+
+    try:
+        # Set up signal handlers to forward to the child
+        for sig in signals_to_catch:
+            original_handlers[sig] = signal.getsignal(sig)
+            signal.signal(sig, signal_handler)
+
+        proc = subprocess.Popen(taskset_cmd)
+        
+        # Wait for the process to exit
+        returncode = proc.wait()
+        return returncode
+    except Exception as e:
+        console.print(f"[bold red]Execution Error:[/bold red] {e}")
+        return 1
+    finally:
+        # Restore signal handlers
+        for sig, handler in original_handlers.items():
+            signal.signal(sig, handler)
+        
+        # Restore offline core states
+        if offline_targets_to_restore:
+            console.print(f"\n[bold yellow]Cleaning up: putting cores {offline_targets_to_restore} back to sleep...[/bold yellow]")
+            if batch_offline_cores(offline_targets_to_restore):
+                console.print("[bold green]✔ Cores returned to sleep successfully.[/bold green]")
+            else:
+                console.print("[bold red]✖ Warning: Failed to put cores back to sleep.[/bold red]")
+
 def main() -> None:
     if not shutil.which("taskset"):
         console.print("[bold red]Critical Error:[/bold red] 'taskset' utility not found. Please install the 'util-linux' package.")
         sys.exit(1)
 
-    parser = argparse.ArgumentParser(description="Advanced Smart Core Affinity Wrapper")
+    parser = argparse.ArgumentParser(description="Advanced Smart Core Affinity Wrapper", add_help=False)
+    parser.add_argument("-h", "--help", action="store_true")
     parser.add_argument("-s", "--status", action="store_true", help="Print detailed topology and exit")
     parser.add_argument("-t", "--type", choices=["pcores", "ecores", "all"], default="pcores", help="Target architecture tier (default: pcores)")
     parser.add_argument("-c", "--custom", type=str, help="Custom comma/dash separated core list (e.g., 0,2-4,6)")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="Application executable and arguments")
     
     args = parser.parse_args()
+
+    if args.help:
+        print_beautiful_help()
+        sys.exit(0)
+
     topology = detect_topology()
 
     if args.status:
@@ -205,6 +428,8 @@ def main() -> None:
         if not args.command:
             console.print("[bold red]Execution Error:[/bold red] No target command provided after '--'.")
             sys.exit(1)
+
+    args.command[0] = os.path.expanduser(args.command[0])
 
     # Resolve target cores
     target_cores: list[int] = []
@@ -253,8 +478,8 @@ def main() -> None:
     
     taskset_cmd = ["taskset", "-c", target_cores_str] + args.command
     
-    # Process replacement
-    os.execvp("taskset", taskset_cmd)
+    exit_code = run_target_command(taskset_cmd, offline_targets)
+    sys.exit(exit_code)
 
 if __name__ == "__main__":
     try:
