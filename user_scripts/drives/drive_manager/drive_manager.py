@@ -506,7 +506,21 @@ class CPUAccelerator:
             log("Restoring CPU power-saving state (disabling P-cores)...")
             for cpu_id in self.enabled_cores:
                 cmd = ["sudo", "tee", f"/sys/devices/system/cpu/cpu{cpu_id}/online"]
-                run_sudo_cmd(cmd, stdin_data="0")
+                success = False
+                last_err = ""
+                for attempt in range(5):
+                    try:
+                        res = subprocess.run(cmd, input="0", text=True, capture_output=True)
+                        if res.returncode == 0:
+                            success = True
+                            break
+                        else:
+                            last_err = res.stderr.strip() if res.stderr else f"Non-zero return code ({res.returncode})"
+                    except Exception as e:
+                        last_err = str(e)
+                    time.sleep(0.1 * (attempt + 1))
+                if not success:
+                    err(f"Failed to restore CPU {cpu_id} to offline state: {last_err}")
 
     def get_hybrid_topology(self) -> tuple[list[int], list[int]]:
         p_cores: list[int] = []
