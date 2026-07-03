@@ -973,6 +973,19 @@ class DuskyTUI(App):
     CSS = """
     Screen { background: $background; }
 
+    #telemetry-banner {
+        width: 100%; height: 1;
+        background: transparent;
+        color: $primary;
+        text-style: bold;
+        text-align: center;
+        content-align: center middle;
+        text-wrap: nowrap;
+        margin-top: 1;
+        margin-bottom: 2;
+        display: none;
+    }
+
     #main-box {
         width: 100%; height: 100%;
         border: solid $primary 50%;
@@ -1234,6 +1247,8 @@ class DuskyTUI(App):
                     tabs_widget.styles.width = tabs_width
                     yield tabs_widget
                 yield Label(" ▶ ", id="tab-right", classes="tab-arrow")
+
+            yield Label("", id="telemetry-banner")
 
             with Horizontal(id="content-area"):
                 with ContentSwitcher(initial="tab-0", id="content-switcher"):
@@ -1689,6 +1704,17 @@ class DuskyTUI(App):
         self.set_interval(1.0, self.watch_target_file)
         self.set_interval(2.0, self.watch_presets_dir)
 
+        # Check if any engine in the pool supports telemetry
+        self.telemetry_engine = None
+        for engine in self.engine_pool.values():
+            if hasattr(engine, "get_telemetry"):
+                self.telemetry_engine = engine
+                break
+
+        if self.telemetry_engine:
+            self.query_one("#telemetry-banner").display = True
+            self.set_interval(1.0, self.update_telemetry)
+
         self.call_after_refresh(self.check_tab_overflow)
         self.call_after_refresh(self._update_scroll_indicators)
         self._update_footer_legend()
@@ -1913,6 +1939,15 @@ class DuskyTUI(App):
         if changed_any:
             self._refresh_all_ui()
             self.notify_status("Config modified externally. Refreshed UI.")
+
+    async def update_telemetry(self) -> None:
+        if self.telemetry_engine:
+            try:
+                msg = await asyncio.to_thread(self.telemetry_engine.get_telemetry)
+                banner = self.query_one("#telemetry-banner", Label)
+                banner.update(msg)
+            except Exception:
+                pass
 
     async def watch_presets_dir(self) -> None:
         if not self.enable_user_presets or not hasattr(self, 'user_presets_dir') or not self.user_presets_dir.exists(): return

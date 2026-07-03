@@ -433,9 +433,12 @@ EXAMPLES:
         elif e_type == "network":
             from python.engines.network_manager import NetworkManagerEngine
             engine = NetworkManagerEngine(config_path=config_path)
+        elif e_type == "pkg_throttle":
+            from python.engines.pkg_throttle import PkgThrottleEngine
+            engine = PkgThrottleEngine(config_path=config_path)
         else:
             print(f"[-] Fatal: Unknown ENGINE_TYPE '{e_type}' specified in schema '{schema_path.name}'.")
-            print("[i] Supported engines are: 'lua', 'ini', 'bridged_ini', 'systemd', 'hyprlang', 'trackpad', 'monitor', 'cmdline', 'systemd_boot', 'flatdotconfig', 'env', 'waybar', 'network'")
+            print("[i] Supported engines are: 'lua', 'ini', 'bridged_ini', 'systemd', 'hyprlang', 'trackpad', 'monitor', 'cmdline', 'systemd_boot', 'flatdotconfig', 'env', 'waybar', 'network', 'pkg_throttle'")
             sys.exit(1)
 
         engine_pool[key] = engine
