@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Dusky Power Throttle (v3.1 - Master)
+Dusky Power Throttle (v4.0 - Zenith)
 CPU Package Power Limiter via RAPL
 Arch Linux | Kernel 7.1+ | Intel/AMD
 """
@@ -16,20 +16,17 @@ from pathlib import Path
 from typing import Any
 
 # ==========================================
-# 1. Auto-Privilege & Dependencies
+# 1. TUI Dependencies & Custom Help Menu
 # ==========================================
-if os.geteuid() != 0:
-    print("\033[93m[!] Elevating to root privileges...\033[0m")
-    sys.stdout.flush()
-    os.execvp("sudo", ["sudo", sys.executable] + sys.argv)
-
 try:
     from rich.console import Console
     from rich.table import Table
     from rich.panel import Panel
     from rich.align import Align
 except ImportError:
-    print("\033[93m[!] Missing 'rich' library. Auto-installing via pacman...\033[0m")
+    if os.geteuid() != 0:
+        print("\033[93m[!] Missing 'rich' library. Elevating to install...\033[0m")
+        os.execvp("sudo", ["sudo", sys.executable] + sys.argv)
     import subprocess
     try:
         subprocess.run(["pacman", "-S", "--needed", "--noconfirm", "--quiet", "python-rich"], check=True)
@@ -40,14 +37,63 @@ except ImportError:
 
 console = Console()
 
+def display_help() -> None:
+    """Renders a beautiful, comprehensive manual using Rich."""
+    console.print(Panel.fit("[bold cyan]Dusky Power Throttle - Master Manual[/bold cyan]", border_style="cyan"))
+    
+    console.print("\n[bold yellow]COMMANDS[/bold yellow]")
+    cmd_table = Table(show_header=True, header_style="bold magenta", box=None)
+    cmd_table.add_column("Command", style="cyan", width=12)
+    cmd_table.add_column("Description", style="white")
+    cmd_table.add_row("status", "Show active power limits and real-time package power.")
+    cmd_table.add_row("info", "Deep-dive into raw Sysfs RAPL structures and limits.")
+    cmd_table.add_row("set", "Modify CPU power bounds (PL1/PL2/PL4) and time windows.")
+    cmd_table.add_row("reset", "Purge software modifications and restore BIOS defaults.")
+    cmd_table.add_row("monitor", "Launch the live, ultra-fast TUI power telemetry dashboard.")
+    cmd_table.add_row("raw", "Output pure JSON state for external scripting/Waybar.")
+    console.print(cmd_table)
+    
+    console.print("\n[bold yellow]PARAMETERS (for 'set' command)[/bold yellow]")
+    param_table = Table(show_header=True, header_style="bold magenta", box=None)
+    param_table.add_column("Argument", style="green", width=20)
+    param_table.add_column("Description", style="white")
+    param_table.add_row("--pl1 <watts>", "Long-term sustained power limit (e.g., 60)")
+    param_table.add_row("--pl2 <watts>", "Short-term boost power limit (e.g., 70)")
+    param_table.add_row("--pl4 <watts>", "Absolute peak transient power limit (e.g., 215)")
+    param_table.add_row("--pl1-time <sec>", "PL1 averaging window in seconds (e.g., 80.0)")
+    param_table.add_row("--pl2-time <sec>", "PL2 time window in seconds (e.g., 0.0024)")
+    param_table.add_row("--save", "Persist applied values across tool restarts as the baseline.")
+    console.print(param_table)
+    
+    console.print("\n[bold yellow]EXAMPLES[/bold yellow]")
+    console.print("  [dim]1. Check current hardware status:[/dim]\n     [green]sudo ./tui_dusky_power_throttle.py status[/green]\n")
+    console.print("  [dim]2. Apply a strict 15W eco-mode with 10s window:[/dim]\n     [green]sudo ./tui_dusky_power_throttle.py set --pl1 15 --pl2 20 --pl1-time 10.0[/green]\n")
+    console.print("  [dim]3. Monitor power with a high refresh rate (0.1s):[/dim]\n     [green]sudo ./tui_dusky_power_throttle.py monitor -i 0.1[/green]\n")
+
+# Intercept help instantly so the user doesn't need 'sudo' just to read the manual
+if "-h" in sys.argv or "--help" in sys.argv:
+    display_help()
+    sys.exit(0)
+
 # ==========================================
-# 2. Hardware Telemetry & Core Logic
+# 2. Privilege Escalation
+# ==========================================
+if os.geteuid() != 0:
+    print("\033[93m[!] Elevating to root privileges...\033[0m")
+    sys.stdout.flush()
+    os.execvp("sudo", ["sudo", sys.executable] + sys.argv)
+
+# Graceful fallback: Default to 'status' if run without arguments
+if len(sys.argv) == 1:
+    sys.argv.append("status")
+
+# ==========================================
+# 3. Hardware Telemetry & Core Logic
 # ==========================================
 RAPL_BASE = Path("/sys/class/powercap")
 STATE_FILE = Path("/dev/shm/dusky_rapl_state.json")
 
 def format_time(us: int) -> str:
-    """Dynamically scales microseconds to the most readable metric."""
     if us >= 1_000_000: return f"{us / 1_000_000:.1f}s"
     if us >= 1_000: return f"{us / 1_000:.1f}ms"
     return f"{us}µs"
@@ -116,7 +162,7 @@ def get_power_info(domain: Path) -> dict[str, Any]:
     return info
 
 # ==========================================
-# 3. Throttle Management & State
+# 4. Throttle Management & State
 # ==========================================
 class PowerThrottle:
     def __init__(self):
@@ -188,7 +234,7 @@ class PowerThrottle:
                 if safe_write(self.domain / sysfs_file, value):
                     result[f"{name}_set"] = value
 
-        time.sleep(0.1) # Sync with kernel
+        time.sleep(0.1) # Sync with kernel/ACPI
         
         for name, sysfs_file in [("pl1", "constraint_0_power_limit_uw"), 
                                  ("pl2", "constraint_1_power_limit_uw"),
@@ -281,7 +327,7 @@ class PowerThrottle:
             print() 
 
 # ==========================================
-# 4. TUI/CLI Display Routines
+# 5. Argument Parsing & Main Execution
 # ==========================================
 def display_status(throttle: PowerThrottle) -> None:
     s = throttle.status()
@@ -310,44 +356,35 @@ def display_status(throttle: PowerThrottle) -> None:
 
     console.print(table)
 
-# ==========================================
-# 5. Argument Parsing & Main Execution
-# ==========================================
 def main() -> None:
-    # Graceful fallback: Default to 'status' if run without arguments
-    if len(sys.argv) == 1:
-        sys.argv.append("status")
-
     throttle = PowerThrottle()
 
-    parser = argparse.ArgumentParser(
-        description="CPU Package Power Throttle via RAPL",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    sub = parser.add_subparsers(dest="command", required=True)
+    # Disable default help so we can use our custom rich implementation
+    parser = argparse.ArgumentParser(add_help=False)
+    sub = parser.add_subparsers(dest="command")
 
-    sub.add_parser("status", help="Show current power and limits")
-    sub.add_parser("info", help="Show detailed raw RAPL sysfs dump")
+    sub.add_parser("status")
+    sub.add_parser("info")
     
-    p_set = sub.add_parser("set", help="Set power limits")
-    p_set.add_argument("--pl1", type=int, default=None, help="Long-term power limit (PL1) in watts")
-    p_set.add_argument("--pl2", type=int, default=None, help="Short-term power limit (PL2) in watts")
-    p_set.add_argument("--pl4", type=int, default=None, help="Peak transient power limit (PL4) in watts")
-    p_set.add_argument("--pl1-time", type=float, default=None, help="PL1 averaging window in seconds (e.g. 80.0)")
-    p_set.add_argument("--pl2-time", type=float, default=None, help="PL2 time window in seconds (e.g. 0.0024)")
-    p_set.add_argument("--save", action="store_true", help="Save current values as new BIOS defaults")
+    p_set = sub.add_parser("set")
+    p_set.add_argument("--pl1", type=int, default=None)
+    p_set.add_argument("--pl2", type=int, default=None)
+    p_set.add_argument("--pl4", type=int, default=None)
+    p_set.add_argument("--pl1-time", type=float, default=None)
+    p_set.add_argument("--pl2-time", type=float, default=None)
+    p_set.add_argument("--save", action="store_true")
 
-    p_reset = sub.add_parser("reset", help="Restore original BIOS limits")
-    p_reset.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+    p_reset = sub.add_parser("reset")
+    p_reset.add_argument("--force", action="store_true")
 
-    p_mon = sub.add_parser("monitor", help="Live power monitor")
-    p_mon.add_argument("-i", "--interval", type=float, default=1.0, help="Sampling interval in seconds")
-    p_mon.add_argument("-n", "--count", type=int, default=None, help="Number of samples to take")
+    p_mon = sub.add_parser("monitor")
+    p_mon.add_argument("-i", "--interval", type=float, default=1.0)
+    p_mon.add_argument("-n", "--count", type=int, default=None)
 
-    p_raw = sub.add_parser("raw", help="Output current status as JSON")
-    p_raw.add_argument("--watch", action="store_true", help="Continuously output JSON lines")
+    p_raw = sub.add_parser("raw")
+    p_raw.add_argument("--watch", action="store_true")
 
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     match args.command:
         case "status":
@@ -398,14 +435,17 @@ def main() -> None:
                                         pl1_time=pl1_time_us, pl2_time=pl2_time_us, 
                                         save_as_default=args.save)
             
-            console.print("[bold green][+] Power limits applied successfully:[/bold green]")
+            console.print("\n[bold green][+] Power Limit Request Sent:[/bold green]")
             
             for param, label in [("pl1", "PL1 (Long-Term)"), ("pl2", "PL2 (Short-Term)"), ("pl4", "PL4 (Peak)")]:
                 if f"{param}_set" in result:
-                    actual = result.get(f"{param}_actual", result[f"{param}_set"]) // 1_000_000
                     target = result[f"{param}_set"] // 1_000_000
-                    color = "green" if actual == target else "yellow"
-                    console.print(f"    {label:<18}: [{color}]{target} W[/{color}]  (Actual Verified: {actual} W)")
+                    actual = result.get(f"{param}_actual", result[f"{param}_set"]) // 1_000_000
+                    
+                    if actual == target:
+                        console.print(f"    {label:<18}: [green]{target} W[/green] [dim](Verified)[/dim]")
+                    else:
+                        console.print(f"    {label:<18}: [yellow]{target} W[/yellow] [bold red](Rejected by BIOS/Hardware! Actual: {actual} W)[/bold red]")
                     
             if args.pl1_time is not None:
                 console.print(f"    PL1 Time Window   : [green]{args.pl1_time}s[/green]")
@@ -413,7 +453,7 @@ def main() -> None:
                 console.print(f"    PL2 Time Window   : [green]{args.pl2_time}s[/green]")
                 
             if args.save:
-                console.print("[bold yellow][i] Applied limits have been saved as the new boot default.[/bold yellow]")
+                console.print("\n[bold yellow][i] Applied limits have been saved as the new baseline.[/bold yellow]")
 
         case "reset":
             if not args.force:
