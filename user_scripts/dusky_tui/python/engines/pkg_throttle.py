@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 import os
+import json
+import fcntl
+import time
 from pathlib import Path
 from typing import Any
 from python.frontend.core_types import BaseEngine
 
 RAPL_BASE = Path("/sys/class/powercap")
+STATE_FILE = Path("/dev/shm/dusky_rapl_state.json")
 
 def safe_read_int(p: Path) -> int | None:
     try:
@@ -51,8 +55,10 @@ class PkgThrottleEngine(BaseEngine):
         self.last_e = None
         self.last_t = None
         self.max_energy = safe_read_int(self.domain / "max_energy_range_uj") or 0 if self.domain else 0
+        if self.domain:
+            self._ensure_state_exists()
+
         if self.energy_file and self.energy_file.exists():
-            import time
             self.reader = FastEnergyReader(self.energy_file)
             self.last_e = self.reader.read()
             self.last_t = time.perf_counter()
@@ -70,6 +76,60 @@ class PkgThrottleEngine(BaseEngine):
                 if (d / "constraint_0_power_limit_uw").exists():
                     return d.resolve()
         return None
+
+    def _ensure_state_exists(self) -> None:
+        domain_str = str(self.domain)
+        def heal_state(data):
+            healed = False
+            if data.get("domain") != domain_str:
+                data["domain"] = domain_str
+                data["boot"] = self._capture_power_limits()
+                healed = True
+            
+            boot = data.setdefault("boot", {})
+            current = self._capture_power_limits()
+            for k, v in current.items():
+                if k not in boot:
+                    boot[k] = v
+                    healed = True
+            if healed:
+                return data
+            return None
+        self._atomic_state_update(heal_state)
+
+    def _atomic_state_update(self, callback) -> None:
+        STATE_FILE.touch(mode=0o644, exist_ok=True)
+        with open(STATE_FILE, "r+") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                write_needed = False
+                try:
+                    f.seek(0)
+                    data = json.load(f)
+                except (json.JSONDecodeError, ValueError):
+                    data = {"domain": str(self.domain), "boot": self._capture_power_limits(), "modified": False}
+                    write_needed = True
+                
+                updated_data = callback(data)
+                if updated_data is not None:
+                    data = updated_data
+                    write_needed = True
+                
+                if write_needed:
+                    f.seek(0)
+                    f.truncate()
+                    json.dump(data, f)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+
+    def _capture_power_limits(self) -> dict[str, int]:
+        result = {}
+        for c in ["constraint_0_power_limit_uw", "constraint_1_power_limit_uw", "constraint_2_power_limit_uw",
+                  "constraint_0_time_window_us", "constraint_1_time_window_us"]:
+            val = safe_read_int(self.domain / c)
+            if val is not None:
+                result[c] = val
+        return result
 
     @property
     def target_path(self) -> str:
@@ -138,6 +198,12 @@ class PkgThrottleEngine(BaseEngine):
         actual = safe_read_int(self.domain / sysfs_file)
         if actual is None:
             return False, "Write verification failed (file unreadable)", ""
+
+        # Mark modified in shared state
+        def flag_modified(data):
+            data["modified"] = True
+            return data
+        self._atomic_state_update(flag_modified)
 
         if actual == val:
             return True, f"Successfully set {target_key} to {new_value}", ""
