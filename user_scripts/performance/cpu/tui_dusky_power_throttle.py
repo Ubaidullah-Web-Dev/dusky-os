@@ -54,6 +54,7 @@ USER_PRESETS_TAB = "Presets"
 TAB_NOTICES = {
     0: {
         "level": "warning",
+        "position": "bottom",
         "message": "Setting PL4 too low can trigger a failsafe hardware lock (minimum clock throttle) to protect voltage regulators. Keep PL4 at its BIOS default unless you explicitly need to clamp peak currents."
     }
 }

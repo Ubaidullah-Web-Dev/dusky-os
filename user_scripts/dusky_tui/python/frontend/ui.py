@@ -1254,21 +1254,30 @@ class DuskyTUI(App):
                 with ContentSwitcher(initial="tab-0", id="content-switcher"):
                     for i, name in enumerate(self.tabs):
                         with Vertical(id=f"tab-{i}"):
-                            
-                            # Render Schema-Driven Tab Structural Notices
+
+                            # Render top-positioned tab notices (default)
                             tab_notices = self.tab_notices.get(i)
                             if tab_notices:
                                 if isinstance(tab_notices, dict):
                                     tab_notices = [tab_notices]
                                 for n_idx, tab_notice in enumerate(tab_notices):
-                                    level = tab_notice.get("level", "info")
-                                    message = tab_notice.get("message", "")
-                                    yield NoticeBox(message, level=level, id=f"notice-{i}-{n_idx}")
+                                    if tab_notice.get("position", "top") != "bottom":
+                                        level = tab_notice.get("level", "info")
+                                        message = tab_notice.get("message", "")
+                                        yield NoticeBox(message, level=level, id=f"notice-{i}-{n_idx}")
 
                             with Horizontal(classes="list-wrapper"):
                                 yield ConfigOptionList(id=f"list-{i}")
                                 with Vertical(classes="indicator-column"):
                                     yield ScrollIndicator("", id=f"indicator-{i}")
+
+                            # Render bottom-positioned tab notices
+                            if tab_notices:
+                                for n_idx, tab_notice in enumerate(tab_notices):
+                                    if tab_notice.get("position", "top") == "bottom":
+                                        level = tab_notice.get("level", "info")
+                                        message = tab_notice.get("message", "")
+                                        yield NoticeBox(message, level=level, id=f"notice-{i}-{n_idx}-bot")
 
                 with Vertical(id="help-panel"):
                     yield Markdown("Select an item to view documentation.", id="help-markdown")
