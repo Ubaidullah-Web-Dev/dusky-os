@@ -106,7 +106,10 @@ def format_time(us: int) -> str:
 class FastEnergyReader:
     """Context Manager providing persistent, zero-overhead file descriptor polling."""
     def __init__(self, path: Path):
-        self.fd = os.open(path, os.O_RDONLY)
+        try:
+            self.fd = os.open(path, os.O_RDONLY)
+        except OSError:
+            self.fd = None
         
     def __enter__(self):
         return self
@@ -115,6 +118,8 @@ class FastEnergyReader:
         self.close()
     
     def read(self) -> int | None:
+        if self.fd is None:
+            return None
         try:
             os.lseek(self.fd, 0, os.SEEK_SET)
             return int(os.read(self.fd, 32).decode().strip())
@@ -122,13 +127,17 @@ class FastEnergyReader:
             return None
             
     def close(self) -> None:
-        try:
-            os.close(self.fd)
-        except OSError:
-            pass
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self.fd = None
 
 def find_package_domain() -> Path | None:
-    for d in sorted(RAPL_BASE.glob("*rapl*")):
+    domains = list(RAPL_BASE.glob("*rapl*"))
+    domains.sort(key=lambda p: (1 if "mmio" in p.name else 0, p.name))
+    for d in domains:
         name_file = d / "name"
         if name_file.exists() and name_file.read_text().strip() == "package-0":
             if (d / "constraint_0_power_limit_uw").exists():
@@ -174,40 +183,48 @@ class PowerThrottle:
         self._ensure_state_exists()
 
     def _ensure_state_exists(self) -> None:
-        """Bootstraps the JSON state file and auto-heals any missing keys from older script versions."""
-        if not STATE_FILE.exists():
-            self._persist_boot_values()
-        else:
-            def heal_state(data):
-                boot = data.get("boot", {})
-                current = self._capture_power_limits()
-                healed = False
-                for k, v in current.items():
-                    if k not in boot:
-                        boot[k] = v
-                        healed = True
-                if healed:
-                    data["boot"] = boot
-                    return data
-                return None
-            self._atomic_state_update(heal_state)
+        """Bootstraps the JSON state file and auto-heals any missing keys or domain changes."""
+        domain_str = str(self.domain)
+        def heal_state(data):
+            healed = False
+            if data.get("domain") != domain_str:
+                data["domain"] = domain_str
+                data["boot"] = self._capture_power_limits()
+                healed = True
+            
+            boot = data.setdefault("boot", {})
+            current = self._capture_power_limits()
+            for k, v in current.items():
+                if k not in boot:
+                    boot[k] = v
+                    healed = True
+            if healed:
+                return data
+            return None
+        self._atomic_state_update(heal_state)
 
     def _atomic_state_update(self, callback) -> None:
         STATE_FILE.touch(mode=0o644, exist_ok=True)
         with open(STATE_FILE, "r+") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
             try:
+                write_needed = False
                 try:
                     f.seek(0)
                     data = json.load(f)
                 except (json.JSONDecodeError, ValueError):
-                    data = {"boot": self._capture_power_limits(), "modified": False}
+                    data = {"domain": str(self.domain), "boot": self._capture_power_limits(), "modified": False}
+                    write_needed = True
                 
                 updated_data = callback(data)
                 if updated_data is not None:
+                    data = updated_data
+                    write_needed = True
+                
+                if write_needed:
                     f.seek(0)
                     f.truncate()
-                    json.dump(updated_data, f)
+                    json.dump(data, f)
             finally:
                 fcntl.flock(f, fcntl.LOCK_UN)
 
@@ -228,11 +245,7 @@ class PowerThrottle:
             return self._capture_power_limits()
 
     def _persist_boot_values(self) -> None:
-        def update_boot(data):
-            if not data.get("boot"):
-                data["boot"] = self._capture_power_limits()
-            return data
-        self._atomic_state_update(update_boot)
+        self._ensure_state_exists()
 
     def restore(self) -> None:
         def do_restore(data):
@@ -240,7 +253,8 @@ class PowerThrottle:
             for key, val in boot.items():
                 safe_write(self.domain / key, val)
             console.print("[bold green][+] Power limits restored to original BIOS values.[/bold green]")
-            return {"boot": boot, "modified": False}
+            data["modified"] = False
+            return data
         self._atomic_state_update(do_restore)
 
     def set_limit(self, pl1: int | None = None, pl2: int | None = None, pl4: int | None = None,
@@ -261,6 +275,8 @@ class PowerThrottle:
             if value is not None:
                 if safe_write(self.domain / sysfs_file, value):
                     result[f"{name}_set"] = value
+                else:
+                    result[f"{name}_write_failed"] = True
 
         time.sleep(0.05) # Sync processing gap
         
@@ -351,7 +367,7 @@ class PowerThrottle:
                         pl1_current = pl1_raw // 1_000_000 if pl1_raw else 0
                         line = f"[{ts:7.1f}s]  {bar}  {p:6.1f} W  (limit: PL1={pl1_current}W)"
                     
-                    sys.stdout.write(f"\r{line:<{cols}}")
+                    sys.stdout.write(f"\r{line[:cols]:<{cols}}")
                     sys.stdout.flush()
                     n += 1
         except KeyboardInterrupt:
@@ -413,13 +429,17 @@ def interactive_mode(stdscr, throttle: PowerThrottle) -> None:
 
             curr_e = reader.read()
             curr_t = time.perf_counter()
-            if curr_e is not None and last_e is not None and (curr_t - last_t) >= 0.2:
-                delta_e = curr_e - last_e
-                if delta_e < 0 and max_energy > 0: 
-                    delta_e += max_energy
-                pkg_watts = (delta_e / 1_000_000) / (curr_t - last_t)
-                last_e = curr_e  # Update with raw hardware value, preventing bounds corruption
-                last_t = curr_t
+            if curr_e is not None:
+                if last_e is None:
+                    last_e = curr_e
+                    last_t = curr_t
+                elif (curr_t - last_t) >= 0.2:
+                    delta_e = curr_e - last_e
+                    if delta_e < 0 and max_energy > 0: 
+                        delta_e += max_energy
+                    pkg_watts = (delta_e / 1_000_000) / (curr_t - last_t)
+                    last_e = curr_e  # Update with raw hardware value, preventing bounds corruption
+                    last_t = curr_t
 
             # Fetch fresh boot state each loop in case it self-healed
             boot_state = throttle.get_boot_state()
@@ -508,7 +528,8 @@ def interactive_mode(stdscr, throttle: PowerThrottle) -> None:
                         boot = data.get("boot", {})
                         for key, val in boot.items():
                             safe_write(throttle.domain / key, val)
-                        return {"boot": boot, "modified": False}
+                        data["modified"] = False
+                        return data
                     throttle._atomic_state_update(do_restore)
                     feedback_msg = "Global Reset Executed! Restored all to BIOS defaults."
                     feedback_time = time.time()
@@ -553,27 +574,43 @@ def interactive_mode(stdscr, throttle: PowerThrottle) -> None:
 # ==========================================
 def display_status(throttle: PowerThrottle) -> None:
     s = throttle.status()
-    console.print(Align.center(Panel("[bold magenta]Dusky Power Throttle[/bold magenta]", border_style="cyan", expand=False)))
     
-    pl1_w = (s.get("constraint_0_power_limit_uw") or 0) // 1_000_000
-    pl2_w = (s.get("constraint_1_power_limit_uw") or 0) // 1_000_000
-    pl4_w = (s.get("constraint_2_power_limit_uw") or 0) // 1_000_000
-    pl1_time = format_time(s.get("constraint_0_time_window_us") or 0)
-    pl2_time = format_time(s.get("constraint_1_time_window_us") or 0)
+    pl1_val = s.get("constraint_0_power_limit_uw")
+    pl1_w_str = f"{pl1_val // 1_000_000} W" if pl1_val is not None else "N/A"
+    
+    pl2_val = s.get("constraint_1_power_limit_uw")
+    pl2_w_str = f"{pl2_val // 1_000_000} W" if pl2_val is not None else "N/A"
+    
+    pl4_val = s.get("constraint_2_power_limit_uw")
+    pl4_w_str = f"{pl4_val // 1_000_000} W" if pl4_val is not None else "N/A"
+    
+    pl1_time_val = s.get("constraint_0_time_window_us")
+    pl1_time_str = format_time(pl1_time_val) if pl1_time_val is not None else "N/A"
+    
+    pl2_time_val = s.get("constraint_1_time_window_us")
+    pl2_time_str = format_time(pl2_time_val) if pl2_time_val is not None else "N/A"
     
     power = s.get("power_watts")
     power_str = f"{power:.1f} W" if power is not None else "N/A"
 
-    table = Table(show_header=False, expand=True, box=None)
-    table.add_column("Property", style="bold cyan")
-    table.add_column("Value", style="bold white")
-    table.add_row("RAPL Domain", s.get('name', 'unknown'))
-    table.add_row("Package Power", power_str)
-    table.add_row("PL1 (Long-Term)", f"[yellow]{pl1_w} W[/yellow] [dim](Window: {pl1_time})[/dim]")
-    table.add_row("PL2 (Short-Term)", f"[yellow]{pl2_w} W[/yellow] [dim](Window: {pl2_time})[/dim]")
-    if pl4_w:
-        table.add_row("PL4 (Peak Limit)", f"[yellow]{pl4_w} W[/yellow]")
-    console.print(table)
+    table = Table(show_header=False, expand=False, box=None)
+    table.add_column("Property", style="bold cyan", justify="right")
+    table.add_column("Value", style="bold white", justify="left")
+    
+    table.add_row("RAPL Domain:", s.get('name', 'unknown'))
+    table.add_row("Package Power:", f"[magenta]{power_str}[/magenta]")
+    table.add_row("PL1 (Long-Term):", f"[yellow]{pl1_w_str}[/yellow]" + (f" [dim](Window: {pl1_time_str})[/dim]" if pl1_val is not None else ""))
+    table.add_row("PL2 (Short-Term):", f"[yellow]{pl2_w_str}[/yellow]" + (f" [dim](Window: {pl2_time_str})[/dim]" if pl2_val is not None else ""))
+    if pl4_val is not None:
+        table.add_row("PL4 (Peak Limit):", f"[yellow]{pl4_w_str}[/yellow]")
+        
+    status_panel = Panel(
+        table,
+        title="[bold magenta] Dusky Power Throttle [/bold magenta]",
+        border_style="cyan",
+        expand=False
+    )
+    console.print(Align.center(status_panel))
 
 def main() -> None:
     throttle = PowerThrottle()
@@ -601,8 +638,13 @@ def main() -> None:
     
     p_raw = sub.add_parser("raw")
     p_raw.add_argument("--watch", action="store_true")
+    p_raw.add_argument("-i", "--interval", type=float, default=1.0)
 
     args, unknown = parser.parse_known_args()
+    if unknown:
+        console.print(f"[bold red][X] Unrecognized arguments: {unknown}[/bold red]")
+        console.print("Use -h or --help for usage details.")
+        sys.exit(1)
 
     # Default to Curses interactive GUI environment if no subcommand passed
     if not args.command:
@@ -643,14 +685,36 @@ def main() -> None:
                                         pl1_time=pl1_time_us, pl2_time=pl2_time_us, save_as_default=args.save)
             
             console.print("\n[bold green][+] Power Configuration Sync Pipeline Complete:[/bold green]")
-            for param, label in [("pl1", "PL1 (Long-Term)"), ("pl2", "PL2 (Short-Term)"), ("pl4", "PL4 (Peak)")]:
-                if f"{param}_set" in result:
-                    target = result[f"{param}_set"] // 1_000_000
-                    actual = result.get(f"{param}_actual", 0) // 1_000_000
-                    if actual == target:
-                        console.print(f"    {label:<18}: [green]{target} W[/green] [dim](Verified)[/dim]")
+            any_failed = False
+            for param, label, is_time in [
+                ("pl1", "PL1 (Long-Term)", False),
+                ("pl2", "PL2 (Short-Term)", False),
+                ("pl4", "PL4 (Peak)", False),
+                ("pl1_time", "PL1 Window", True),
+                ("pl2_time", "PL2 Window", True)
+            ]:
+                if f"{param}_write_failed" in result:
+                    console.print(f"    {label:<18}: [bold red]Write failed (unsupported or permission denied)[/bold red]")
+                    any_failed = True
+                elif f"{param}_set" in result:
+                    target = result[f"{param}_set"]
+                    actual = result.get(f"{param}_actual", 0)
+                    if is_time:
+                        target_str = format_time(target)
+                        actual_str = format_time(actual)
                     else:
-                        console.print(f"    {label:<18}: [yellow]{target} W[/yellow] [bold red](Rejected by Hardware! Actual Locked: {actual} W)[/bold red]")
+                        target_str = f"{target // 1_000_000} W"
+                        actual_str = f"{actual // 1_000_000} W"
+
+                    if actual == target:
+                        console.print(f"    {label:<18}: [green]{target_str}[/green] [dim](Verified)[/dim]")
+                    elif target != 0 and (abs(actual - target) / target) <= 0.05:
+                        console.print(f"    {label:<18}: [green]{target_str}[/green] [dim](Verified: quantized to {actual_str})[/dim]")
+                    else:
+                        console.print(f"    {label:<18}: [yellow]{target_str}[/yellow] [bold red](Rejected by Hardware! Actual Locked: {actual_str})[/bold red]")
+                        any_failed = True
+            if any_failed:
+                sys.exit(1)
 
         case "reset":
             if not args.force:
@@ -665,40 +729,42 @@ def main() -> None:
 
         case "raw":
             s = throttle.status()
-            s["constraint_0_power_limit_w"] = (s.get("constraint_0_power_limit_uw") or 0) // 1_000_000
-            s["constraint_1_power_limit_w"] = (s.get("constraint_1_power_limit_uw") or 0) // 1_000_000
-            s["constraint_2_power_limit_w"] = (s.get("constraint_2_power_limit_uw") or 0) // 1_000_000
+            s["constraint_0_power_limit_w"] = s["constraint_0_power_limit_uw"] // 1_000_000 if s.get("constraint_0_power_limit_uw") is not None else None
+            s["constraint_1_power_limit_w"] = s["constraint_1_power_limit_uw"] // 1_000_000 if s.get("constraint_1_power_limit_uw") is not None else None
+            s["constraint_2_power_limit_w"] = s["constraint_2_power_limit_uw"] // 1_000_000 if s.get("constraint_2_power_limit_uw") is not None else None
             
             if args.watch:
                 energy_file = throttle.domain / "energy_uj"
-                if energy_file.exists():
-                    max_energy = s.get("max_energy_range_uj", 0) or 0
-                    try:
-                        with FastEnergyReader(energy_file) as reader:
-                            while True:
-                                e1 = reader.read()
-                                t1 = time.perf_counter()
-                                time.sleep(args.interval)
-                                e2 = reader.read()
-                                t2 = time.perf_counter()
+                if not energy_file.exists():
+                    console.print("[bold red][X] Energy telemetry missing. Cannot watch.[/bold red]")
+                    sys.exit(1)
+                max_energy = s.get("max_energy_range_uj", 0) or 0
+                try:
+                    with FastEnergyReader(energy_file) as reader:
+                        while True:
+                            e1 = reader.read()
+                            t1 = time.perf_counter()
+                            time.sleep(args.interval)
+                            e2 = reader.read()
+                            t2 = time.perf_counter()
+                            
+                            p = None
+                            if e1 is not None and e2 is not None and (t2 - t1) > 0:
+                                delta_e = e2 - e1
+                                if delta_e < 0 and max_energy > 0: 
+                                    delta_e += max_energy
+                                p = (delta_e / 1_000_000) / (t2 - t1)
                                 
-                                p = None
-                                if e1 is not None and e2 is not None and (t2 - t1) > 0:
-                                    delta_e = e2 - e1
-                                    if delta_e < 0 and max_energy > 0: 
-                                        delta_e += max_energy
-                                    p = (delta_e / 1_000_000) / (t2 - t1)
-                                    
-                                out = {
-                                    "timestamp": time.time(), 
-                                    "power_w": round(p, 2) if p is not None else None,
-                                    "pl1_w": (safe_read_int(throttle.domain / "constraint_0_power_limit_uw") or 0) // 1_000_000,
-                                    "pl2_w": (safe_read_int(throttle.domain / "constraint_1_power_limit_uw") or 0) // 1_000_000,
-                                    "pl4_w": (safe_read_int(throttle.domain / "constraint_2_power_limit_uw") or 0) // 1_000_000
-                                }
-                                print(json.dumps(out))
-                                sys.stdout.flush()
-                    except KeyboardInterrupt: pass
+                            out = {
+                                "timestamp": time.time(), 
+                                "power_w": round(p, 2) if p is not None else None,
+                                "pl1_w": (safe_read_int(throttle.domain / "constraint_0_power_limit_uw") or 0) // 1_000_000,
+                                "pl2_w": (safe_read_int(throttle.domain / "constraint_1_power_limit_uw") or 0) // 1_000_000,
+                                "pl4_w": (safe_read_int(throttle.domain / "constraint_2_power_limit_uw") or 0) // 1_000_000
+                            }
+                            print(json.dumps(out))
+                            sys.stdout.flush()
+                except KeyboardInterrupt: pass
             else:
                 print(json.dumps(s, indent=2, default=str))
 
