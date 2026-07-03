@@ -6,23 +6,47 @@ GAME_DIR="/mnt/zram1/game/Factorio-jc141"
 NVIDIA_WRAPPER="/mnt/zram1/nvidia-glx-workaround.sh"
 # ──────────────────────────────────────────────────────────
 
-usage() {
-    echo "Factorio launcher — auto-mounts DwarFS, applies NVIDIA GLX/EGL workaround, runs game."
-    echo
-    echo "Usage:  $(basename "$0") [--help|-h]"
-    echo
-    echo "Edit GAME_DIR and NVIDIA_WRAPPER at the top of the script to change paths."
-    exit 0
-}
-
-[ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ] && usage
-
 DWARFS_IMG="$GAME_DIR/files/game-root.dwarfs"
 DWARFS_MNT="$GAME_DIR/files/.game-root-mnt"
 OVERLAY_DIR="$GAME_DIR/files/game-root"
 OVERLAY_STORAGE="$GAME_DIR/files/overlay-storage"
 OVERLAY_WORK="$GAME_DIR/files/.game-root-work"
 DWARFS_BIN="$GAME_DIR/files/dwarfs-binary"
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [--help|-h] [--unmount|-u] [--clean|-c]
+
+  No flags     Mount (if needed) and launch game
+  --unmount -u Unmount DwarFS/overlay, keep files
+  --clean   -c Unmount and delete the entire \$GAME_DIR
+
+Edit GAME_DIR at the top of the script to change the game path.
+EOF
+    exit 0
+}
+
+unmount_game() {
+    fuser -k "$DWARFS_MNT" 2>/dev/null || true
+    for d in "$OVERLAY_DIR" "$DWARFS_MNT"; do
+        fusermount3 -u -z "$d" 2>/dev/null || true
+    done
+    echo "Unmounted"
+}
+
+clean_game() {
+    unmount_game
+    rm -rf "$DWARFS_MNT" "$OVERLAY_WORK"
+    [ -d "$OVERLAY_DIR" ] && [ -z "$(ls -A "$OVERLAY_DIR" 2>/dev/null)" ] && rmdir "$OVERLAY_DIR" 2>/dev/null || true
+    rm -rf "$GAME_DIR"
+    echo "Deleted $GAME_DIR"
+}
+
+case "${1:-}" in
+    --help|-h) usage ;;
+    --unmount|-u) unmount_game; exit 0 ;;
+    --clean|-c) clean_game; exit 0 ;;
+esac
 
 mount_game() {
     local ram total cache
