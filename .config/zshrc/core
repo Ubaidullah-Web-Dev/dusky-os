@@ -1,12 +1,15 @@
-# Wrapper for core_runner to support space-separated core lists
+# Optimized wrapper for core_runner routing and TUI injection
 core() {
-    # Check for help flags or empty arguments
-    if [[ "$1" == "-h" || "$1" == "--help" || $# -eq 0 ]]; then
+    if [[ "$1" == "-h" || "$1" == "--help" ]]; then
         python3 "$HOME/user_scripts/performance/cpu/core_runner/core_runner.py" --help
         return 0
     fi
 
-    # Support special direct modes like core -s / core --status / core -t ...
+    if [[ $# -eq 0 ]]; then
+        python3 "$HOME/user_scripts/performance/cpu/core_runner/core_runner.py"
+        return $?
+    fi
+
     if [[ "$1" =~ ^-[a-zA-Z]+$ || "$1" =~ ^--[a-zA-Z]+$ ]]; then
         python3 "$HOME/user_scripts/performance/cpu/core_runner/core_runner.py" "$@"
         return $?
@@ -24,21 +27,20 @@ core() {
         fi
     done
 
-    if (( ${#cores[@]} == 0 )); then
-        echo "Error: No CPU cores specified." >&2
-        echo "Usage: core <core1> <core2> ... <command> [args...]" >&2
-        return 1
-    fi
-
     if (( ${#cmd[@]} == 0 )); then
-        echo "Error: No command specified." >&2
-        echo "Usage: core <core1> <core2> ... <command> [args...]" >&2
+        echo "Error: Application binary not defined." >&2
+        echo "Usage: core [cores...] <command> [args...]" >&2
         return 1
     fi
 
-    # Join cores with commas
-    local cores_str
-    cores_str="${(j:,:)cores}"
-
-    python3 "$HOME/user_scripts/performance/cpu/core_runner/core_runner.py" -c "$cores_str" "${cmd[@]}"
+    if (( ${#cores[@]} > 0 )); then
+        # Pure native Bash/Zsh array join bypassing local IFS scope pollution
+        local cores_str
+        printf -v cores_str "%s," "${cores[@]}"
+        cores_str="${cores_str%,}"
+        
+        python3 "$HOME/user_scripts/performance/cpu/core_runner/core_runner.py" -c "$cores_str" "${cmd[@]}"
+    else
+        python3 "$HOME/user_scripts/performance/cpu/core_runner/core_runner.py" "${cmd[@]}"
+    fi
 }
