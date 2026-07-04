@@ -47,6 +47,33 @@ def flush_input() -> None:
     except Exception:
         pass
 
+def daemonize_process() -> None:
+    """Safely decouples the process from the parent terminal session."""
+    if os.fork() > 0: sys.exit(0)
+    os.setsid()
+    os.umask(0)
+    if os.fork() > 0: sys.exit(0)
+    
+    try: os.chdir('/')
+    except OSError: pass
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    fd_in = os.open(os.devnull, os.O_RDONLY)
+    fd_out = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(fd_in, sys.stdin.fileno())
+    os.dup2(fd_out, sys.stdout.fileno())
+    os.dup2(fd_out, sys.stderr.fileno())
+    os.close(fd_in)
+    os.close(fd_out)
+
+def extract_binary_name(cmd_args: list[str]) -> str:
+    """Extracts the true binary name, skipping environment variable assignments."""
+    for arg in cmd_args:
+        if '=' not in arg:
+            return os.path.basename(arg)
+    return os.path.basename(cmd_args[0]) if cmd_args else "unknown"
+
 def load_settings() -> dict[str, list[int]]:
     if not SETTINGS_FILE.is_file():
         return {}
@@ -409,15 +436,13 @@ def run_new_command_flow(topology: dict[int, dict[str, Any]]) -> None:
         time.sleep(1)
         return
         
-        
     cmd_args = shlex.split(custom_cmd_str)
     if not cmd_args:
         console.print("[bold red]Error: No command entered.[/bold red]")
         time.sleep(1)
         return
         
-    cmd_name = os.path.basename(cmd_args[0])
-    executable_name = cmd_name
+    executable_name = extract_binary_name(cmd_args)
     
     settings = load_settings()
     saved_cores = settings.get(executable_name)
@@ -436,7 +461,7 @@ def run_new_command_flow(topology: dict[int, dict[str, Any]]) -> None:
     
     aff_idx = interactive_menu_select(
         affinity_options,
-        f"Select Core Affinity for {cmd_name}",
+        f"Select Core Affinity for {executable_name}",
         "Up/Down: Navigate | Enter: Select"
     )
     
@@ -462,7 +487,7 @@ def run_new_command_flow(topology: dict[int, dict[str, Any]]) -> None:
         target_cores = list(topology.keys())
         should_prompt_save = True
     else:
-        target_cores = interactive_checklist(topology, cmd_name)
+        target_cores = interactive_checklist(topology, executable_name)
         if not target_cores:
             console.print("[bold red]Aborted.[/bold red]")
             return
@@ -491,23 +516,7 @@ def run_new_command_flow(topology: dict[int, dict[str, Any]]) -> None:
     taskset_cmd = f"exec taskset -c {target_cores_str} {custom_cmd_str}"
     
     if detach:
-        if os.fork() > 0: sys.exit(0)
-        os.setsid()
-        os.umask(0)
-        if os.fork() > 0: sys.exit(0)
-        
-        try: os.chdir('/')
-        except OSError: pass
-
-        sys.stdout.flush()
-        sys.stderr.flush()
-        fd_in = os.open(os.devnull, os.O_RDONLY)
-        fd_out = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(fd_in, sys.stdin.fileno())
-        os.dup2(fd_out, sys.stdout.fileno())
-        os.dup2(fd_out, sys.stderr.fileno())
-        os.close(fd_in)
-        os.close(fd_out)
+        daemonize_process()
 
     sys.exit(run_target_command(taskset_cmd, offline_targets))
 
@@ -586,23 +595,7 @@ def manage_profiles_menu(topology: dict[int, dict[str, Any]]) -> None:
             taskset_cmd = f"exec taskset -c {target_cores_str} {custom_cmd_str}"
             
             if detach:
-                if os.fork() > 0: sys.exit(0)
-                os.setsid()
-                os.umask(0)
-                if os.fork() > 0: sys.exit(0)
-                
-                try: os.chdir('/')
-                except OSError: pass
-
-                sys.stdout.flush()
-                sys.stderr.flush()
-                fd_in = os.open(os.devnull, os.O_RDONLY)
-                fd_out = os.open(os.devnull, os.O_WRONLY)
-                os.dup2(fd_in, sys.stdin.fileno())
-                os.dup2(fd_out, sys.stdout.fileno())
-                os.dup2(fd_out, sys.stderr.fileno())
-                os.close(fd_in)
-                os.close(fd_out)
+                daemonize_process()
 
             sys.exit(run_target_command(taskset_cmd, offline_targets))
             
@@ -752,7 +745,7 @@ def main() -> None:
                     console.print("[bold yellow]Notice:[/bold yellow] No E-Cores exist. Falling back to P-Cores.")
                     target_cores = [c for c, d in topology.items() if d["type"] == "P"]
     else:
-        cmd_name = os.path.basename(args.command[0])
+        cmd_name = extract_binary_name(args.command)
         settings = load_settings()
         if cmd_name in settings and not args.interactive:
             target_cores = settings[cmd_name]
@@ -791,23 +784,7 @@ def main() -> None:
     taskset_cmd = ["taskset", "-c", target_cores_str] + args.command
     
     if args.detach:
-        if os.fork() > 0: sys.exit(0)
-        os.setsid()
-        os.umask(0)
-        if os.fork() > 0: sys.exit(0)
-        
-        try: os.chdir('/')
-        except OSError: pass
-
-        sys.stdout.flush()
-        sys.stderr.flush()
-        fd_in = os.open(os.devnull, os.O_RDONLY)
-        fd_out = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(fd_in, sys.stdin.fileno())
-        os.dup2(fd_out, sys.stdout.fileno())
-        os.dup2(fd_out, sys.stderr.fileno())
-        os.close(fd_in)
-        os.close(fd_out)
+        daemonize_process()
 
     sys.exit(run_target_command(taskset_cmd, offline_targets))
 

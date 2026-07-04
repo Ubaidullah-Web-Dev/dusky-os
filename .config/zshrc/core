@@ -1,4 +1,4 @@
-# Optimized wrapper for core_runner routing and TUI injection
+# Hardened wrapper for core_runner routing and TUI injection
 core() {
     if [[ "$1" == "-h" || "$1" == "--help" ]]; then
         python3 "$HOME/user_scripts/performance/cpu/core_runner/core_runner.py" --help
@@ -10,15 +10,16 @@ core() {
         return $?
     fi
 
-    if [[ "$1" =~ ^-[a-zA-Z]+$ || "$1" =~ ^--[a-zA-Z]+$ ]]; then
-        python3 "$HOME/user_scripts/performance/cpu/core_runner/core_runner.py" "$@"
-        return $?
-    fi
-
+    local flags=()
     local cores=()
     local cmd=()
+    
+    # Safely accumulate flags, core arrays, and target commands dynamically
     while (( $# > 0 )); do
-        if [[ "$1" =~ ^[0-9]+$ ]]; then
+        if [[ "$1" =~ ^-[a-zA-Z0-9\-]+$ ]]; then
+            flags+=("$1")
+            shift
+        elif [[ "$1" =~ ^[0-9,\-]+$ ]]; then
             cores+=("$1")
             shift
         else
@@ -27,20 +28,28 @@ core() {
         fi
     done
 
-    if (( ${#cmd[@]} == 0 )); then
+    if (( ${#cmd[@]} == 0 )) && (( ${#flags[@]} == 0 )); then
         echo "Error: Application binary not defined." >&2
-        echo "Usage: core [cores...] <command> [args...]" >&2
+        echo "Usage: core [flags...] [cores...] <command> [args...]" >&2
         return 1
     fi
 
+    local target_cmd=("python3" "$HOME/user_scripts/performance/cpu/core_runner/core_runner.py")
+    
+    if (( ${#flags[@]} > 0 )); then
+        target_cmd+=("${flags[@]}")
+    fi
+
     if (( ${#cores[@]} > 0 )); then
-        # Pure native Bash/Zsh array join bypassing local IFS scope pollution
         local cores_str
         printf -v cores_str "%s," "${cores[@]}"
         cores_str="${cores_str%,}"
-        
-        python3 "$HOME/user_scripts/performance/cpu/core_runner/core_runner.py" -c "$cores_str" "${cmd[@]}"
-    else
-        python3 "$HOME/user_scripts/performance/cpu/core_runner/core_runner.py" "${cmd[@]}"
+        target_cmd+=("-c" "$cores_str")
     fi
+
+    if (( ${#cmd[@]} > 0 )); then
+        target_cmd+=("${cmd[@]}")
+    fi
+
+    "${target_cmd[@]}"
 }
