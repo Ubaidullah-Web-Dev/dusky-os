@@ -30,7 +30,14 @@ except ImportError:
     print("\033[91m[X] Critical: 'rich' library missing. Install via: sudo pacman -S python-rich\033[0m")
     sys.exit(1)
 
-console = Console()
+# Prevent kernel suspension on background PTY terminal modifications
+try:
+    signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+    signal.signal(signal.SIGTTIN, signal.SIG_IGN)
+except AttributeError:
+    pass
+
+console = Console(force_interactive=True)
 CACHE_FILE = Path("/var/tmp/core_runner_topology.json")
 SETTINGS_FILE = Path(os.path.expanduser("~/.config/dusky/settings/core_runner"))
 
@@ -205,6 +212,10 @@ def getch() -> str:
         ch = os.read(fd, 1).decode('utf-8', errors='ignore')
         if ch == '\x1b' and select.select([sys.stdin], [], [], 0.05)[0]:
             ch += os.read(fd, 2).decode('utf-8', errors='ignore')
+        elif ch == 'g' and select.select([sys.stdin], [], [], 0.15)[0]:
+            next_ch = os.read(fd, 1).decode('utf-8', errors='ignore')
+            if next_ch == 'g':
+                ch = 'gg'
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     return ch
@@ -232,15 +243,25 @@ def interactive_menu_select(options: list[str], title: str, subtitle: str) -> in
 
     with Live(generate_menu_panel(), console=console, refresh_per_second=20, transient=False, redirect_stdout=False, redirect_stderr=False) as live:
         live.update(generate_menu_panel(), refresh=True)
+        sys.stdout.flush()
+        sys.stderr.flush()
         while True:
             ch = getch()
             match ch:
                 case '\r' | '\n':
                     return current_idx
-                case '\x1b[A': # Up
+                case '\x1b[A' | 'k' | 'h': # Up / k / h
                     current_idx = (current_idx - 1) % len(options)
-                case '\x1b[B': # Down
+                case '\x1b[B' | 'j' | 'l': # Down / j / l
                     current_idx = (current_idx + 1) % len(options)
+                case 'gg':
+                    current_idx = 0
+                case 'G':
+                    current_idx = len(options) - 1
+                case '\x15': # Ctrl-U
+                    current_idx = max(0, current_idx - 5)
+                case '\x04': # Ctrl-D
+                    current_idx = min(len(options) - 1, current_idx + 5)
                 case 'q' | '\x03' | '\x1b': # Quit/Ctrl-C/ESC
                     sys.exit(130)
             live.update(generate_menu_panel())
@@ -282,12 +303,14 @@ def interactive_checklist(topology: dict[int, dict[str, Any]], cmd_name: str) ->
         return Panel(
             table,
             title=f"[bold white]Select Target Cores for[/bold white] [bold yellow]{cmd_name}[/bold yellow]",
-            subtitle="[dim]Space: Toggle | Up/Down: Navigate | Enter: Confirm | 'a': Select All | 'q': Quit[/dim]",
+            subtitle="[dim]Space: Toggle | Enter: Confirm | a: Toggle All | p: P-Cores | e: E-Cores | j/k/gg/G/Ctrl-U/D: Vim | q: Quit[/dim]",
             border_style="cyan"
         )
 
-    with Live(generate_table(), console=console, refresh_per_second=20, transient=False) as live:
-        live.update(generate_table())
+    with Live(generate_table(), console=console, refresh_per_second=20, transient=False, redirect_stdout=False, redirect_stderr=False) as live:
+        live.update(generate_table(), refresh=True)
+        sys.stdout.flush()
+        sys.stderr.flush()
         while True:
             ch = getch()
             match ch:
@@ -295,12 +318,34 @@ def interactive_checklist(topology: dict[int, dict[str, Any]], cmd_name: str) ->
                     break
                 case ' ':
                     selected.symmetric_difference_update({cores[current_idx]})
-                case '\x1b[A':
+                case '\x1b[A' | 'k':
                     current_idx = max(0, current_idx - 1)
-                case '\x1b[B':
+                case '\x1b[B' | 'j':
                     current_idx = min(len(cores) - 1, current_idx + 1)
+                case 'gg':
+                    current_idx = 0
+                case 'G':
+                    current_idx = len(cores) - 1
+                case '\x15': # Ctrl-U
+                    current_idx = max(0, current_idx - 5)
+                case '\x04': # Ctrl-D
+                    current_idx = min(len(cores) - 1, current_idx + 5)
                 case 'a':
                     selected = set() if len(selected) == len(cores) else set(cores)
+                case 'e':
+                    e_cores = {c for c, d in topology.items() if d["type"] == "E"}
+                    if e_cores:
+                        if e_cores.issubset(selected):
+                            selected.difference_update(e_cores)
+                        else:
+                            selected.update(e_cores)
+                case 'p':
+                    p_cores = {c for c, d in topology.items() if d["type"] == "P"}
+                    if p_cores:
+                        if p_cores.issubset(selected):
+                            selected.difference_update(p_cores)
+                        else:
+                            selected.update(p_cores)
                 case 'q' | '\x03' | '\x1b':
                     sys.exit(130)
             
@@ -308,74 +353,64 @@ def interactive_checklist(topology: dict[int, dict[str, Any]], cmd_name: str) ->
 
     return sorted(list(selected))
 
-def find_available_apps() -> dict[str, str]:
-    apps = {
-        "Firefox": "firefox",
-        "Google Chrome": ["google-chrome-stable", "google-chrome", "chrome"],
-        "VS Code": "code",
-        "Steam": "steam",
-        "Blender": "blender"
-    }
-    resolved = {}
-    for name, cmd_candidates in apps.items():
-        if isinstance(cmd_candidates, str):
-            cmd_candidates = [cmd_candidates]
-        for candidate in cmd_candidates:
-            if shutil.which(candidate):
-                resolved[name] = candidate
-                break
-    return resolved
-
 def interactive_launcher_menu(topology: dict[int, dict[str, Any]]) -> None:
-    app_mapping = find_available_apps()
-    
-    menu_options = list(app_mapping.keys())
-    menu_options.append("Run Custom Command...")
-    menu_options.append("View CPU Topology Status")
-    menu_options.append("Show Help Dashboard")
-    menu_options.append("Exit")
-    
-    selected_idx = interactive_menu_select(
-        menu_options,
-        "Dusky Core Runner - Main Menu",
-        "Up/Down: Navigate | Enter: Select | Esc/q: Exit"
-    )
-    
-    if selected_idx < 0:
-        return
+    while True:
+        menu_options = [
+            "Run New Command...",
+            "App Profiles & History...",
+            "View CPU Topology Status",
+            "Show Help Dashboard",
+            "Exit"
+        ]
         
-    choice = menu_options[selected_idx]
-    
-    if choice == "Exit":
-        return
-    elif choice == "View CPU Topology Status":
-        display_status(topology)
-        return
-    elif choice == "Show Help Dashboard":
-        print_beautiful_help()
-        return
+        selected_idx = interactive_menu_select(
+            menu_options,
+            "Dusky Core Runner - Main Menu",
+            "Up/Down: Navigate | Enter: Select | Esc/q: Exit"
+        )
         
-    cmd_args = []
-    cmd_name = ""
-    if choice == "Run Custom Command...":
-        console.print("[bold yellow]Enter custom command to run: [/bold yellow]", end="")
-        try:
-            custom_cmd_str = input().strip()
-        except (KeyboardInterrupt, EOFError):
-            sys.exit(130)
-        if not custom_cmd_str:
-            console.print("[bold red]Error: No command entered.[/bold red]")
+        if selected_idx < 0:
             return
-        cmd_args = shlex.split(custom_cmd_str)
-        if not cmd_args:
-            console.print("[bold red]Error: No command entered.[/bold red]")
-            return
-        cmd_name = cmd_args[0]
-    else:
-        cmd_args = [app_mapping[choice]]
-        cmd_name = choice
+            
+        choice = menu_options[selected_idx]
         
-    executable_name = os.path.basename(cmd_args[0])
+        if choice == "Exit":
+            return
+        elif choice == "View CPU Topology Status":
+            display_status(topology)
+            console.print("\nPress Enter to return to main menu...")
+            try: input()
+            except (KeyboardInterrupt, EOFError): return
+        elif choice == "Show Help Dashboard":
+            print_beautiful_help()
+            console.print("\nPress Enter to return to main menu...")
+            try: input()
+            except (KeyboardInterrupt, EOFError): return
+        elif choice == "App Profiles & History...":
+            manage_profiles_menu(topology)
+        elif choice == "Run New Command...":
+            run_new_command_flow(topology)
+
+def run_new_command_flow(topology: dict[int, dict[str, Any]]) -> None:
+    console.print("[bold yellow]Enter command to run: [/bold yellow]", end="")
+    try:
+        custom_cmd_str = input().strip()
+    except (KeyboardInterrupt, EOFError):
+        return
+    if not custom_cmd_str:
+        console.print("[bold red]Error: No command entered.[/bold red]")
+        time.sleep(1)
+        return
+        
+    cmd_args = shlex.split(custom_cmd_str)
+    if not cmd_args:
+        console.print("[bold red]Error: No command entered.[/bold red]")
+        time.sleep(1)
+        return
+        
+    cmd_name = os.path.basename(cmd_args[0])
+    executable_name = cmd_name
+    
     settings = load_settings()
     saved_cores = settings.get(executable_name)
 
@@ -456,11 +491,152 @@ def interactive_launcher_menu(topology: dict[int, dict[str, Any]]) -> None:
 
         sys.stdout.flush()
         sys.stderr.flush()
-        os.dup2(open(os.devnull, 'r').fileno(), sys.stdin.fileno())
-        os.dup2(open(os.devnull, 'w').fileno(), sys.stdout.fileno())
-        os.dup2(open(os.devnull, 'w').fileno(), sys.stderr.fileno())
+        fd_in = os.open(os.devnull, os.O_RDONLY)
+        fd_out = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(fd_in, sys.stdin.fileno())
+        os.dup2(fd_out, sys.stdout.fileno())
+        os.dup2(fd_out, sys.stderr.fileno())
+        os.close(fd_in)
+        os.close(fd_out)
 
     sys.exit(run_target_command(taskset_cmd, offline_targets))
+
+def manage_profiles_menu(topology: dict[int, dict[str, Any]]) -> None:
+    while True:
+        settings = load_settings()
+        if not settings:
+            console.print(Panel("[bold yellow]No profiles saved yet.[/bold yellow]\nRun a command first to save a default core selection.", expand=False))
+            console.print("\nPress Enter to return to main menu...")
+            try: input()
+            except (KeyboardInterrupt, EOFError): pass
+            return
+            
+        menu_options = []
+        app_list = sorted(list(settings.keys()))
+        for app in app_list:
+            cores_str = ",".join(map(str, settings[app]))
+            menu_options.append(f"{app} (Cores: {cores_str})")
+        menu_options.append("Back to Main Menu")
+        
+        selected_idx = interactive_menu_select(
+            menu_options,
+            "App Profiles & History",
+            "Select an application profile to manage"
+        )
+        
+        if selected_idx < 0 or selected_idx == len(app_list):
+            return
+            
+        app_name = app_list[selected_idx]
+        saved_cores = settings[app_name]
+        
+        action_options = [
+            f"Launch {app_name}",
+            f"Modify Default Cores for {app_name}",
+            f"Delete profile for {app_name}",
+            "Back to Profiles List"
+        ]
+        
+        action_idx = interactive_menu_select(
+            action_options,
+            f"Manage Profile: {app_name}",
+            "Select an action"
+        )
+        
+        if action_idx < 0 or action_idx == 3:
+            continue
+            
+        action = action_options[action_idx]
+        
+        if action.startswith("Launch"):
+            console.print(f"[bold yellow]Enter optional arguments to append to {app_name} (press Enter to run as is): [/bold yellow]", end="")
+            try:
+                args_str = input().strip()
+            except (KeyboardInterrupt, EOFError):
+                continue
+            cmd_args = [app_name]
+            if args_str:
+                cmd_args.extend(shlex.split(args_str))
+                
+            detach = Confirm.ask("\n[bold yellow]Run detached (background)?[/bold yellow]", default=False)
+            
+            offline_targets = [c for c in saved_cores if not topology[c]["online"]]
+            if offline_targets:
+                console.print(Panel(f"[bold yellow]Waking offline targets {offline_targets}...[/bold yellow]", border_style="yellow", expand=False))
+                if not manipulate_core_state(offline_targets, "1"):
+                    console.print("[bold red]✖ ACPI Error: Hardware modification failed.[/bold red]")
+                    sys.exit(1)
+
+            target_cores_str = ",".join(map(str, saved_cores))
+            console.print(f"[bold green]🚀 Bounding execution to cores:[/bold green] [white]{target_cores_str}[/white]")
+            
+            taskset_cmd = ["taskset", "-c", target_cores_str] + cmd_args
+            
+            if detach:
+                if os.fork() > 0: sys.exit(0)
+                os.setsid()
+                os.umask(0)
+                if os.fork() > 0: sys.exit(0)
+                
+                try: os.chdir('/')
+                except OSError: pass
+
+                sys.stdout.flush()
+                sys.stderr.flush()
+                fd_in = os.open(os.devnull, os.O_RDONLY)
+                fd_out = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(fd_in, sys.stdin.fileno())
+                os.dup2(fd_out, sys.stdout.fileno())
+                os.dup2(fd_out, sys.stderr.fileno())
+                os.close(fd_in)
+                os.close(fd_out)
+
+            sys.exit(run_target_command(taskset_cmd, offline_targets))
+            
+        elif action.startswith("Modify"):
+            affinity_options = [
+                "P-Cores only (Fast)",
+                "E-Cores only (Power saving)",
+                "All Cores",
+                "Custom selection (Interactive TUI)"
+            ]
+            aff_idx = interactive_menu_select(
+                affinity_options,
+                f"Modify Default Cores for {app_name}",
+                "Select new default core layout"
+            )
+            if aff_idx < 0:
+                continue
+            
+            new_cores = []
+            aff_choice = affinity_options[aff_idx]
+            if aff_choice.startswith("P-Cores"):
+                new_cores = [c for c, d in topology.items() if d["type"] == "P"]
+            elif aff_choice.startswith("E-Cores"):
+                new_cores = [c for c, d in topology.items() if d["type"] == "E"]
+                if not new_cores:
+                    console.print("[bold yellow]Notice:[/bold yellow] No E-Cores exist. Falling back to P-Cores.")
+                    new_cores = [c for c, d in topology.items() if d["type"] == "P"]
+            elif aff_choice == "All Cores":
+                new_cores = list(topology.keys())
+            else:
+                new_cores = interactive_checklist(topology, app_name)
+                if not new_cores:
+                    console.print("[bold red]Aborted.[/bold red]")
+                    time.sleep(1)
+                    continue
+            
+            settings[app_name] = new_cores
+            save_settings(settings)
+            console.print("[bold green]✔ Default cores updated successfully.[/bold green]")
+            time.sleep(1)
+            
+        elif action.startswith("Delete"):
+            if Confirm.ask(f"[bold red]Are you sure you want to delete the profile for {app_name}?[/bold red]", default=False):
+                del settings[app_name]
+                save_settings(settings)
+                console.print("[bold green]✔ Profile deleted.[/bold green]")
+                time.sleep(1)
 
 def print_beautiful_help() -> None:
     console.print(Panel("[bold green]Dusky Core Affinity Wrapper[/bold green]", border_style="green", box=box.ROUNDED, expand=False))
