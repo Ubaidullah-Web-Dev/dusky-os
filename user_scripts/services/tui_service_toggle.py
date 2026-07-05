@@ -132,7 +132,7 @@ def _fetch_all_unit_files(scope: str) -> tuple[set, set, set]:
     installed_tmr = set()
     
     try:
-        res = subprocess.run(call, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=3)
+        res = subprocess.run(call, capture_output=True, text=True, stdin=subprocess.DEVNULL)
         for line in res.stdout.splitlines():
             if not line: continue
             parts = line.split()
@@ -147,7 +147,9 @@ def _fetch_all_unit_files(scope: str) -> tuple[set, set, set]:
                 installed_tmr.add(unit)
                 
         return installed_srv, enabled_srv, installed_tmr
-    except Exception:
+    except Exception as e:
+        import sys
+        print(f"[tui_service_toggle] ERROR: _fetch_all_unit_files({scope}): {e}", file=sys.stderr)
         return set(), set(), set()
 
 def _fetch_active_services(scope: str) -> set:
@@ -155,9 +157,11 @@ def _fetch_active_services(scope: str) -> set:
     if scope == "user":
         call.insert(1, "--user")
     try:
-        res = subprocess.run(call, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=3)
+        res = subprocess.run(call, capture_output=True, text=True, stdin=subprocess.DEVNULL)
         return {line.split()[0] for line in res.stdout.splitlines() if line}
-    except Exception:
+    except Exception as e:
+        import sys
+        print(f"[tui_service_toggle] ERROR: _fetch_active_services({scope}): {e}", file=sys.stderr)
         return set()
 
 # 1. Fully Parallelized Subprocess Execution
