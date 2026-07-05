@@ -90,6 +90,20 @@ play_sound() {
     fi
 }
 
+offset_to_minutes() {
+    local offset="$1"
+    local sign="${offset:0:1}"
+    local hours="${offset:1:2}"
+    local mins="${offset:3:2}"
+    hours=$((10#$hours))
+    mins=$((10#$mins))
+    local total_mins=$((hours * 60 + mins))
+    if [[ "$sign" == "-" ]]; then
+        total_mins=$((-total_mins))
+    fi
+    echo "$total_mins"
+}
+
 # --- HARDWARE & STATE MODULES ---
 START_SEC=$SECONDS
 
@@ -106,6 +120,54 @@ case "$MODE" in
         while true; do
             printf -v current_time '%(%I:%M)T' -1
             send_osd "$current_time"
+            sleep 1
+        done
+        ;;
+
+    --world-clock)
+        tz_name="${2:-}"
+        place_lbl="${3:-Time}"
+        if [[ -z "$tz_name" ]]; then
+            send_osd "N/A"
+            exit 1
+        fi
+        
+        while true; do
+            time_str=$(TZ="$tz_name" date +"%I:%M:%S %p")
+            local_offset=$(date +%z)
+            target_offset=$(TZ="$tz_name" date +%z)
+            
+            local_min=$(offset_to_minutes "$local_offset")
+            target_min=$(offset_to_minutes "$target_offset")
+            diff_min=$((target_min - local_min))
+            
+            if (( diff_min == 0 )); then
+                diff_str="same"
+            else
+                diff_hours=$((diff_min / 60))
+                diff_mins=$((diff_min % 60))
+                abs_hours=${diff_hours#-}
+                abs_mins=${diff_mins#-}
+                
+                sign=""
+                if (( diff_min > 0 )); then
+                    sign="+"
+                else
+                    sign="-"
+                fi
+                
+                if (( abs_mins == 0 )); then
+                    diff_str="${sign}${abs_hours}h"
+                else
+                    diff_str="${sign}${abs_hours}h ${abs_mins}m"
+                fi
+            fi
+            
+            diff_lbl="$diff_str"
+            [[ "$diff_lbl" == "same" ]] && diff_lbl="same time"
+            
+            body="<span font='monospace 11' weight='bold'>${time_str}</span>\n<span font='monospace 9'>${diff_lbl}</span>"
+            notify-send -a "$CURRENT_APP" -h string:x-canonical-private-synchronous:"$SYNC_ID" -t 2000 " " "$body"
             sleep 1
         done
         ;;
@@ -929,6 +991,318 @@ case "$MODE" in
                 exit 1
                 ;;
         esac
+        ;;
+
+    --hud)
+        card="${2:-}"
+        vendor="${3:-}"
+        
+        cpu_zone_file=""
+        for hwmon in /sys/class/hwmon/hwmon*/name; do
+            [[ -r "$hwmon" ]] || continue
+            read -r name < "$hwmon"
+            if [[ "$name" == "coretemp" || "$name" == "k10temp" || "$name" == "zenpower" || "$name" == "cpu_thermal" ]]; then
+                dir="${hwmon%/*}"
+                if [[ -r "$dir/temp1_input" ]]; then
+                    cpu_zone_file="$dir/temp1_input"
+                    break
+                fi
+            fi
+        done
+        if [[ -z "$cpu_zone_file" ]]; then
+            for tz in /sys/class/thermal/thermal_zone*/type; do
+                [[ -r "$tz" ]] || continue
+                read -r type < "$tz"
+                if [[ "$type" == *"x86_pkg_temp"* || "$type" == *"cpu"* ]]; then
+                    dir="${tz%/*}"
+                    if [[ -r "$dir/temp" ]]; then
+                        cpu_zone_file="$dir/temp"
+                        break
+                    fi
+                fi
+            done
+        fi
+        
+        cpu_energy_path="/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj"
+        has_cpu_power=false
+        if [[ -r "$cpu_energy_path" ]]; then
+            has_cpu_power=true
+        fi
+        
+        nv_pstate_path=""
+        if [[ "${vendor,,}" == "nvidia" ]]; then
+            nv_pstate_path="/sys/class/drm/$card/device/power_state"
+        fi
+        
+        amd_pwr_path=""
+        if [[ "${vendor,,}" == "amd" ]]; then
+            for f in /sys/class/drm/"$card"/device/hwmon/hwmon*/power1_average /sys/class/drm/"$card"/device/hwmon/hwmon*/power1_input; do
+                if [[ -f "$f" ]]; then
+                    amd_pwr_path="$f"
+                    break
+                fi
+            done
+        fi
+        
+        intel_pwr_path=""
+        if [[ "${vendor,,}" == "intel" ]]; then
+            for name_file in /sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/*/name; do
+                if [[ -f "$name_file" ]] && [[ "$(cat "$name_file")" == "uncore" ]]; then
+                    intel_pwr_path="${name_file%/*}/energy_uj"
+                    break
+                fi
+            done
+        fi
+        
+        amd_busy_path=""
+        if [[ "${vendor,,}" == "amd" ]]; then
+            amd_busy_path="/sys/class/drm/$card/device/gpu_busy_percent"
+        fi
+        
+        intel_rc6_path=""
+        if [[ "${vendor,,}" == "intel" ]]; then
+            intel_rc6_path="/sys/class/drm/$card/device/drm/$card/power/rc6_residency_ms"
+        fi
+        
+        amd_vram_path=""
+        if [[ "${vendor,,}" == "amd" ]]; then
+            amd_vram_path="/sys/class/drm/$card/device/mem_info_vram_used"
+        fi
+        
+        gpu_temp_files=()
+        if [[ -n "$card" ]]; then
+            for tfile in /sys/class/drm/"$card"/device/hwmon/hwmon*/temp*_input; do
+                [[ -f "$tfile" ]] && gpu_temp_files+=("$tfile")
+            done
+        fi
+        
+        prev_idle=0; prev_total=0
+        last_cpu_energy=0
+        last_cpu_time=0
+        if [[ "$has_cpu_power" == true ]]; then
+            read -r last_cpu_energy < "$cpu_energy_path"
+            last_cpu_time="${EPOCHREALTIME//./}"
+        fi
+        
+        last_gpu_energy=0
+        last_gpu_time=0
+        if [[ -n "$intel_pwr_path" && -r "$intel_pwr_path" ]]; then
+            read -r last_gpu_energy < "$intel_pwr_path"
+            last_gpu_time="${EPOCHREALTIME//./}"
+        fi
+        
+        last_rc6=0
+        last_time_ms=0
+        if [[ -n "$intel_rc6_path" && -r "$intel_rc6_path" ]]; then
+            read -r last_rc6 < "$intel_rc6_path"
+            last_rc6_time_str="${EPOCHREALTIME//./}"
+            last_time_ms=$(( last_rc6_time_str / 1000 ))
+        fi
+        
+        sleep 1
+        
+        while true; do
+            read -r _ user nice system idle iowait irq softirq steal _ < /proc/stat
+            total=$((user + nice + system + idle + iowait + irq + softirq + steal))
+            diff_idle=$((idle - prev_idle))
+            diff_total=$((total - prev_total))
+            cpu_usage=0
+            if (( prev_total > 0 && diff_total > 0 )); then
+                cpu_usage=$(( 100 * (diff_total - diff_idle) / diff_total ))
+            fi
+            prev_idle=$idle
+            prev_total=$total
+            
+            cpu_watts="N/A"
+            if [[ "$has_cpu_power" == true ]]; then
+                if read -r current_cpu_energy < "$cpu_energy_path" 2>/dev/null; then
+                    curr_cpu_time="${EPOCHREALTIME//./}"
+                    delta_energy=$((current_cpu_energy - last_cpu_energy))
+                    delta_time_us=$((curr_cpu_time - last_cpu_time))
+                    if (( delta_time_us > 0 )); then
+                        if (( delta_energy < 0 )); then
+                            delta_energy=$(( delta_energy + 4294967296 ))
+                        fi
+                        watts_x10=$(( (delta_energy * 10) / delta_time_us ))
+                        cpu_watts="$(( watts_x10 / 10 )).$(( watts_x10 % 10 ))W"
+                    fi
+                    last_cpu_energy=$current_cpu_energy
+                    last_cpu_time=$curr_cpu_time
+                fi
+            fi
+            
+            cpu_temp="N/A"
+            if [[ -n "$cpu_zone_file" ]] && read -r t < "$cpu_zone_file" 2>/dev/null; then
+                cpu_temp="$(( t / 1000 ))°C"
+            fi
+            
+            mem_tot=0; mem_avail=0
+            while read -r key val _; do
+                case "$key" in
+                    MemTotal:) mem_tot=$val ;;
+                    MemAvailable:) mem_avail=$val ;;
+                esac
+                if (( mem_tot > 0 && mem_avail > 0 )); then
+                    break
+                fi
+            done < /proc/meminfo
+            ram_used_mb=$(( (mem_tot - mem_avail) / 1024 ))
+            ram_used_gb=$(( ram_used_mb / 1024 ))
+            ram_used_gb_frac=$(( (ram_used_mb % 1024) * 10 / 1024 ))
+            ram_str="${ram_used_gb}.${ram_used_gb_frac}GB"
+            
+            gpu_usage="N/A"
+            gpu_watts="N/A"
+            gpu_vram="N/A"
+            gpu_temp="N/A"
+            
+            if [[ ${#gpu_temp_files[@]} -gt 0 ]]; then
+                if read -r gt < "${gpu_temp_files[0]}" 2>/dev/null; then
+                    gpu_temp="$((gt/1000))°C"
+                fi
+            fi
+            
+            case "${vendor,,}" in
+                intel)
+                    if [[ -n "$intel_pwr_path" && -r "$intel_pwr_path" ]]; then
+                        if read -r current_gpu_energy < "$intel_pwr_path" 2>/dev/null; then
+                            curr_gpu_time="${EPOCHREALTIME//./}"
+                            delta_energy=$((current_gpu_energy - last_gpu_energy))
+                            delta_time_us=$((curr_gpu_time - last_gpu_time))
+                            if (( delta_time_us > 0 )); then
+                                if (( delta_energy < 0 )); then
+                                    delta_energy=$(( delta_energy + 4294967296 ))
+                               fi
+                               watts_x10=$(( (delta_energy * 10) / delta_time_us ))
+                               gpu_watts="$(( watts_x10 / 10 )).$(( watts_x10 % 10 ))W"
+                            fi
+                            last_gpu_energy=$current_gpu_energy
+                            last_gpu_time=$curr_gpu_time
+                        fi
+                    fi
+                    
+                    if [[ -n "$intel_rc6_path" && -r "$intel_rc6_path" ]]; then
+                        if read -r current_rc6 < "$intel_rc6_path" 2>/dev/null; then
+                            curr_time_str="${EPOCHREALTIME//./}"
+                            curr_time_ms=$(( curr_time_str / 1000 ))
+                            delta_rc6=$((current_rc6 - last_rc6))
+                            delta_time=$((curr_time_ms - last_time_ms))
+                            if (( delta_time > 0 )); then
+                                u=$(( 100 * (delta_time - delta_rc6) / delta_time ))
+                                (( u < 0 )) && u=0
+                                (( u > 100 )) && u=100
+                                gpu_usage="${u}%"
+                            fi
+                            last_rc6=$current_rc6
+                            last_time_ms=$curr_time_ms
+                        fi
+                    fi
+                    
+                    declare -A client_mem=()
+                    for f in /proc/[0-9]*/fdinfo/[0-9]*; do
+                        [[ -r "$f" ]] || continue
+                        driver=""
+                        client_id=""
+                        total_sys=0
+                        total_vram=0
+                        while read -r name val unit; do
+                            case "$name" in
+                                drm-driver:) driver="$val" ;;
+                                drm-client-id:) client_id="$val" ;;
+                                drm-total-system0:|drm-total-system:)
+                                    total_sys="$val"
+                                    [[ "$unit" == "KiB" ]] && total_sys=$((val * 1024))
+                                    ;;
+                                drm-total-vram:)
+                                    total_vram="$val"
+                                    [[ "$unit" == "KiB" ]] && total_vram=$((val * 1024))
+                                    ;;
+                            esac
+                        done < "$f" 2>/dev/null
+                        if [[ -n "$driver" && -n "$client_id" ]]; then
+                            total=$((total_sys + total_vram))
+                            key="${driver}_${client_id}"
+                            if [[ -z "${client_mem[$key]:-}" ]] || (( total > client_mem[$key] )); then
+                                client_mem["$key"]=$total
+                            fi
+                        fi
+                    done
+                    sum=0
+                    for key in "${!client_mem[@]}"; do
+                        sum=$((sum + client_mem[$key]))
+                    done
+                    vram_mb=$((sum / 1048576))
+                    vram_gb=$(( vram_mb / 1024 ))
+                    vram_gb_frac=$(( (vram_mb % 1024) * 10 / 1024 ))
+                    gpu_vram="${vram_gb}.${vram_gb_frac}GB"
+                    ;;
+                    
+                amd)
+                    if [[ -n "$amd_pwr_path" && -r "$amd_pwr_path" ]]; then
+                        if read -r microwatts < "$amd_pwr_path" 2>/dev/null; then
+                            watts_x10=$(( microwatts / 100000 ))
+                            gpu_watts="$(( watts_x10 / 10 )).$(( watts_x10 % 10 ))W"
+                        fi
+                    fi
+                    
+                    if [[ -n "$amd_busy_path" && -r "$amd_busy_path" ]]; then
+                        if read -r u < "$amd_busy_path" 2>/dev/null; then
+                            gpu_usage="${u}%"
+                        fi
+                    fi
+                    
+                    if [[ -n "$amd_vram_path" && -r "$amd_vram_path" ]]; then
+                        if read -r vram_bytes < "$amd_vram_path" 2>/dev/null; then
+                            vram_mb=$(( vram_bytes / 1048576 ))
+                            vram_gb=$(( vram_mb / 1024 ))
+                            vram_gb_frac=$(( (vram_mb % 1024) * 10 / 1024 ))
+                            gpu_vram="${vram_gb}.${vram_gb_frac}GB"
+                        fi
+                    fi
+                    ;;
+                    
+                nvidia)
+                    pstate=""
+                    [[ -n "$nv_pstate_path" && -r "$nv_pstate_path" ]] && read -r pstate < "$nv_pstate_path" 2>/dev/null
+                    if [[ "$pstate" == D3* ]]; then
+                        gpu_usage="D3"
+                        gpu_watts="D3"
+                        gpu_vram="D3"
+                        gpu_temp="D3"
+                    else
+                        nv_info=$(nvidia-smi --query-gpu=power.draw,utilization.gpu,memory.total,memory.free,temperature.gpu --format=csv,noheader,nounits 2>/dev/null || echo "N/A")
+                        if [[ "$nv_info" != "N/A" ]]; then
+                            IFS=',' read -r nv_pwr nv_usg nv_mem_tot nv_mem_free nv_tmp <<< "$nv_info"
+                            nv_pwr=$(echo "$nv_pwr" | tr -d ' ')
+                            nv_usg=$(echo "$nv_usg" | tr -d ' ')
+                            nv_mem_tot=$(echo "$nv_mem_tot" | tr -d ' ')
+                            nv_mem_free=$(echo "$nv_mem_free" | tr -d ' ')
+                            nv_tmp=$(echo "$nv_tmp" | tr -d ' ')
+                            
+                            if [[ "$nv_pwr" =~ ^([0-9]+)\.([0-9]) ]]; then
+                                gpu_watts="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}W"
+                            else
+                                gpu_watts="${nv_pwr}W"
+                            fi
+                            gpu_usage="${nv_usg}%"
+                            if [[ -n "$nv_mem_tot" && -n "$nv_mem_free" ]]; then
+                                nv_used=$((nv_mem_tot - nv_mem_free))
+                                nv_used_gb=$(( nv_used / 1024 ))
+                                nv_used_gb_frac=$(( (nv_used % 1024) * 10 / 1024 ))
+                                gpu_vram="${nv_used_gb}.${nv_used_gb_frac}GB"
+                            fi
+                            gpu_temp="${nv_tmp}°C"
+                        fi
+                    fi
+                    ;;
+            esac
+            
+            hud_body="  ${cpu_usage}% • ${cpu_watts} • ${cpu_temp}\n󰢮  ${gpu_usage} • ${gpu_watts} • ${gpu_temp}\n󰘚  ${ram_str} | VRAM ${gpu_vram}"
+            body="<span font='monospace 9' weight='bold'>${hud_body}</span>"
+            notify-send -a "$CURRENT_APP" -h string:x-canonical-private-synchronous:"$SYNC_ID" -t 2000 " " "$body"
+            
+            sleep 1
+        done
         ;;
 
     --workspace)

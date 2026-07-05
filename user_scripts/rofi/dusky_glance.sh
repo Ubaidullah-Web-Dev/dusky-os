@@ -12,6 +12,21 @@ SETTINGS_DIR="$HOME/.config/dusky/settings/dusky_glance"
 mkdir -p "$SETTINGS_DIR"
 TIMER_STATE="$SETTINGS_DIR/timer.state"
 POMO_STATE="$SETTINGS_DIR/pomodoro.state"
+RECENTS_STATE="$SETTINGS_DIR/recents"
+
+# --- HELPER: SAVE RECENT ---
+save_recent() {
+    local label="$1"
+    local cmd_args="$2"
+    
+    local temp_file
+    temp_file=$(mktemp)
+    if [[ -f "$RECENTS_STATE" ]]; then
+        grep -v -F -e "$label|" -e "|$cmd_args" "$RECENTS_STATE" > "$temp_file" || true
+    fi
+    (echo "$label|$cmd_args"; cat "$temp_file" 2>/dev/null || true) | head -n 5 > "$RECENTS_STATE"
+    rm -f "$temp_file"
+}
 
 # --- HELPER: TIME PARSERS ---
 parse_timer() {
@@ -68,6 +83,7 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     printf "  \e[32m--stopwatch\e[0m                Start the stopwatch\n"
     printf "  \e[32m--clock\e[0m                    Show the live clock\n"
     printf "  \e[32m--clock-short\e[0m              Show the live clock (no seconds)\n"
+    printf "  \e[32m--world-clock [tz] [lbl]\e[0m   Show live world clock\n"
     printf "  \e[32m--cpu-power\e[0m                Show live CPU Package Power (Watts)\n"
     printf "  \e[32m--cpu\e[0m                      Show live CPU usage\n"
     printf "  \e[32m--ram\e[0m                      Show live RAM usage\n"
@@ -77,6 +93,7 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     printf "  \e[32m--network\e[0m                  Show live network speed\n"
     printf "  \e[32m--uptime\e[0m                   Show system uptime\n"
     printf "  \e[32m--workspace\e[0m                Show active Hyprland workspace\n"
+    printf "  \e[32m--hud [card] [vendor]\e[0m      Show live Gaming HUD\n"
     printf "  \e[31m--stop\e[0m                     Stop any running monitor\n"
     exit 0
 fi
@@ -156,7 +173,7 @@ declare -a ROFI_CMD=(
         }
         listview {
             columns: 2;
-            lines: 5;
+            lines: 6;
             spacing: 12px;
             fixed-height: false;
             dynamic: true;
@@ -227,18 +244,48 @@ declare -a ROFI_SUB=(
 PROMPT_STYLE='window { width: 340px; x-offset: -20px; y-offset: 20px; padding: 20px; border-radius: 20px; } mainbox { children: [ inputbar ]; } inputbar { padding: 12px 18px; border-radius: 99px; spacing: 12px; children: [ prompt, entry ]; } prompt { vertical-align: 0.5; font: "JetBrainsMono Nerd Font Bold 12"; } entry { vertical-align: 0.5; placeholder: "Enter duration..."; } listview { lines: 0; }'
 
 declare -a MENU_OPTIONS=(
-    "󰜺  Stop / Clear"          "󰸉  Edit"
-    "󰔟  Time & Focus"          "  CPU"
-    "󰘚  Memory (RAM)"          "󰢮  GPU"
-    "󰁹  Battery"               "󰋊  Disk Usage"
-    "󰈀  Network Speed"          "󰽽  Workspace"
+    "󰜺  Stop / Clear"          "󰕳  Recents"
+    "󰸉  Edit"                  "󰔟  Time & Focus"
+    "  CPU"                   "󰘚  Memory (RAM)"
+    "󰢮  GPU"                   "󰁹  Battery"
+    "󰋊  Disk Usage"            "󰈀  Network Speed"
+    "󰽽  Workspace"              "  Gaming HUD"
 )
 
 choice=$(printf '%s\n' "${MENU_OPTIONS[@]}" | "${ROFI_CMD[@]}" -p "Glance") || exit 0
 
 case "$choice" in
-    '󰢮  GPU')
-        # Dynamic GPU Scan (power-state-first — never wakes sleeping GPUs)
+    '󰕳  Recents')
+        if [[ ! -f "$RECENTS_STATE" ]] || [[ ! -s "$RECENTS_STATE" ]]; then
+            rofi -e "No recently used items."
+            exit 0
+        fi
+        
+        recent_lines=()
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && recent_lines+=("$line")
+        done < "$RECENTS_STATE"
+        
+        declare -a recent_opts=()
+        for entry in "${recent_lines[@]}"; do
+            IFS='|' read -r r_label r_cmd <<< "$entry"
+            recent_opts+=("$r_label")
+        done
+        
+        rchoice=$(printf '%s\n' "${recent_opts[@]}" | "${ROFI_SUB[@]}" -p "Recents") || exit 0
+        
+        for entry in "${recent_lines[@]}"; do
+            IFS='|' read -r r_label r_cmd <<< "$entry"
+            if [[ "$rchoice" == "$r_label" ]]; then
+                save_recent "$r_label" "$r_cmd"
+                "$DAEMON_SCRIPT" $r_cmd & disown
+                exit 0
+            fi
+        done
+        ;;
+
+    '  Gaming HUD')
+        # Dynamic GPU Scan for HUD
         gpu_list=()
         for card in /sys/class/drm/card[0-9]; do
             [[ -r "$card/device/vendor" ]] || continue
@@ -251,12 +298,9 @@ case "$choice" in
                 *)      vendor_lbl="GPU" ;;
             esac
             
-            # Read power state FIRST — before any PCI config space access
             power_state=""
             [[ -r "$card/device/power_state" ]] && power_state=$(cat "$card/device/power_state" 2>/dev/null)
             
-            # Only query lspci for D0 (active) GPUs — lspci reads PCI config
-            # space which WILL wake a D3cold GPU
             card_name=""
             if [[ "$power_state" != D3* ]]; then
                 sys_device_path=$(readlink -f "$card/device" 2>/dev/null || true)
@@ -267,7 +311,80 @@ case "$choice" in
             fi
             [[ -z "$card_name" ]] && card_name="${vendor_lbl} GPU"
             
-            # Order primary boot GPU first
+            boot_vga=0
+            [[ -r "$card/device/boot_vga" ]] && boot_vga=$(cat "$card/device/boot_vga" 2>/dev/null)
+            
+            if [[ "$boot_vga" == "1" ]]; then
+                gpu_list=("${card##*/}|$card_name|$vendor_lbl|$power_state" "${gpu_list[@]:-}")
+            else
+                gpu_list+=("${card##*/}|$card_name|$vendor_lbl|$power_state")
+            fi
+        done
+        
+        selected_card=""
+        selected_vendor=""
+        
+        if [[ ${#gpu_list[@]} -eq 0 ]]; then
+            rofi -e "No GPUs detected."
+            exit 1
+        elif [[ ${#gpu_list[@]} -eq 1 ]]; then
+            IFS='|' read -r selected_card selected_name selected_vendor selected_pstate <<< "${gpu_list[0]}"
+        else
+            declare -a card_opts=()
+            for entry in "${gpu_list[@]}"; do
+                IFS='|' read -r c_node c_name c_vend c_pstate <<< "$entry"
+                if [[ "$c_pstate" == D3* ]]; then
+                    card_opts+=("󰤄  $c_vend ($c_pstate)")
+                else
+                    card_opts+=("󰢮  $c_vend (Active)")
+                fi
+            done
+            
+            cardchoice=$(printf '%s\n' "${card_opts[@]}" | "${ROFI_SUB[@]}" -p "Select HUD GPU") || exit 0
+            
+            for entry in "${gpu_list[@]}"; do
+                IFS='|' read -r c_node c_name c_vend c_pstate <<< "$entry"
+                if [[ "$cardchoice" == *"$c_vend"* ]]; then
+                    selected_card="$c_node"
+                    selected_vendor="$c_vend"
+                    break
+                fi
+            done
+        fi
+        
+        [[ -z "$selected_card" ]] && exit 0
+        
+        save_recent "Gaming HUD ($selected_vendor)" "--hud $selected_card $selected_vendor"
+        "$DAEMON_SCRIPT" --hud "$selected_card" "$selected_vendor" & disown
+        ;;
+
+    '󰢮  GPU')
+        # Dynamic GPU Scan
+        gpu_list=()
+        for card in /sys/class/drm/card[0-9]; do
+            [[ -r "$card/device/vendor" ]] || continue
+            vendor=$(cat "$card/device/vendor")
+            vendor_lbl=""
+            case "${vendor,,}" in
+                0x8086) vendor_lbl="Intel" ;;
+                0x1002) vendor_lbl="AMD" ;;
+                0x10de) vendor_lbl="NVIDIA" ;;
+                *)      vendor_lbl="GPU" ;;
+            esac
+            
+            power_state=""
+            [[ -r "$card/device/power_state" ]] && power_state=$(cat "$card/device/power_state" 2>/dev/null)
+            
+            card_name=""
+            if [[ "$power_state" != D3* ]]; then
+                sys_device_path=$(readlink -f "$card/device" 2>/dev/null || true)
+                pci_address="${sys_device_path##*/}"
+                if [[ -n "$pci_address" ]] && command -v lspci >/dev/null 2>&1; then
+                    card_name=$(lspci -s "$pci_address" 2>/dev/null | sed -E 's/^[0-9a-fA-F:.]+ [^:]+: //' || true)
+                fi
+            fi
+            [[ -z "$card_name" ]] && card_name="${vendor_lbl} GPU"
+            
             boot_vga=0
             [[ -r "$card/device/boot_vga" ]] && boot_vga=$(cat "$card/device/boot_vga" 2>/dev/null)
             
@@ -317,7 +434,6 @@ case "$choice" in
         
         [[ -z "$selected_card" ]] && exit 0
         
-        
         gpu_opts=(
             "󱐋  GPU Power (Watts)"
             "󰢮  GPU Usage"
@@ -326,10 +442,13 @@ case "$choice" in
         gpuchoice=$(printf '%s\n' "${gpu_opts[@]}" | "${ROFI_SUB[@]}" -p "$selected_vendor") || exit 0
         
         if [[ "$gpuchoice" == *"GPU Power"* ]]; then
+            save_recent "GPU Power ($selected_vendor)" "--gpu-power $selected_card $selected_vendor"
             "$DAEMON_SCRIPT" --gpu-power "$selected_card" "$selected_vendor" & disown
         elif [[ "$gpuchoice" == *"GPU Usage"* ]]; then
+            save_recent "GPU Usage ($selected_vendor)" "--gpu-usage $selected_card $selected_vendor"
             "$DAEMON_SCRIPT" --gpu-usage "$selected_card" "$selected_vendor" & disown
         elif [[ "$gpuchoice" == *"GPU Memory"* ]]; then
+            save_recent "GPU Memory ($selected_vendor)" "--gpu-mem $selected_card $selected_vendor"
             "$DAEMON_SCRIPT" --gpu-mem "$selected_card" "$selected_vendor" & disown
         fi
         ;;
@@ -338,19 +457,85 @@ case "$choice" in
         tf_opts=(
             "󰥔  Clock (no seconds)"
             "󰥔  Clock (with seconds)"
+            "󰥔  World Clock"
             "󰔟  Timer"
             "󰔚  System Uptime"
-            "󱎫  Pomodoro"
             "󱑎  Stopwatch"
+            "󱎫  Pomodoro"
         )
         tfchoice=$(printf '%s\n' "${tf_opts[@]}" | "${ROFI_SUB[@]}" -p "Time & Focus") || exit 0
         
         case "$tfchoice" in
             *"Clock (no seconds)"*)
+                save_recent "Clock (no seconds)" "--clock-short"
                 "$DAEMON_SCRIPT" --clock-short & disown
                 ;;
             *"Clock (with seconds)"*)
+                save_recent "Clock (with seconds)" "--clock"
                 "$DAEMON_SCRIPT" --clock & disown
+                ;;
+            *"World Clock"*)
+                wc_opts=(
+                    "🇯🇵  Japan (Tokyo)"
+                    "🇺🇸  New York (East)"
+                    "🇺🇸  Chicago (Central)"
+                    "🇺🇸  Denver (Mountain)"
+                    "🇺🇸  California (West)"
+                    "🇬🇧  London"
+                    "🇨🇳  Beijing"
+                    "🇦🇺  Australia (Sydney)"
+                    "🇦🇪  Dubai"
+                    "🇷🇺  Moscow"
+                    "🇸🇬  Singapore"
+                )
+                wcchoice=$(printf '%s\n' "${wc_opts[@]}" | "${ROFI_SUB[@]}" -p "World Clock") || exit 0
+                
+                case "$wcchoice" in
+                    *"New York"*)
+                        save_recent "World Clock (New York)" "--world-clock America/New_York NY"
+                        "$DAEMON_SCRIPT" --world-clock "America/New_York" "NY" & disown
+                        ;;
+                    *"Chicago"*)
+                        save_recent "World Clock (Chicago)" "--world-clock America/Chicago Chicago"
+                        "$DAEMON_SCRIPT" --world-clock "America/Chicago" "Chicago" & disown
+                        ;;
+                    *"Denver"*)
+                        save_recent "World Clock (Denver)" "--world-clock America/Denver Denver"
+                        "$DAEMON_SCRIPT" --world-clock "America/Denver" "Denver" & disown
+                        ;;
+                    *"California"*)
+                        save_recent "World Clock (California)" "--world-clock America/Los_Angeles California"
+                        "$DAEMON_SCRIPT" --world-clock "America/Los_Angeles" "California" & disown
+                        ;;
+                    *"London"*)
+                        save_recent "World Clock (London)" "--world-clock Europe/London London"
+                        "$DAEMON_SCRIPT" --world-clock "Europe/London" "London" & disown
+                        ;;
+                    *"Beijing"*)
+                        save_recent "World Clock (Beijing)" "--world-clock Asia/Shanghai Beijing"
+                        "$DAEMON_SCRIPT" --world-clock "Asia/Shanghai" "Beijing" & disown
+                        ;;
+                    *"Australia"*)
+                        save_recent "World Clock (Sydney)" "--world-clock Australia/Sydney Sydney"
+                        "$DAEMON_SCRIPT" --world-clock "Australia/Sydney" "Sydney" & disown
+                        ;;
+                    *"Dubai"*)
+                        save_recent "World Clock (Dubai)" "--world-clock Asia/Dubai Dubai"
+                        "$DAEMON_SCRIPT" --world-clock "Asia/Dubai" "Dubai" & disown
+                        ;;
+                    *"Moscow"*)
+                        save_recent "World Clock (Moscow)" "--world-clock Europe/Moscow Moscow"
+                        "$DAEMON_SCRIPT" --world-clock "Europe/Moscow" "Moscow" & disown
+                        ;;
+                    *"Japan"*)
+                        save_recent "World Clock (Tokyo)" "--world-clock Asia/Tokyo Tokyo"
+                        "$DAEMON_SCRIPT" --world-clock "Asia/Tokyo" "Tokyo" & disown
+                        ;;
+                    *"Singapore"*)
+                        save_recent "World Clock (Singapore)" "--world-clock Asia/Singapore Singapore"
+                        "$DAEMON_SCRIPT" --world-clock "Asia/Singapore" "Singapore" & disown
+                        ;;
+                esac
                 ;;
             *"Timer"*)
                 last_timer="15m"
@@ -363,20 +548,24 @@ case "$choice" in
                 )
                 tchoice=$(printf '%s\n' "${t_opts[@]}" | "${ROFI_SUB[@]}" -p "Timer") || exit 0
                 if [[ "$tchoice" == *"Start Last"* ]]; then
+                    save_recent "Timer ($(fmt_t "$lt_sec"))" "--timer $lt_sec"
                     "$DAEMON_SCRIPT" --timer "$lt_sec" & disown
                 elif [[ "$tchoice" == *"Minutes"* ]]; then
                     val=$(rofi -dmenu -i -p "Duration (Mins)" -location 3 -theme-str "$PROMPT_STYLE") || exit 0
                     val=${val//[!0-9]/}; [[ -z "$val" ]] && exit 0
                     echo "${val}m" > "$TIMER_STATE"
+                    save_recent "Timer (${val}m)" "--timer $((val*60))"
                     "$DAEMON_SCRIPT" --timer "$((val*60))" & disown
                 elif [[ "$tchoice" == *"Seconds"* ]]; then
                     val=$(rofi -dmenu -i -p "Duration (Secs)" -location 3 -theme-str "$PROMPT_STYLE") || exit 0
                     val=${val//[!0-9]/}; [[ -z "$val" ]] && exit 0
                     echo "${val}s" > "$TIMER_STATE"
+                    save_recent "Timer (${val}s)" "--timer $val"
                     "$DAEMON_SCRIPT" --timer "$val" & disown
                 fi
                 ;;
             *"System Uptime"*)
+                save_recent "System Uptime" "--uptime"
                 "$DAEMON_SCRIPT" --uptime & disown
                 ;;
             *"Pomodoro"*)
@@ -390,6 +579,7 @@ case "$choice" in
                 )
                 pchoice=$(printf '%s\n' "${p_opts[@]}" | "${ROFI_SUB[@]}" -p "Pomodoro") || exit 0
                 if [[ "$pchoice" == *"Start Last"* ]]; then
+                    save_recent "Pomodoro ($(fmt_t "$lw_sec") Work / $(fmt_t "$lb_sec") Break)" "--pomodoro $lw_sec $lb_sec"
                     "$DAEMON_SCRIPT" --pomodoro "$lw_sec" "$lb_sec" & disown
                 elif [[ "$pchoice" == *"Minutes"* ]]; then
                     w=$(rofi -dmenu -i -p "Work (Mins)" -location 3 -theme-str "$PROMPT_STYLE") || exit 0
@@ -397,6 +587,7 @@ case "$choice" in
                     b=$(rofi -dmenu -i -p "Break (Mins)" -location 3 -theme-str "$PROMPT_STYLE") || exit 0
                     b=${b//[!0-9]/}; [[ -z "$b" ]] && b=0
                     echo "$((w*60)):$((b*60))" > "$POMO_STATE"
+                    save_recent "Pomodoro (${w}m / ${b}m)" "--pomodoro $((w*60)) $((b*60))"
                     "$DAEMON_SCRIPT" --pomodoro "$((w*60))" "$((b*60))" & disown
                 elif [[ "$pchoice" == *"Seconds"* ]]; then
                     w=$(rofi -dmenu -i -p "Work (Secs)" -location 3 -theme-str "$PROMPT_STYLE") || exit 0
@@ -404,10 +595,12 @@ case "$choice" in
                     b=$(rofi -dmenu -i -p "Break (Secs)" -location 3 -theme-str "$PROMPT_STYLE") || exit 0
                     b=${b//[!0-9]/}; [[ -z "$b" ]] && b=0
                     echo "$w:$b" > "$POMO_STATE"
+                    save_recent "Pomodoro (${w}s / ${b}s)" "--pomodoro $w $b"
                     "$DAEMON_SCRIPT" --pomodoro "$w" "$b" & disown
                 fi
                 ;;
             *"Stopwatch"*)
+                save_recent "Stopwatch" "--stopwatch"
                 "$DAEMON_SCRIPT" --stopwatch & disown
                 ;;
         esac
@@ -423,12 +616,11 @@ case "$choice" in
         stchoice=$(printf '%s\n' "${st_opts[@]}" | "${ROFI_SUB[@]}" -p "Storage Type") || exit 0
 
         if [[ "$stchoice" == *"Root Partition"* ]]; then
+            save_recent "Disk Space (Root)" "--disk"
             "$DAEMON_SCRIPT" --disk & disown
             
         elif [[ "$stchoice" == *"Solid State Drives"* ]]; then
             declare -a ssd_opts=()
-            
-            # Robust AWK extraction guarantees reliable mapping regardless of spaces in model names
             while IFS=$'\t' read -r name model rota; do
                 [[ "$name" =~ ^(loop|sr|ram|dm|fd) ]] && continue
                 if [[ "$rota" == "0" ]]; then
@@ -446,16 +638,18 @@ case "$choice" in
             rwchoice=$(printf '%s\n' "${rw_opts[@]}" | "${ROFI_SUB[@]}" -p "/dev/$dev_name") || exit 0
             
             if [[ "$rwchoice" == *"Read"* ]]; then
+                save_recent "Disk Read ($dev_name)" "--disk-read $dev_name"
                 "$DAEMON_SCRIPT" --disk-read "$dev_name" & disown
             elif [[ "$rwchoice" == *"Write"* ]]; then
+                save_recent "Disk Write ($dev_name)" "--disk-write $dev_name"
                 "$DAEMON_SCRIPT" --disk-write "$dev_name" & disown
             elif [[ "$rwchoice" == *"Temperature"* ]]; then
+                save_recent "Disk Temp ($dev_name)" "--disk-temp $dev_name"
                 "$DAEMON_SCRIPT" --disk-temp "$dev_name" & disown
             fi
 
         elif [[ "$stchoice" == *"Hard Disk Drives"* ]]; then
             declare -a hdd_opts=()
-            
             while IFS=$'\t' read -r name model rota; do
                 [[ "$name" =~ ^(loop|sr|ram|dm|fd) ]] && continue
                 if [[ "$rota" == "1" ]]; then
@@ -473,10 +667,13 @@ case "$choice" in
             rwchoice=$(printf '%s\n' "${rw_opts[@]}" | "${ROFI_SUB[@]}" -p "/dev/$dev_name") || exit 0
             
             if [[ "$rwchoice" == *"Read"* ]]; then
+                save_recent "Disk Read ($dev_name)" "--disk-read $dev_name"
                 "$DAEMON_SCRIPT" --disk-read "$dev_name" & disown
             elif [[ "$rwchoice" == *"Write"* ]]; then
+                save_recent "Disk Write ($dev_name)" "--disk-write $dev_name"
                 "$DAEMON_SCRIPT" --disk-write "$dev_name" & disown
             elif [[ "$rwchoice" == *"Temperature"* ]]; then
+                save_recent "Disk Temp ($dev_name)" "--disk-temp $dev_name"
                 "$DAEMON_SCRIPT" --disk-temp "$dev_name" & disown
             fi
         fi
@@ -491,10 +688,13 @@ case "$choice" in
         cpuchoice=$(printf '%s\n' "${cpu_opts[@]}" | "${ROFI_SUB[@]}" -p "CPU") || exit 0
         
         if [[ "$cpuchoice" == *"CPU Power"* ]]; then
+            save_recent "CPU Power (Watts)" "--cpu-power"
             "$DAEMON_SCRIPT" --cpu-power & disown
         elif [[ "$cpuchoice" == *"CPU Usage"* ]]; then
+            save_recent "CPU Usage" "--cpu"
             "$DAEMON_SCRIPT" --cpu & disown
         elif [[ "$cpuchoice" == *"CPU Temp"* ]]; then
+            save_recent "CPU Temp" "--temp"
             "$DAEMON_SCRIPT" --temp & disown
         fi
         ;;
@@ -503,10 +703,13 @@ case "$choice" in
         mchoice=$(printf '%s\n' "${m_opts[@]}" | "${ROFI_SUB[@]}" -p "Memory") || exit 0
 
         if [[ "$mchoice" == *"System RAM"* ]]; then
+            save_recent "RAM Usage" "--ram"
             "$DAEMON_SCRIPT" --ram & disown
         elif [[ "$mchoice" == *"Temperature"* ]]; then
+            save_recent "RAM Temp" "--ram-temp"
             "$DAEMON_SCRIPT" --ram-temp & disown
         elif [[ "$mchoice" == *"ZRAM"* ]]; then
+            save_recent "ZRAM Usage" "--zram"
             "$DAEMON_SCRIPT" --zram & disown
         fi
         ;;
@@ -520,17 +723,27 @@ case "$choice" in
         bchoice=$(printf '%s\n' "${b_opts[@]}" | "${ROFI_SUB[@]}" -p "Battery") || exit 0
         
         if [[ "$bchoice" == *"Standard HUD"* ]]; then
+            save_recent "Battery HUD" "--battery"
             "$DAEMON_SCRIPT" --battery & disown
         elif [[ "$bchoice" == *"Percent Only"* ]]; then
+            save_recent "Battery Percent" "--battery-percent"
             "$DAEMON_SCRIPT" --battery-percent & disown
         elif [[ "$bchoice" == *"Power Draw Only"* ]]; then
+            save_recent "Battery Power Draw" "--battery-watts"
             "$DAEMON_SCRIPT" --battery-watts & disown
         elif [[ "$bchoice" == *"Time Remaining Only"* ]]; then
+            save_recent "Battery Time" "--battery-time"
             "$DAEMON_SCRIPT" --battery-time & disown
         fi
         ;;
-    '󰈀  Network Speed')  "$DAEMON_SCRIPT" --network & disown ;;
-    '󰽽  Workspace')      "$DAEMON_SCRIPT" --workspace & disown ;;
+    '󰈀  Network Speed')
+        save_recent "Network Speed" "--network"
+        "$DAEMON_SCRIPT" --network & disown
+        ;;
+    '󰽽  Workspace')
+        save_recent "Workspace" "--workspace"
+        "$DAEMON_SCRIPT" --workspace & disown
+        ;;
     '󰸉  Edit')           foot --app-id=dusky_tui python ~/user_scripts/dusky_tui/python/main/main.py ~/user_scripts/mako_osd/dusky_glance/tui_glance_mako.py & disown ;;
     '󰜺  Stop / Clear')   "$DAEMON_SCRIPT" --stop & disown ;;
 esac

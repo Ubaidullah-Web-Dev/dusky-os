@@ -91,8 +91,10 @@ hl.on("hyprland.start", function()
     -- hl.exec_cmd("~/user_scripts/rofi/dusky_glance.sh --zram")
     -- hl.exec_cmd("~/user_scripts/rofi/dusky_glance.sh --stopwatch")
     -- hl.exec_cmd("~/user_scripts/rofi/dusky_glance.sh --timer 15m")
-    -- hl.exec_cmd("~/user_scripts/rofi/dusky_glance.sh --pomodoro")
-    -- hl.exec_cmd("~/user_scripts/rofi/dusky_glance.sh --stop")
+    -- hl.exec_cmd("~/user_scripts/rofi/dusky_glance.sh --hud card1 Intel")
+    -- hl.exec_cmd("~/user_scripts/rofi/dusky_glance.sh --world-clock America/New_York NY")
+    -- hl.exec_cmd("~/user_scripts/rofi/dusky_glance.sh --world-clock Asia/Tokyo Japan")
+    -- hl.exec_cmd("~/user_scripts/rofi/dusky_glance.sh --world-clock Europe/London London")
 
 end)
 

@@ -123,17 +123,20 @@ def build_standard_glance(suffix, label_name, group_name="Modules"):
         "battery": 180, "battery-percent": 100, "battery-watts": 120, "battery-time": 130,
         "gpu-power": 130, "gpu-usage": 100, "gpu-mem": 160,
         "disk": 240, "disk-read": 190, "disk-write": 190, "disk-temp": 100,
-        "network": 190, "uptime": 170, "workspace": 140
+        "network": 190, "uptime": 170, "workspace": 140, "hud": 180, "world-clock": 140
     }
     
     height_map = {
         "cpu": 38,
-        "battery": 72
+        "battery": 72,
+        "hud": 68,
+        "world-clock": 52
     }
     
     border_size_map = {
         "ram-temp": 0,
-        "network": 0
+        "network": 0,
+        "hud": 1
     }
 
     width_val = width_map.get(suffix, 170)
@@ -158,7 +161,7 @@ def build_standard_glance(suffix, label_name, group_name="Modules"):
             key="anchor",
             scope=scope,
             type_="cycle",
-            default="bottom-right",
+            default="top-left" if suffix == "hud" else "bottom-right",
             options=["top-right", "top-center", "top-left", "bottom-right", "bottom-center", "bottom-left", "center-right", "center-left", "center"],
             parent_ref=uid,
             extended_help="**Dashboard Anchor**\n\nThe exact quadrant of the physical screen where the Glance widget originates. Usually kept at `bottom-right` to stay out of the way of primary workspace tasks."
@@ -168,7 +171,7 @@ def build_standard_glance(suffix, label_name, group_name="Modules"):
             key="layer",
             scope=scope,
             type_="cycle",
-            default="overlay" if suffix == "battery" else "top",
+            default="overlay" if suffix in ("battery", "hud") else "top",
             options=["background", "bottom", "top", "overlay"],
             parent_ref=uid,
             extended_help="**Window Layering**\n\nArranges the widget at the specified layer relative to normal windows. Using `overlay` will cause notifications to be displayed above fullscreen windows."
@@ -178,7 +181,7 @@ def build_standard_glance(suffix, label_name, group_name="Modules"):
             key="text-alignment",
             scope=scope,
             type_="cycle",
-            default="center",
+            default="left" if suffix == "hud" else "center",
             options=["left", "center", "right"],
             parent_ref=uid,
             extended_help="**Text Justification**\n\nAligns the text to visually anchor against the screen edge (e.g. `right` if the widget is anchored `bottom-right`)."
@@ -212,7 +215,7 @@ def build_standard_glance(suffix, label_name, group_name="Modules"):
             key="margin",
             scope=scope,
             type_="string",
-            default="0,8,0,0",
+            default="10,0,0,10" if suffix == "hud" else "0,8,0,0",
             parent_ref=uid,
             extended_help="**Spatiotemporal Margin Offset**\n\nCSS-style margins (Top, Right, Bottom, Left) that push the dashboard away from the edges of the Wayland output screen."
         ),
@@ -221,7 +224,7 @@ def build_standard_glance(suffix, label_name, group_name="Modules"):
             key="padding",
             scope=scope,
             type_="string",
-            default="0",
+            default="8" if suffix == "hud" else "0",
             parent_ref=uid,
             extended_help="**Internal Guard Padding**\n\nSpace inserted between the active metrics text and the bounding box. Left at `0` for true transparent floating widgets."
         ),
@@ -230,7 +233,7 @@ def build_standard_glance(suffix, label_name, group_name="Modules"):
             key="border-radius",
             scope=scope,
             type_="int",
-            default=18,
+            default=10 if suffix == "hud" else 18,
             min_val=0,
             max_val=50,
             step=1,
@@ -297,7 +300,7 @@ def build_standard_glance(suffix, label_name, group_name="Modules"):
             key="font",
             scope=scope,
             type_="string",
-            default="monospace 10",
+            default="monospace 9" if suffix == "hud" else "monospace 10",
             parent_ref=uid,
             extended_help="**Typography & Size**\n\nDefines the font family and size for the Glance widget (e.g., `monospace 10`, `Ubuntu 12`)."
         ),
@@ -531,7 +534,8 @@ SCHEMA = {
        build_standard_glance("clock-short", "Clock (Short)", "Time") +
        build_standard_glance("stopwatch", "Stopwatch", "Time") +
        build_standard_glance("timer", "Timer", "Time") +
-       build_standard_glance("pomodoro", "Pomodoro", "Time"),
+       build_standard_glance("pomodoro", "Pomodoro", "Time") +
+       build_standard_glance("world-clock", "World-Clock", "Time"),
 
     # --- TAB 3: Core Hardware ---
     3: build_standard_glance("cpu", "CPU", "Hardware") +
@@ -546,7 +550,8 @@ SCHEMA = {
        build_standard_glance("battery-time", "Battery (Time)", "Hardware") +
        build_standard_glance("gpu-power", "GPU-Power", "Hardware") +
        build_standard_glance("gpu-usage", "GPU-Usage", "Hardware") +
-       build_standard_glance("gpu-mem", "GPU-Memory", "Hardware"),
+       build_standard_glance("gpu-mem", "GPU-Memory", "Hardware") +
+       build_standard_glance("hud", "Gaming-HUD", "Hardware"),
 
     # --- TAB 4: Storage Metrics ---
     4: build_standard_glance("disk", "Disk-Space", "Storage") +
