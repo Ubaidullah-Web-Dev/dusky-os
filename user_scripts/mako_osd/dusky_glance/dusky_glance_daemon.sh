@@ -1205,7 +1205,8 @@ case "$MODE" in
                         client_id=""
                         total_sys=0
                         total_vram=0
-                        while read -r name val unit; do
+                        # || true guards against set -e killing us when read hits EOF (exit 1)
+                        while read -r name val unit || [[ -n "$name" ]]; do
                             case "$name" in
                                 drm-driver:) driver="$val" ;;
                                 drm-client-id:) client_id="$val" ;;
@@ -1218,7 +1219,7 @@ case "$MODE" in
                                     [[ "$unit" == "KiB" ]] && total_vram=$((val * 1024))
                                     ;;
                             esac
-                        done < "$f" 2>/dev/null
+                        done < "$f" 2>/dev/null || true
                         if [[ -n "$driver" && -n "$client_id" ]]; then
                             total=$((total_sys + total_vram))
                             key="${driver}_${client_id}"
@@ -1226,11 +1227,11 @@ case "$MODE" in
                                 client_mem["$key"]=$total
                             fi
                         fi
-                    done
+                    done || true
                     sum=0
                     for key in "${!client_mem[@]}"; do
                         sum=$((sum + client_mem[$key]))
-                    done
+                    done || true
                     vram_mb=$((sum / 1048576))
                     vram_gb=$(( vram_mb / 1024 ))
                     vram_gb_frac=$(( (vram_mb % 1024) * 10 / 1024 ))
