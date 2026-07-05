@@ -82,9 +82,16 @@ case "${1:-}" in
 esac
 
 mount_game() {
-    local ram total cache
+    local total cache
     total=$(awk '/MemTotal/{print $2}' /proc/meminfo)
     cache=$((total * 25 / 100))
+
+    # Tear down any stale FUSE mounts left from a previous run/crash
+    fusermount3 -u -z "$OVERLAY_DIR" 2>/dev/null || true
+    fusermount3 -u -z "$DWARFS_MNT"  2>/dev/null || true
+
+    # workdir must be empty for fuse-overlayfs; recreate it
+    rm -rf "$OVERLAY_WORK"
 
     mkdir -p "$DWARFS_MNT" "$OVERLAY_STORAGE" "$OVERLAY_WORK" "$OVERLAY_DIR"
     chmod +x "$DWARFS_BIN"
@@ -103,7 +110,8 @@ mount_game() {
 }
 
 is_mounted() {
-    mountpoint -q "$OVERLAY_DIR" 2>/dev/null
+    mountpoint -q "$DWARFS_MNT"  2>/dev/null \
+ && mountpoint -q "$OVERLAY_DIR" 2>/dev/null
 }
 
 if ! is_mounted; then
@@ -121,3 +129,4 @@ if [ ! -x "$GAME_BIN" ]; then
 fi
 
 exec "$NVIDIA_WRAPPER" "$GAME_BIN" "$@"
+
