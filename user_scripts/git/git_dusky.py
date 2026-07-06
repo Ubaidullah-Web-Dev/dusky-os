@@ -24,7 +24,7 @@ HOME: Path = Path.home()
 GIT_DIR: Path = HOME / "dusky"
 WORK_TREE: Path = HOME
 DOTFILES_LIST: Path = HOME / ".git_dusky_list"
-TIME_MACHINE_BIN: Path = HOME / "dusky_time_machine_tui.sh"
+TIME_MACHINE_BIN: Path = HOME / "user_scripts" / "git" / "time_machine" / "dusky_time_machine_tui.sh"
 
 console = Console()
 
