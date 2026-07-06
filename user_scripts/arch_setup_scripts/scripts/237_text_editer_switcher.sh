@@ -316,7 +316,35 @@ switch_text_editor() {
 
     # 5. Handle Mime and State
     if command -v xdg-mime &>/dev/null; then
-        xdg-mime default "$t_desktop" text/plain 2>/dev/null || :
+        local mime
+        for mime in \
+            "text/plain" \
+            "text/markdown" \
+            "text/x-shellscript" \
+            "application/x-shellscript" \
+            "text/x-python" \
+            "text/x-script.python" \
+            "text/x-go" \
+            "text/x-rust" \
+            "text/x-c" \
+            "text/x-c++" \
+            "text/x-lua" \
+            "text/x-java" \
+            "text/x-makefile" \
+            "application/json" \
+            "application/toml" \
+            "application/x-yaml" \
+            "text/yaml" \
+            "application/x-config" \
+            "application/x-conf" \
+            "text/css" \
+            "text/javascript" \
+            "application/javascript" \
+            "text/xml" \
+            "application/xml" \
+            "application/x-zerosize"; do
+            xdg-mime default "$t_desktop" "$mime" 2>/dev/null || :
+        done
     fi
 
     [[ "$t_type" == "1" ]] && legacy_state="true" || legacy_state="false"
