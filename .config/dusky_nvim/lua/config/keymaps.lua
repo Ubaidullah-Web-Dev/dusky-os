@@ -55,3 +55,54 @@ vim.keymap.set("n", "<leader>bd", "<Cmd>bdelete<CR>", { desc = "Delete/Close Buf
 
 -- Toggle Color Hightlighter
 vim.keymap.set("n", "<leader>hc", "<cmd>HighlightColorsToggle<CR>", { desc = "Toggle highlight colors" })
+
+-- Custom user command to push current file to dusky bare repo
+vim.api.nvim_create_user_command("DuskyPush", function()
+  local file = vim.api.nvim_buf_get_name(0)
+  if file == "" then
+    vim.notify("Error: No file associated with current buffer", vim.log.levels.ERROR)
+    return
+  end
+  
+  -- Resolve relative to HOME
+  local home = os.getenv("HOME")
+  local relative_file = vim.fn.fnamemodify(file, ":~:.") -- Relative to home (e.g. .config/nvim/init.lua)
+  
+  -- Check if file is within home
+  if relative_file:sub(1, 1) == "/" or relative_file:sub(1, 2) == ".." then
+    vim.notify("Error: File is outside home directory / working tree", vim.log.levels.ERROR)
+    return
+  end
+
+  -- Ask for commit message
+  vim.ui.input({ prompt = "Commit message for " .. relative_file .. ": " }, function(msg)
+    if not msg or msg == "" then
+      vim.notify("Push aborted: empty commit message", vim.log.levels.WARN)
+      return
+    end
+
+    -- Run commands in background and show output
+    local cmd = string.format(
+      "git --git-dir=%s/dusky --work-tree=%s add %q && git --git-dir=%s/dusky --work-tree=%s commit -m %q && git --git-dir=%s/dusky --work-tree=%s push",
+      home, home, relative_file, home, home, msg .. " (" .. relative_file .. ")", home, home
+    )
+    
+    vim.notify("Pushing " .. relative_file .. "...", vim.log.levels.INFO)
+    
+    -- Run asynchronously to prevent UI lockup
+    vim.fn.jobstart(cmd, {
+      stdout_buffered = true,
+      stderr_buffered = true,
+      on_exit = function(_, exit_code, _)
+        if exit_code ~= 0 then
+          vim.notify("Push failed! Check console or git status.", vim.log.levels.ERROR)
+        else
+          vim.notify("Successfully pushed " .. relative_file .. "!", vim.log.levels.INFO)
+        end
+      end
+    })
+  end)
+end, {})
+
+-- Bind to a keymap: <leader>gp for Git Push
+vim.keymap.set("n", "<leader>gp", ":DuskyPush<CR>", { desc = "Push current file to dotfiles repo" })
