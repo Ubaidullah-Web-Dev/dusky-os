@@ -66,16 +66,40 @@ vim.api.nvim_create_user_command("DuskyPush", function()
   
   -- Resolve relative to HOME
   local home = os.getenv("HOME")
-  local relative_file = vim.fn.fnamemodify(file, ":~:.") -- Relative to home (e.g. .config/nvim/init.lua)
+  local home_dir = home:gsub("/+$", "") .. "/"
   
   -- Check if file is within home
-  if relative_file:sub(1, 1) == "/" or relative_file:sub(1, 2) == ".." then
+  if file:sub(1, #home_dir) ~= home_dir then
     vim.notify("Error: File is outside home directory / working tree", vim.log.levels.ERROR)
+    return
+  end
+  
+  local relative_file = file:sub(#home_dir + 1)
+
+  -- Check if file is tracked in .git_dusky_list
+  local list_file = io.open(home .. "/.git_dusky_list", "r")
+  local in_list = false
+  if list_file then
+    for line in list_file:lines() do
+      line = line:match("^%s*(.-)%s*$")
+      if line ~= "" and line:sub(1, 1) ~= "#" then
+        local clean_line = line:gsub("/+$", "")
+        if relative_file == clean_line or relative_file:sub(1, #clean_line + 1) == clean_line .. "/" then
+          in_list = true
+          break
+        end
+      end
+    end
+    list_file:close()
+  end
+
+  if not in_list then
+    vim.notify("Push aborted: " .. relative_file .. " is not tracked in .git_dusky_list", vim.log.levels.WARN)
     return
   end
 
   -- Check if file has any changes compared to the git repository
-  local status_cmd = string.format("git --git-dir=%s/dusky --work-tree=%s status --porcelain %q", home, home, relative_file)
+  local status_cmd = string.format("git --git-dir=%s/dusky --work-tree=%s status --porcelain %q", home, home, file)
   local status_out = vim.fn.system(status_cmd):gsub("%s+", "") -- strip whitespaces
   if status_out == "" then
     vim.notify("No changes detected for " .. relative_file, vim.log.levels.INFO)
@@ -90,18 +114,19 @@ vim.api.nvim_create_user_command("DuskyPush", function()
     end
 
     -- Run commands in background and show output
-    local cmd = string.format(
-      "git --git-dir=%s/dusky --work-tree=%s add %q && git --git-dir=%s/dusky --work-tree=%s commit -m %q && git --git-dir=%s/dusky --work-tree=%s push",
-      home, home, relative_file, home, home, msg .. " (" .. relative_file .. ")", home, home
+    -- Use commit --only to ensure other staged files are not included in this commit
+    local commit_cmd = string.format(
+      "git --git-dir=%s/dusky --work-tree=%s add %q && git --git-dir=%s/dusky --work-tree=%s commit --only %q -m %q",
+      home, home, file, home, home, file, msg
     )
     
-    vim.notify("Pushing " .. relative_file .. "...", vim.log.levels.INFO)
+    vim.notify("Committing " .. relative_file .. "...", vim.log.levels.INFO)
     
     local stderr_data = {}
     local stdout_data = {}
     
     -- Run asynchronously to prevent UI lockup
-    vim.fn.jobstart(cmd, {
+    vim.fn.jobstart(commit_cmd, {
       stdout_buffered = true,
       stderr_buffered = true,
       on_stdout = function(_, data)
@@ -123,9 +148,13 @@ vim.api.nvim_create_user_command("DuskyPush", function()
           if err_msg == "" then
             err_msg = "Unknown error (exit code " .. exit_code .. ")"
           end
-          vim.notify("Push failed:\n" .. err_msg, vim.log.levels.ERROR)
+          vim.notify("Commit failed:\n" .. err_msg, vim.log.levels.ERROR)
         else
-          vim.notify("Successfully pushed " .. relative_file .. "!", vim.log.levels.INFO)
+          vim.notify("Committed " .. relative_file .. "! Launching push...", vim.log.levels.INFO)
+          -- Launch push in a terminal split so they can enter their passphrase
+          local push_cmd = string.format("git --git-dir=%s/dusky --work-tree=%s push", home, home)
+          vim.cmd("split | term " .. push_cmd)
+          vim.cmd("startinsert")
         end
       end
     })

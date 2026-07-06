@@ -26,6 +26,11 @@ WORK_TREE: Path = HOME
 DOTFILES_LIST: Path = HOME / ".git_dusky_list"
 TIME_MACHINE_BIN: Path = HOME / "user_scripts" / "git" / "time_machine" / "dusky_time_machine_tui.sh"
 
+# Set Git environment variables globally so child processes (like fzf and sub-scripts)
+# execute within the correct bare repository context.
+os.environ["GIT_DIR"] = str(GIT_DIR)
+os.environ["GIT_WORK_TREE"] = str(WORK_TREE)
+
 console = Console()
 
 type GitResult = tuple[int, str, str]
