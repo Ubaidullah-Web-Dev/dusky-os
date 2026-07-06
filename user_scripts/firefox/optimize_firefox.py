@@ -48,6 +48,129 @@ def get_total_ram_gb() -> float:
         return 8.0
 
 
+def is_firefox_running() -> bool:
+    """Checks if a process named 'firefox' is currently running."""
+    try:
+        res = subprocess.run(["pgrep", "-x", "firefox"], capture_output=True)
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
+def prompt_user_tty(message: str = "") -> str:
+    """Attempts to prompt the user directly via /dev/tty using Rich for beautiful formatting,
+    with fallback logic for automated piping and non-interactive scripts."""
+    # If stdin is not a TTY, we might be in an automated pipe (e.g. echo "2" | script)
+    if not sys.stdin.isatty():
+        try:
+            val = sys.stdin.readline()
+            if not val:
+                return "NON_INTERACTIVE"
+            return val.strip()
+        except Exception:
+            return "NON_INTERACTIVE"
+
+    # Otherwise, stdin is a TTY. We can try to use Rich and /dev/tty to prompt beautifully.
+    try:
+        from rich.console import Console
+        from rich.panel import Panel
+        
+        # Open /dev/tty for direct writing/reading to bypass stdout pipe redirection
+        tty_out = open("/dev/tty", "w")
+        tty_in = open("/dev/tty", "r")
+        
+        console_tty = Console(file=tty_out, force_terminal=True)
+        
+        panel_content = (
+            "[bold red]Firefox is currently running![/bold red]\n\n"
+            "Firefox must be closed to prevent SQLite database locks or profile corruption.\n\n"
+            "[bold cyan]Please select an option:[/bold cyan]\n"
+            "  [bold yellow]1[/bold yellow]) Close Firefox yourself, then press Enter to re-check\n"
+            "  [bold yellow]2[/bold yellow]) Let the script close Firefox for you now\n"
+            "  [bold yellow]3[/bold yellow]) Skip Firefox optimization for now [dim](exits cleanly)[/dim]"
+        )
+        
+        console_tty.print(Panel(panel_content, title="[bold white]Firefox Open Check[/bold white]", border_style="yellow"))
+        tty_out.write("Selection [1/2/3]: ")
+        tty_out.flush()
+        
+        choice = tty_in.readline().strip()
+        
+        tty_out.close()
+        tty_in.close()
+        return choice
+    except Exception:
+        # Fallback to standard input/output if /dev/tty or Rich is not available
+        fallback_prompt = (
+            "\n[Firefox Open Check] Firefox is currently running!\n"
+            "Firefox must be closed to prevent database locks or profile corruption.\n"
+            "Please select an option:\n"
+            "  1) Close Firefox yourself, then press Enter to re-check\n"
+            "  2) Let the script close Firefox for you now\n"
+            "  3) Skip Firefox optimization for now (exits cleanly without error)\n"
+            "Selection [1/2/3]: "
+        )
+        print(fallback_prompt, end="", flush=True)
+        try:
+            return sys.stdin.readline().strip()
+        except Exception:
+            return "NON_INTERACTIVE"
+
+
+def handle_firefox_open_check(dry_run: bool) -> None:
+    """Checks if Firefox is running. Prompts the user to close it, autoclose it, or skip."""
+    import time
+    attempts = 0
+    
+    while is_firefox_running():
+        attempts += 1
+        if attempts > 10:
+            logger.error("Too many attempts. Skipping Firefox optimization to prevent corruption.")
+            sys.exit(0)
+            
+        choice = prompt_user_tty()
+        
+        if choice == "NON_INTERACTIVE":
+            logger.warning("Non-interactive terminal detected and Firefox is running.")
+            logger.warning("Skipping Firefox optimization to prevent profile corruption.")
+            sys.exit(0)
+            
+        choice = choice.strip()
+        
+        if choice in ("", "1"):
+            logger.info("Re-checking if Firefox is closed in 2 seconds...")
+            time.sleep(2)
+            continue
+        elif choice == "2":
+            logger.info("Closing Firefox automatically...")
+            if dry_run:
+                logger.info("[Dry Run] Would send SIGTERM to firefox processes.")
+                return
+            # Try terminating cleanly first (SIGTERM)
+            subprocess.run(["pkill", "-x", "firefox"])
+            # Wait up to 5 seconds for it to close
+            for _ in range(10):
+                time.sleep(0.5)
+                if not is_firefox_running():
+                    logger.info("Firefox closed successfully.")
+                    return
+            # Force kill if still running (SIGKILL)
+            logger.warning("Firefox did not close cleanly. Sending SIGKILL...")
+            subprocess.run(["pkill", "-9", "-x", "firefox"])
+            time.sleep(1)
+            if not is_firefox_running():
+                logger.info("Firefox force-closed successfully.")
+                return
+            else:
+                logger.error("Failed to close Firefox. Please close it manually.")
+        elif choice == "3":
+            logger.info("Skipping Firefox optimization as requested. Exiting cleanly.")
+            sys.exit(0)
+        else:
+            logger.warning("Invalid selection. Please choose 1, 2, or 3.")
+
+
+
 def get_sudo_password(cmd_pass: str | None) -> str | None:
     """Prompts for sudo password securely to run privileged pacman installations."""
     if cmd_pass:
@@ -99,7 +222,10 @@ def install_package_dependencies(sudo_pass: str | None, dry_run: bool) -> bool:
         return True
 
     verified_pass = get_sudo_password(sudo_pass)
-    if not verified_pass:
+    # Check if we can run sudo non-interactively (e.g. from orchestra which cached sudo credentials)
+    can_sudo_noninteractive = subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode == 0
+
+    if not verified_pass and not can_sudo_noninteractive:
         logger.error("Sudo password is required to install system packages. Aborting installation.")
         return False
 
@@ -690,8 +816,8 @@ def main() -> None:
     if not should_optimize:
         sys.exit(0)
 
-    # Safety check for profile locking
-    logger.warning("Please ensure Firefox is completely closed before proceeding to prevent SQLite database locks or profile corruption.")
+    # Check if Firefox is running and handle it
+    handle_firefox_open_check(args.dry_run)
 
     # 3. Install packages (psd and profile-cleaner)
     success = install_package_dependencies(args.sudo_pass, args.dry_run)
