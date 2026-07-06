@@ -9,6 +9,7 @@ import os
 import sys
 import shutil
 import shlex
+import fnmatch
 import subprocess
 from pathlib import Path
 from typing import Never
@@ -97,7 +98,23 @@ def check_dependencies() -> None:
         console.print(f"[bold red]✖ Error:[/bold red] Bare repository target missing: {GIT_DIR}")
         sys.exit(1)
 
-# --- 3. FZF ORCHESTRATOR ---
+# --- 3. PATHSPEC ORCHESTRATOR & FZF ---
+def matches_pathspec(path: str | None, valid_paths: list[str]) -> bool:
+    """Evaluates Git-style globs and exact boundaries purely in Python to avoid ARG_MAX issues."""
+    if not path:
+        return False
+        
+    for vp in valid_paths:
+        vp_clean = vp.rstrip("/")
+        # Exact match or Directory prefix match
+        if path == vp_clean or path.startswith(vp_clean + "/"):
+            return True
+        # Glob match (e.g., *.conf, **/*.sh)
+        if fnmatch.fnmatch(path, vp_clean) or fnmatch.fnmatch(path, vp_clean + "/*"):
+            return True
+            
+    return False
+
 def fzf_select(choices: list[str], prompt: str = "Select", multi: bool = False, preview: str | None = None) -> list[str]:
     """Feeds NUL-terminated strings to FZF safely via synchronous PIPEs."""
     if not choices:
@@ -127,18 +144,19 @@ def fzf_select(choices: list[str], prompt: str = "Select", multi: bool = False, 
         cwd=str(WORK_TREE)
     )
     
-    # 130 is the standard SIGINT/ESC exit code for fzf.
     if proc.returncode not in (0, 130) and not proc.stdout:
         return []
         
     return [line for line in proc.stdout.decode('utf-8').split("\0") if line]
 
-# --- 4. EXECUTION PAYLOADS ---
 def get_list_pathspecs() -> list[str] | None:
+    """Extracts valid paths ensuring boundary limitations to $HOME."""
     if not DOTFILES_LIST.is_file():
         return None
+        
     raw_lines = DOTFILES_LIST.read_text(encoding="utf-8").splitlines()
     valid_paths: list[str] = []
+    
     for line in raw_lines:
         clean = line.strip()
         if not clean or clean.startswith("#"):
@@ -147,6 +165,7 @@ def get_list_pathspecs() -> list[str] | None:
             target = Path(clean).expanduser()
             if not target.is_absolute():
                 target = WORK_TREE / target
+                
             normalized_abs = Path(os.path.normpath(target))
             if normalized_abs.is_relative_to(WORK_TREE):
                 rel_path = normalized_abs.relative_to(WORK_TREE)
@@ -155,10 +174,12 @@ def get_list_pathspecs() -> list[str] | None:
                 console.print(f"[bold red]✖ Security Block:[/bold red] Path escaped work-tree -> {clean}")
         except ValueError:
             continue
+            
     return valid_paths
 
+# --- 4. EXECUTION PAYLOADS ---
 def sync_all() -> None:
-    """Smart-stages paths with strict lexical boundary checks."""
+    """Smart-stages paths mathematically cross-referenced with fnmatch globs."""
     valid_paths = get_list_pathspecs()
     
     if valid_paths is None:
@@ -180,8 +201,9 @@ def sync_all() -> None:
         console.print("[bold green]✔[/bold green] Working tree immaculate. No divergence detected.")
         return
         
-    changed_paths = []
-    unstaged_paths = []
+    changed_paths: set[str] = set()
+    unstaged_paths: set[str] = set()
+    
     entries = status_out.split('\0')[:-1]
     it = iter(entries)
     
@@ -191,37 +213,20 @@ def sync_all() -> None:
         status_code = entry[:2]
         path = entry[3:]
         
-        orig_path = None
-        if "R" in status_code or "C" in status_code:
-            orig_path = next(it, None)
+        orig_path = next(it, None) if "R" in status_code or "C" in status_code else None
             
-        # Ensure both sides of a rename are captured if they fall within tracking bounds
-        changed_paths.append(path)
+        changed_paths.add(path)
         if orig_path:
-            changed_paths.append(orig_path)
+            changed_paths.add(orig_path)
 
-        # Only stage if there are unstaged changes (Y is not ' ')
-        # Already staged deletions (D ) would crash git add since the file is missing from both working tree and index.
+        # Stage only unstaged changes (avoids missing staged-deletion bounds crash)
         if status_code[1] != ' ':
-            unstaged_paths.append(path)
+            unstaged_paths.add(path)
             if orig_path:
-                unstaged_paths.append(orig_path)
+                unstaged_paths.add(orig_path)
 
-    paths_to_stage = []
-    for cp in changed_paths:
-        for vp in valid_paths:
-            vp_clean = vp.rstrip("/")
-            if cp == vp_clean or cp.startswith(vp_clean + "/"):
-                paths_to_stage.append(cp)
-                break
-
-    paths_to_add = []
-    for up in unstaged_paths:
-        for vp in valid_paths:
-            vp_clean = vp.rstrip("/")
-            if up == vp_clean or up.startswith(vp_clean + "/"):
-                paths_to_add.append(up)
-                break
+    paths_to_stage = [p for p in changed_paths if matches_pathspec(p, valid_paths)]
+    paths_to_add = [p for p in unstaged_paths if matches_pathspec(p, valid_paths)]
                 
     if not paths_to_stage:
         console.print("[bold green]✔[/bold green] Working tree immaculate (no matching files changed).")
@@ -238,17 +243,21 @@ def sync_all() -> None:
                 check=True,
                 literal_pathspecs=True
             )
-            console.print("[bold green]✔[/bold green] Payload staged successfully.")
+            console.print("[bold green]✔[/bold green] Payload staged successfully:")
+            for p in sorted(paths_to_add):
+                console.print(f"  [dim]➔ {p}[/dim]")
         except subprocess.CalledProcessError:
             console.print("[bold red]✖ Stage operation aborted due to Git bounds error.[/bold red]")
             return
     else:
-        console.print("[bold green]✔[/bold green] Payload already staged (no unstaged changes).")
+        console.print("[bold green]✔[/bold green] Payload already staged (no unstaged changes):")
+        for p in sorted(paths_to_stage):
+            console.print(f"  [dim]➔ {p}[/dim]")
         
     commit_and_push(paths_to_stage)
 
 def sync_single() -> None:
-    """Interactive staging utilizing structural pattern mapping."""
+    """Interactive staging utilizing robust pattern mapping."""
     _, status_out, _ = run_git("status", "--porcelain=v1", "-z")
     if not status_out:
         console.print("[bold green]✔[/bold green] Working tree immaculate. No divergence detected.")
@@ -267,37 +276,19 @@ def sync_single() -> None:
         status_code = entry[:2]
         path = entry[3:]
         
-        orig_path = None
-        # PEP 634 Pattern Matching
-        match status_code:
-            case s if "R" in s or "C" in s:
-                orig_path = next(it, None)
-            case _:
-                pass
+        orig_path = next(it, None) if "R" in status_code or "C" in status_code else None
                 
         if valid_paths is not None:
-            matched = False
-            # We must verify if EITHER side of a rename matches the tracking list
-            paths_to_check = [path]
-            if orig_path:
-                paths_to_check.append(orig_path)
-                
-            for ptc in paths_to_check:
-                for vp in valid_paths:
-                    vp_clean = vp.rstrip("/")
-                    if ptc == vp_clean or ptc.startswith(vp_clean + "/"):
-                        matched = True
-                        break
-                if matched:
-                    break
-                    
-            if not matched:
+            # Block rendering if neither new nor old path matches defined tracked bounds
+            if not (matches_pathspec(path, valid_paths) or matches_pathspec(orig_path, valid_paths)):
                 continue
 
-        if orig_path:
-            display = f"{status_code} {path} (from {orig_path})"
-        else:
-            display = f"{status_code} {path}"
+        # PEP 634 Structural Pattern Matching
+        match status_code:
+            case s if "R" in s or "C" in s:
+                display = f"{status_code} {path} (from {orig_path})"
+            case _:
+                display = f"{status_code} {path}"
             
         path_map[display] = (path, orig_path, status_code)
 
@@ -309,21 +300,22 @@ def sync_single() -> None:
     if not selected_lines:
         return
     
+    paths_to_stage: set[str] = set()
+    paths_to_add: set[str] = set()
+    
     # Flatten both new and old paths to ensure Git correctly registers atomic renames
-    paths_to_stage = []
-    paths_to_add = []
     for line in selected_lines:
         if line in path_map:
             p, op, sc = path_map[line]
-            paths_to_stage.append(p)
+            paths_to_stage.add(p)
             if op:
-                paths_to_stage.append(op)
+                paths_to_stage.add(op)
             
             # Only stage if there are unstaged changes (Y is not ' ')
             if sc[1] != ' ':
-                paths_to_add.append(p)
+                paths_to_add.add(p)
                 if op:
-                    paths_to_add.append(op)
+                    paths_to_add.add(op)
                 
     if paths_to_add:
         payload = "\0".join(paths_to_add) + "\0"
@@ -336,35 +328,34 @@ def sync_single() -> None:
                 check=True,
                 literal_pathspecs=True
             )
-            console.print(f"[bold green]✔[/bold green] Staged files successfully.")
+            console.print("[bold green]✔[/bold green] Staged files successfully:")
+            for p in sorted(paths_to_add):
+                console.print(f"  [dim]➔ {p}[/dim]")
         except subprocess.CalledProcessError:
             console.print("[bold red]✖ Individual stage aborted due to Git error.[/bold red]")
             return
     else:
-        console.print(f"[bold green]✔[/bold green] Selected files already staged.")
+        console.print("[bold green]✔[/bold green] Selected files already staged:")
+        for p in sorted(paths_to_stage):
+            console.print(f"  [dim]➔ {p}[/dim]")
         
-    commit_and_push(paths_to_stage)
+    commit_and_push(list(paths_to_stage))
 
 def commit_and_push(files: list[str] | None = None) -> None:
-    """Atomic commit and push transaction logic enforcing strict ARG_MAX safety."""
+    """Atomic transaction logic enforcing strict ARG_MAX bounds via sets."""
     commit_files: list[str] | None = None
     
     if files:
         _, staged_out, _ = run_git("diff", "--cached", "--name-only", "-z")
         staged_list = [f for f in staged_out.split("\0") if f]
         
-        matched_files = []
-        for f in staged_list:
-            for spec in files:
-                clean_spec = spec.rstrip("/")
-                if f == clean_spec or f.startswith(clean_spec + "/"):
-                    matched_files.append(f)
-                    break
+        # Deduplicate paths safely using set comprehension logic
+        matched_set = {f for f in staged_list if matches_pathspec(f, files)}
         
-        if not matched_files:
+        if not matched_set:
             console.print("[bold yellow]⚠[/bold yellow] Index empty for specified files. Nothing to commit.")
             return
-        commit_files = matched_files
+        commit_files = list(matched_set)
     else:
         code, _, _ = run_git("diff", "--cached", "--quiet")
         if code == 0:
