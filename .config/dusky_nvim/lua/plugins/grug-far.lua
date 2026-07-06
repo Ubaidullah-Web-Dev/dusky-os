@@ -6,6 +6,11 @@ return {
     {
       "<leader>sr",
       function()
+        local current_file = vim.api.nvim_buf_get_name(0)
+        if current_file == "" then
+          vim.notify("Current buffer is not a file on disk!", vim.log.levels.WARN)
+          return
+        end
         require("grug-far").open({ prefills = { paths = vim.fn.expand("%") } })
       end,
       desc = "Search and Replace (current file)",
