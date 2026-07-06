@@ -114,24 +114,29 @@ if [[ -n "$_TARGET_MODE" ]]; then
         update_config "persistent"
     fi
 else
-    clear
-    printf '%sUWSM Clipboard Persistence Manager%s\n' "$C_BOLD" "$C_RESET"
-    printf 'Target: %s\n\n' "$DB_ENV_FILE"
+    # Since standard output/error are redirected to a pipe by the orchestrator,
+    # we redirect the interactive menu prompt and user input to/from /dev/tty
+    # to bypass the pipe buffering and display the menu directly to the user.
+    {
+        clear
+        printf '%sUWSM Clipboard Persistence Manager%s\n' "$C_BOLD" "$C_RESET"
+        printf 'Target: %s\n\n' "$DB_ENV_FILE"
 
-    printf '%sWhich mode do you prefer?%s\n\n' "$C_BOLD" "$C_RESET"
+        printf '%sWhich mode do you prefer?%s\n\n' "$C_BOLD" "$C_RESET"
 
-    printf '  %s1) Ephemeral (RAM-based)%s\n' "$C_BOLD" "$C_RESET"
-    printf '     - Clipboard history is stored in RAM.\n'
-    printf '     - It %sdisappears%s when you reboot or shutdown.\n' "$C_RED" "$C_RESET"
-    printf '     - Good for privacy and saving disk writes.\n\n'
+        printf '  %s1) Ephemeral (RAM-based)%s\n' "$C_BOLD" "$C_RESET"
+        printf '     - Clipboard history is stored in RAM.\n'
+        printf '     - It %sdisappears%s when you reboot or shutdown.\n' "$C_RED" "$C_RESET"
+        printf '     - Good for privacy and saving disk writes.\n\n'
 
-    printf '  %s2) Persistent (Disk-based)%s\n' "$C_BOLD" "$C_RESET"
-    printf '     - Clipboard history is stored on your hard drive.\n'
-    printf '     - Your history %sstays available%s even after you reboot.\n' "$C_GREEN" "$C_RESET"
-    printf '     - Standard behavior for most users.\n\n'
+        printf '  %s2) Persistent (Disk-based)%s\n' "$C_BOLD" "$C_RESET"
+        printf '     - Clipboard history is stored on your hard drive.\n'
+        printf '     - Your history %sstays available%s even after you reboot.\n' "$C_GREEN" "$C_RESET"
+        printf '     - Standard behavior for most users.\n\n'
 
-    read -rp "Select option [1/2] (default: 1): " choice
-    choice="${choice:-1}"
+        read -rp "Select option [1/2] (default: 1): " choice
+        choice="${choice:-1}"
+    } > /dev/tty 2>&1 < /dev/tty
 
     case "$choice" in
         1) update_config "ephemeral" ;;
@@ -143,7 +148,7 @@ fi
 # =============================================================================
 # Post-Process (Live Daemon Reload)
 # =============================================================================
-if command -v uwsm >/dev/null 2>&1 && uwsm check is-active >/dev/null 2>&1; then
+if command -v uwsm >/dev/null 2>&1 && timeout 2 uwsm check is-active >/dev/null 2>&1; then
     printf '\n'
     log_info "Changes saved. Live-reloading clipboard daemons under UWSM session..."
 
@@ -151,26 +156,22 @@ if command -v uwsm >/dev/null 2>&1 && uwsm check is-active >/dev/null 2>&1; then
     if [[ -f "$DB_ENV_FILE" ]]; then
         source "$DB_ENV_FILE"
         export CLIPHIST_DB_PATH
-        systemctl --user import-environment CLIPHIST_DB_PATH
-        dbus-update-activation-environment --systemd CLIPHIST_DB_PATH
-        if command -v hyprctl >/dev/null 2>&1; then
-            hyprctl setenv CLIPHIST_DB_PATH "$CLIPHIST_DB_PATH" 2>/dev/null || :
-        fi
+        timeout 5 systemctl --user import-environment CLIPHIST_DB_PATH || true
+        timeout 5 dbus-update-activation-environment --systemd CLIPHIST_DB_PATH || true
+
     else
         unset CLIPHIST_DB_PATH
-        systemctl --user unset-environment CLIPHIST_DB_PATH
-        dbus-update-activation-environment --systemd --remove CLIPHIST_DB_PATH
-        if command -v hyprctl >/dev/null 2>&1; then
-            hyprctl setenv CLIPHIST_DB_PATH "" 2>/dev/null || :
-        fi
+        timeout 5 systemctl --user unset-environment CLIPHIST_DB_PATH || true
+        timeout 5 dbus-update-activation-environment --systemd --remove CLIPHIST_DB_PATH || true
+
     fi
 
     # 2. Terminate existing watchers securely
     pkill -f "wl-paste.*cliphist" 2>/dev/null || :
 
-    # 3. Respawn the daemons synchronously (they return immediately once registered with systemd)
-    uwsm app -- sh -c '. $HOME/.config/dusky/settings/cliphist_db_env && exec wl-paste --type text --watch cliphist store' >/dev/null 2>&1
-    uwsm app -- sh -c '. $HOME/.config/dusky/settings/cliphist_db_env && exec wl-paste --type image --watch cliphist store' >/dev/null 2>&1
+    # 3. Respawn the daemons in the background (prevent blocking if systemd/dbus is busy)
+    uwsm app -- sh -c '. $HOME/.config/dusky/settings/cliphist_db_env && exec wl-paste --type text --watch cliphist store' >/dev/null 2>&1 &
+    uwsm app -- sh -c '. $HOME/.config/dusky/settings/cliphist_db_env && exec wl-paste --type image --watch cliphist store' >/dev/null 2>&1 &
 
     log_success "Daemons reloaded. New persistence mode is now active globally without requiring a reboot!"
 else
@@ -181,14 +182,10 @@ else
     if [[ -f "$DB_ENV_FILE" ]]; then
         source "$DB_ENV_FILE"
         export CLIPHIST_DB_PATH
-        if command -v hyprctl >/dev/null 2>&1; then
-            hyprctl setenv CLIPHIST_DB_PATH "$CLIPHIST_DB_PATH" 2>/dev/null || :
-        fi
+
     else
         unset CLIPHIST_DB_PATH
-        if command -v hyprctl >/dev/null 2>&1; then
-            hyprctl setenv CLIPHIST_DB_PATH "" 2>/dev/null || :
-        fi
+
     fi
 
     # 2. Terminate existing watchers securely

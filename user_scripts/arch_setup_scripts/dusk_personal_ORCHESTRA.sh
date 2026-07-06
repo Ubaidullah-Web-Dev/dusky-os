@@ -53,7 +53,7 @@ INSTALL_SEQUENCE=(
 
 # ------ CUSTOM PATH SCRIPTS -------
 
-#    "U | deploy_dotfiles.sh"
+    "U | deploy_dotfiles.sh"
 
 # ------ Setup SCRIPTS -------
 
