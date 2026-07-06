@@ -52,7 +52,7 @@ echo ""
 
 # Fix: Initialize variable to prevent 'unbound variable' error on Ctrl+D
 HW_CHOICE=""
-read -p "Enter choice [1-4]: " HW_CHOICE || true
+read -e -p "Enter choice [1-4]: " HW_CHOICE || true
 
 if [[ "$HW_CHOICE" == "4" ]]; then
     echo ":: Skipping Kokoro Setup. Exiting cleanly..."
@@ -83,7 +83,7 @@ echo "  4) ALL          - Download all three (Allows instant toggling in Python)
 echo ""
 
 MODEL_CHOICE=""
-read -p "Enter choice [1-4]: " MODEL_CHOICE || true
+read -e -p "Enter choice [1-4]: " MODEL_CHOICE || true
 
 DL_FP16=false
 DL_INT8=false

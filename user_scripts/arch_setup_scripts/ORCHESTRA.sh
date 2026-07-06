@@ -1193,6 +1193,11 @@ main() {
 
             log "ERROR" "Failed $display_name (Exit Code: $result)."
 
+            # Bypass auto-retry if interrupted manually by user (Exit Code 130/131)
+            if [[ $result -eq 130 || $result -eq 131 ]]; then
+                auto_retry_limit=0
+            fi
+
             if (( auto_retry_limit > 0 && auto_retry_count < auto_retry_limit )); then
                 log "WARN" "Autonomous mode: retrying $display_name automatically (next attempt $((auto_retry_count + 1))/${auto_retry_limit})..."
                 sleep 1
@@ -1204,7 +1209,7 @@ main() {
             echo -e "${YELLOW}Action Required:${RESET} Script execution failed."
             
             # --- STDIN SAFETY FIX: Fallback if 'read' abruptly closes (e.g. TTY detached) ---
-            if ! read -r -p "Do you want to [S]kip to next, [R]etry, or [Q]uit? (s/r/q): " _fail_choice; then
+            if ! read -e -r -p "Do you want to [S]kip to next, [R]etry, or [Q]uit? (s/r/q): " _fail_choice; then
                 _fail_choice="q"
             fi
 
