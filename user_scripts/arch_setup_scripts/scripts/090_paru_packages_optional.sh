@@ -185,6 +185,9 @@ cleanup() {
     if [[ -n "${ORIGINAL_STTY:-}" ]]; then
         stty "$ORIGINAL_STTY" 2>/dev/null || :
     fi
+    if [[ -n "${SUDO_KEEP_ALIVE_PID:-}" ]]; then
+        kill "$SUDO_KEEP_ALIVE_PID" 2>/dev/null || :
+    fi
     printf '\n' 2>/dev/null || :
 }
 
@@ -717,6 +720,25 @@ run_installer() {
         log_info "All selected packages are already installed."
         return 0
     fi
+
+    # Keep sudo credentials alive in the background
+    log_info "Sudo privileges may be required to install packages. Authenticating..."
+    if ! sudo -v; then
+        log_err "Sudo authentication failed."
+        return 1
+    fi
+
+    (
+        exec 9>&-
+        set +e
+        trap 'exit 0' TERM
+        while kill -0 "$$" 2>/dev/null; do
+            sleep 40 &
+            wait $! 2>/dev/null || true
+            sudo -n -v 2>/dev/null || exit 0
+        done
+    ) &
+    SUDO_KEEP_ALIVE_PID=$!
 
     log_info "Attempting Batch Installation..."
     if run_pkg_cmd "$helper" -S --needed --noconfirm "${to_install[@]}"; then
