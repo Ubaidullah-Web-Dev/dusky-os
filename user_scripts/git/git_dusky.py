@@ -34,8 +34,8 @@ os.environ["GIT_WORK_TREE"] = str(WORK_TREE)
 console = Console()
 
 type GitResult = tuple[int, str, str]
-# Dictionary mapping the UI display string to a tuple of (new_path, old_path)
-type PathMap = dict[str, tuple[str, str | None]]
+# Dictionary mapping the UI display string to a tuple of (new_path, old_path, status_code)
+type PathMap = dict[str, tuple[str, str | None, str]]
 
 # --- 2. SYNCHRONOUS GIT ENGINE ---
 def run_git(
@@ -179,6 +179,7 @@ def sync_all() -> None:
         return
         
     changed_paths = []
+    unstaged_paths = []
     entries = status_out.split('\0')[:-1]
     it = iter(entries)
     
@@ -197,6 +198,13 @@ def sync_all() -> None:
         if orig_path:
             changed_paths.append(orig_path)
 
+        # Only stage if there are unstaged changes (Y is not ' ')
+        # Already staged deletions (D ) would crash git add since the file is missing from both working tree and index.
+        if status_code[1] != ' ':
+            unstaged_paths.append(path)
+            if orig_path:
+                unstaged_paths.append(orig_path)
+
     paths_to_stage = []
     for cp in changed_paths:
         for vp in valid_paths:
@@ -204,27 +212,38 @@ def sync_all() -> None:
             if cp == vp_clean or cp.startswith(vp_clean + "/"):
                 paths_to_stage.append(cp)
                 break
+
+    paths_to_add = []
+    for up in unstaged_paths:
+        for vp in valid_paths:
+            vp_clean = vp.rstrip("/")
+            if up == vp_clean or up.startswith(vp_clean + "/"):
+                paths_to_add.append(up)
+                break
                 
     if not paths_to_stage:
         console.print("[bold green]✔[/bold green] Working tree immaculate (no matching files changed).")
         return
 
-    payload = "\0".join(paths_to_stage) + "\0"
-    
-    try:
-        run_git(
-            "add", 
-            "--pathspec-from-file=-", 
-            "--pathspec-file-nul",
-            input_data=payload.encode('utf-8'),
-            check=True,
-            literal_pathspecs=True
-        )
+    if paths_to_add:
+        payload = "\0".join(paths_to_add) + "\0"
+        try:
+            run_git(
+                "add", 
+                "--pathspec-from-file=-", 
+                "--pathspec-file-nul",
+                input_data=payload.encode('utf-8'),
+                check=True,
+                literal_pathspecs=True
+            )
+            console.print("[bold green]✔[/bold green] Payload staged successfully.")
+        except subprocess.CalledProcessError:
+            console.print("[bold red]✖ Stage operation aborted due to Git bounds error.[/bold red]")
+            return
+    else:
+        console.print("[bold green]✔[/bold green] Payload already staged (no unstaged changes).")
         
-        console.print("[bold green]✔[/bold green] Payload staged successfully.")
-        commit_and_push(paths_to_stage)
-    except subprocess.CalledProcessError:
-        console.print("[bold red]✖ Stage operation aborted due to Git bounds error.[/bold red]")
+    commit_and_push(paths_to_stage)
 
 def sync_single() -> None:
     """Interactive staging utilizing structural pattern mapping."""
@@ -278,7 +297,7 @@ def sync_single() -> None:
         else:
             display = f"{status_code} {path}"
             
-        path_map[display] = (path, orig_path)
+        path_map[display] = (path, orig_path, status_code)
 
     if not path_map:
         console.print("[bold yellow]⚠[/bold yellow] No changed files match .git_dusky_list.")
@@ -290,28 +309,39 @@ def sync_single() -> None:
     
     # Flatten both new and old paths to ensure Git correctly registers atomic renames
     paths_to_stage = []
+    paths_to_add = []
     for line in selected_lines:
         if line in path_map:
-            p, op = path_map[line]
+            p, op, sc = path_map[line]
             paths_to_stage.append(p)
             if op:
                 paths_to_stage.append(op)
+            
+            # Only stage if there are unstaged changes (Y is not ' ')
+            if sc[1] != ' ':
+                paths_to_add.append(p)
+                if op:
+                    paths_to_add.append(op)
                 
-    payload = "\0".join(paths_to_stage) + "\0"
-    
-    try:
-        run_git(
-            "add", 
-            "--pathspec-from-file=-", 
-            "--pathspec-file-nul",
-            input_data=payload.encode('utf-8'),
-            check=True,
-            literal_pathspecs=True
-        )
-        console.print(f"[bold green]✔[/bold green] Staged files successfully.")
-        commit_and_push(paths_to_stage)
-    except subprocess.CalledProcessError:
-        console.print("[bold red]✖ Individual stage aborted due to Git error.[/bold red]")
+    if paths_to_add:
+        payload = "\0".join(paths_to_add) + "\0"
+        try:
+            run_git(
+                "add", 
+                "--pathspec-from-file=-", 
+                "--pathspec-file-nul",
+                input_data=payload.encode('utf-8'),
+                check=True,
+                literal_pathspecs=True
+            )
+            console.print(f"[bold green]✔[/bold green] Staged files successfully.")
+        except subprocess.CalledProcessError:
+            console.print("[bold red]✖ Individual stage aborted due to Git error.[/bold red]")
+            return
+    else:
+        console.print(f"[bold green]✔[/bold green] Selected files already staged.")
+        
+    commit_and_push(paths_to_stage)
 
 def commit_and_push(files: list[str] | None = None) -> None:
     """Atomic commit and push transaction logic enforcing strict ARG_MAX safety."""

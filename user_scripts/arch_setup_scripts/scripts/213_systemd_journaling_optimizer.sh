@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# memory optimizations
 # =============================================================================
 # Elite Arch Linux systemd-journald Optimizer
 # Target: Arch Linux Cutting-Edge (systemd 260+, Bash 5.3+)
