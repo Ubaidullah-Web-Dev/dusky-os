@@ -184,8 +184,27 @@ def sync_all() -> None:
             check=True,
             literal_pathspecs=True
         )
-        console.print("[bold green]✔[/bold green] Payload staged successfully.")
-        commit_and_push()
+        
+        # Get actual staged files matching the list
+        _, staged_out, _ = run_git("diff", "--cached", "--name-only", "-z")
+        staged_list = [f for f in staged_out.split("\0") if f]
+        
+        matched_files = []
+        for f in staged_list:
+            for spec in valid_paths:
+                clean_spec = spec.rstrip("/")
+                if f == clean_spec or f.startswith(clean_spec + "/"):
+                    matched_files.append(f)
+                    break
+        
+        if matched_files:
+            console.print("[bold green]✔[/bold green] Payload staged successfully:")
+            for path in matched_files:
+                console.print(f"  - [dim]{path}[/dim]")
+        else:
+            console.print("[bold green]✔[/bold green] Payload staged successfully (no changes detected).")
+            
+        commit_and_push(valid_paths)
     except subprocess.CalledProcessError:
         console.print("[bold red]✖ Stage operation aborted due to Git bounds error.[/bold red]")
 
@@ -237,16 +256,37 @@ def sync_single() -> None:
             literal_pathspecs=True
         )
         console.print(f"[bold green]✔[/bold green] Staged {len(paths_to_stage)} file(s).")
-        commit_and_push()
+        commit_and_push(paths_to_stage)
     except subprocess.CalledProcessError:
         console.print("[bold red]✖ Individual stage aborted due to Git error.[/bold red]")
 
-def commit_and_push() -> None:
+def commit_and_push(files: list[str] | None = None) -> None:
     """Atomic commit and push transaction logic."""
-    code, _, _ = run_git("diff", "--cached", "--quiet")
-    if code == 0:
-        console.print("[bold yellow]⚠[/bold yellow] Index empty. Nothing to commit.")
-        return
+    # If files is provided, filter them against actual staged files
+    # to avoid passing empty directories or untracked non-existent pathspecs
+    # that would cause git commit to fail with a pathspec error.
+    commit_files: list[str] | None = None
+    if files:
+        _, staged_out, _ = run_git("diff", "--cached", "--name-only", "-z")
+        staged_list = [f for f in staged_out.split("\0") if f]
+        
+        matched_files = []
+        for f in staged_list:
+            for spec in files:
+                clean_spec = spec.rstrip("/")
+                if f == clean_spec or f.startswith(clean_spec + "/"):
+                    matched_files.append(f)
+                    break
+        
+        if not matched_files:
+            console.print("[bold yellow]⚠[/bold yellow] Index empty for specified files. Nothing to commit.")
+            return
+        commit_files = matched_files
+    else:
+        code, _, _ = run_git("diff", "--cached", "--quiet")
+        if code == 0:
+            console.print("[bold yellow]⚠[/bold yellow] Index empty. Nothing to commit.")
+            return
 
     msg = Prompt.ask("\n[bold cyan]Commit Message[/bold cyan]").strip()
     if not msg:
@@ -254,7 +294,14 @@ def commit_and_push() -> None:
         return
 
     try:
-        run_git("commit", "-m", msg, check=True)
+        commit_args = ["commit"]
+        if commit_files:
+            commit_args.append("--only")
+        commit_args.extend(["-m", msg])
+        if commit_files:
+            commit_args.extend(["--", *commit_files])
+            
+        run_git(*commit_args, check=True)
     except subprocess.CalledProcessError:
         console.print("[bold red]✖ Commit failed (Hooks/Formatting block).[/bold red]")
         return
@@ -341,7 +388,7 @@ def main() -> Never:
 
         console.print(table)
         
-        choice = Prompt.ask("\n[bold blue]Awaiting Directive[/bold blue]", choices=["1", "2", "3", "4", "5", "6", "q"])
+        choice = Prompt.ask("\n[bold blue]Awaiting Directive[/bold blue]", choices=["1", "2", "3", "4", "5", "6", "q"], default="1", show_default=False)
         
         match choice:
             case "1": sync_all()
