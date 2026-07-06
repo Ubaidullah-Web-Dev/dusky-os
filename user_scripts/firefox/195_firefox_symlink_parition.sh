@@ -63,7 +63,7 @@ echo -e "   This works for BTRFS, NTFS, or EXT4 and handles all mounting logic.\
 # FORCE read from /dev/tty to bypass Orchestra logging pipes
 # Defaults to No (N) if user presses Enter
 
-read -p "Do you have a dedicated partition for browser files mounted at /mnt/browser? (y/N): " partition_confirm < /dev/tty
+read -e -p "Do you have a dedicated partition for browser files mounted at /mnt/browser? (y/N): " partition_confirm < /dev/tty
 partition_confirm=${partition_confirm:-N} # Set default to N
 
 if [[ ! "$partition_confirm" =~ ^[Yy]$ ]]; then
@@ -95,7 +95,7 @@ else
 fi
 
 echo -e "${RED}WARNING: Starting destructive operations on $REAL_HOME/.mozilla...${NC}"
-read -p "Press [Enter] to execute or Ctrl+C to cancel." < /dev/tty
+read -e -p "Press [Enter] to execute or Ctrl+C to cancel." < /dev/tty
 
 # ------------------------------------------------------------------------------
 # STEP 2: Execution
