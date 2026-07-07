@@ -448,7 +448,7 @@ icon = "folder-new-symbolic"
 button_text = "Setup"
 [pages.layout.items.layout.items.on_press]
 type = "exec"
-command = "kitty --class 305_new_github_repo_to_backup.sh --hold sh -c \"$HOME/user_scripts/arch_setup_scripts/scripts/305_new_github_repo_to_backup.sh\""
+command = "kitty --class dusky_backup_manager.py --hold $HOME/user_scripts/git/dusky_backup_manager.py --new"
 terminal = false
 
 [[pages.layout.items.layout.items]]
@@ -460,7 +460,7 @@ icon = "emblem-synchronizing-symbolic"
 button_text = "Reconnect"
 [pages.layout.items.layout.items.on_press]
 type = "exec"
-command = "kitty --class 310_reconnect_and_push_new_changes_to_github.sh --hold sh -c \"$HOME/user_scripts/arch_setup_scripts/scripts/310_reconnect_and_push_new_changes_to_github.sh\""
+command = "kitty --class dusky_backup_manager.py --hold $HOME/user_scripts/git/dusky_backup_manager.py --relink"
 terminal = false
 
 

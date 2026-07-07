@@ -621,19 +621,10 @@ hl.window_rule({
     center = true
 })
 
---- New_github_repo ---
+--- Dusky Backup Manager (Setup / Relink) ---
 hl.window_rule({
-    name = "305_new_github_repo_to_backup.sh",
-    match = { class = "^(305_new_github_repo_to_backup.sh)$" },
-    float = true,
-    size = {726, 689},
-    center = true
-})
-
---- relink_github_repo ---
-hl.window_rule({
-    name = "310_reconnect_and_push_new_changes_to_github.sh",
-    match = { class = "^(310_reconnect_and_push_new_changes_to_github.sh)$" },
+    name = "dusky_backup_manager.py",
+    match = { class = "^(dusky_backup_manager\\.py)$" },
     float = true,
     size = {726, 689},
     center = true
