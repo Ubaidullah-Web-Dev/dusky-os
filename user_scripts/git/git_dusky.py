@@ -202,13 +202,14 @@ def sync_all() -> None:
         console.print("[bold red]✖ Error:[/bold red] Zero valid file paths parsed.")
         return
 
-    _, status_out, _ = run_git("status", "--porcelain=v1", "-z")
+    _, status_out, _ = run_git("status", "--porcelain=v1", "-z", "-u", "--", *valid_paths)
     if not status_out:
         console.print("[bold green]✔[/bold green] Working tree immaculate. No divergence detected.")
         return
         
     changed_paths: set[str] = set()
     unstaged_paths: set[str] = set()
+    paths_to_remove: set[str] = set()
     
     entries = status_out.split('\0')[:-1]
     it = iter(entries)
@@ -221,22 +222,52 @@ def sync_all() -> None:
         
         orig_path = next(it, None) if "R" in status_code or "C" in status_code else None
             
-        changed_paths.add(path)
-        if orig_path:
-            changed_paths.add(orig_path)
-
-        # Stage only unstaged changes (avoids missing staged-deletion bounds crash)
-        if status_code[1] != ' ':
-            unstaged_paths.add(path)
+        full_path = WORK_TREE / path
+        exists = full_path.exists() or full_path.is_symlink()
+        
+        if exists:
+            changed_paths.add(path)
             if orig_path:
-                unstaged_paths.add(orig_path)
+                changed_paths.add(orig_path)
+            # Stage only unstaged changes (avoids missing staged-deletion bounds crash)
+            if status_code[1] != ' ':
+                unstaged_paths.add(path)
+                if orig_path:
+                    unstaged_paths.add(orig_path)
+        else:
+            # File is deleted on disk
+            if status_code[0] == 'A':
+                # Untracked staged file, now deleted on disk -> unstage/remove from index
+                paths_to_remove.add(path)
+            else:
+                # Tracked file, deleted on disk -> stage deletion and commit it
+                changed_paths.add(path)
+                paths_to_remove.add(path)
+                if orig_path:
+                    changed_paths.add(orig_path)
+                    paths_to_remove.add(orig_path)
 
     paths_to_stage = [p for p in changed_paths if matches_pathspec(p, valid_paths)]
     paths_to_add = [p for p in unstaged_paths if matches_pathspec(p, valid_paths)]
+    paths_to_rm = [p for p in paths_to_remove if matches_pathspec(p, valid_paths)]
                 
-    if not paths_to_stage:
+    if not paths_to_stage and not paths_to_rm:
         console.print("[bold green]✔[/bold green] Working tree immaculate (no matching files changed).")
         return
+
+    if paths_to_rm:
+        payload = "\0".join(paths_to_rm) + "\0"
+        try:
+            run_git(
+                "rm", "--cached", "-r", "--ignore-unmatch",
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+                input_data=payload.encode('utf-8'),
+                check=True,
+                literal_pathspecs=True
+            )
+        except subprocess.CalledProcessError:
+            pass
 
     if paths_to_add:
         payload = "\0".join(paths_to_add) + "\0"
@@ -253,6 +284,10 @@ def sync_all() -> None:
             console.print("[bold red]✖ Stage operation aborted due to Git bounds error.[/bold red]")
             return
 
+    if not paths_to_stage:
+        console.print("[bold green]✔[/bold green] Index synchronized. No changes left to commit.")
+        return
+
     console.print("[bold green]✔[/bold green] Payload staged successfully:")
     for p in sorted(paths_to_stage):
         console.print(f"  [dim]➔ {p}[/dim]")
@@ -261,12 +296,19 @@ def sync_all() -> None:
 
 def sync_single() -> None:
     """Interactive staging utilizing robust pattern mapping."""
-    _, status_out, _ = run_git("status", "--porcelain=v1", "-z")
+    valid_paths = get_list_pathspecs()
+    status_args = ["status", "--porcelain=v1", "-z", "-u"]
+    if valid_paths is not None:
+        if not valid_paths:
+            console.print("[bold red]✖ Error:[/bold red] Zero valid file paths parsed.")
+            return
+        status_args += ["--"] + valid_paths
+
+    _, status_out, _ = run_git(*status_args)
     if not status_out:
         console.print("[bold green]✔[/bold green] Working tree immaculate. No divergence detected.")
         return
 
-    valid_paths = get_list_pathspecs()
     entries = status_out.split('\0')[:-1]
     
     path_map: PathMap = {}
@@ -305,21 +347,54 @@ def sync_single() -> None:
     
     paths_to_stage: set[str] = set()
     paths_to_add: set[str] = set()
+    paths_to_rm: set[str] = set()
     
     # Flatten both new and old paths to ensure Git correctly registers atomic renames
     for line in selected_lines:
         if line in path_map:
             p, op, sc = path_map[line]
-            paths_to_stage.add(p)
-            if op:
-                paths_to_stage.add(op)
             
-            # Only stage if there are unstaged changes (Y is not ' ')
-            if sc[1] != ' ':
-                paths_to_add.add(p)
+            full_path = WORK_TREE / p
+            exists = full_path.exists() or full_path.is_symlink()
+            
+            if exists:
+                paths_to_stage.add(p)
                 if op:
-                    paths_to_add.add(op)
+                    paths_to_stage.add(op)
                 
+                # Only stage if there are unstaged changes (Y is not ' ')
+                if sc[1] != ' ':
+                    paths_to_add.add(p)
+                    if op:
+                        paths_to_add.add(op)
+            else:
+                # File does not exist on disk
+                if sc[0] == 'A':
+                    paths_to_rm.add(p)
+                else:
+                    paths_to_stage.add(p)
+                    paths_to_rm.add(p)
+                    if op:
+                        paths_to_stage.add(op)
+                        paths_to_rm.add(op)
+
+    if paths_to_rm:
+        payload = "\0".join(paths_to_rm) + "\0"
+        try:
+            run_git(
+                "rm", "--cached", "-r", "--ignore-unmatch",
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+                input_data=payload.encode('utf-8'),
+                check=True,
+                literal_pathspecs=True
+            )
+            console.print("[bold green]✔[/bold green] Removed/Unstaged files successfully:")
+            for p in sorted(paths_to_rm):
+                console.print(f"  [dim]➔ {p}[/dim]")
+        except subprocess.CalledProcessError:
+            pass
+
     if paths_to_add:
         payload = "\0".join(paths_to_add) + "\0"
         try:
@@ -338,11 +413,15 @@ def sync_single() -> None:
             console.print("[bold red]✖ Individual stage aborted due to Git error.[/bold red]")
             return
     else:
-        console.print("[bold green]✔[/bold green] Selected files already staged:")
-        for p in sorted(paths_to_stage):
-            console.print(f"  [dim]➔ {p}[/dim]")
+        if paths_to_stage:
+            console.print("[bold green]✔[/bold green] Selected files already staged:")
+            for p in sorted(paths_to_stage):
+                console.print(f"  [dim]➔ {p}[/dim]")
         
-    commit_and_push(list(paths_to_stage))
+    if paths_to_stage:
+        commit_and_push(list(paths_to_stage))
+    else:
+        console.print("[bold green]✔[/bold green] Index synchronized. No changes left to commit.")
 
 def commit_and_push(files: list[str] | None = None, local_only: bool = False) -> None:
     """Atomic transaction logic enforcing strict ARG_MAX bounds via sets."""
