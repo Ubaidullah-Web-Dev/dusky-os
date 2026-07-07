@@ -503,14 +503,22 @@ def commit_and_push(files: list[str] | None = None, local_only: bool = False) ->
 
 def discard_local_changes() -> None:
     """Discards all uncommitted changes (both staged and unstaged) in the working tree."""
-    code, status_out, _ = run_git("status", "--porcelain=v1", "-z")
+    valid_paths = get_list_pathspecs()
+    if valid_paths is None:
+        status_args = ["status", "--porcelain=v1", "-z", "-u"]
+    else:
+        status_args = ["status", "--porcelain=v1", "-z", "-u", "--"] + valid_paths
+
+    code, status_out, _ = run_git(*status_args)
     if code != 0:
         console.print("[bold red]✖ Error: Failed to retrieve repository status.[/bold red]")
         return
         
     entries = status_out.split('\0')[:-1]
     changed_tracked: list[str] = []
+    untracked_to_delete: list[str] = []
     it = iter(entries)
+    
     for entry in it:
         if len(entry) < 3:
             continue
@@ -519,38 +527,73 @@ def discard_local_changes() -> None:
         
         orig_path = next(it, None) if "R" in status_code or "C" in status_code else None
         
-        # Untracked files are untouched by git reset --hard HEAD
         if status_code == "??" or status_code == "??":
-            continue
-            
-        display = f"➔ {path}"
-        if orig_path:
-            display += f" (from {orig_path})"
-        changed_tracked.append(display)
+            untracked_to_delete.append(path)
+        else:
+            display = f"➔ {path}"
+            if orig_path:
+                display += f" (from {orig_path})"
+            changed_tracked.append(display)
 
-    if not changed_tracked:
+    if not changed_tracked and not untracked_to_delete:
         console.print("[bold green]✔[/bold green] Working tree already clean. No changes to discard.")
         return
 
     console.print(Panel(
         "[bold red]!!! DISCARD LOCAL CHANGES !!![/bold red]\n"
-        "This will permanently erase all uncommitted modifications (both staged and unstaged) in the tracked files.",
+        "This will permanently erase local changes of your choice (modifications in tracked files and/or untracked files).",
         border_style="red"
     ))
     
-    console.print("\n[bold yellow]The following modified/deleted files will be PERMANENTLY lost:[/bold yellow]")
-    for item in sorted(changed_tracked):
-        console.print(f"  [red]{item}[/red]")
+    if changed_tracked:
+        console.print("\n[bold yellow]The following modified/deleted files can be REVERTED:[/bold yellow]")
+        for item in sorted(changed_tracked):
+            console.print(f"  [red]{item}[/red]")
+            
+    if untracked_to_delete:
+        console.print("\n[bold yellow]The following untracked files can be PERMANENTLY DELETED:[/bold yellow]")
+        for item in sorted(untracked_to_delete):
+            console.print(f"  [red]➔ {item}[/red]")
     console.print()
 
-    console.print("[bold red]Are you absolutely sure you want to discard all uncommitted changes? (y/N)[/bold red]")
-    ans = input(" ❯ ").strip().lower()
-    if ans in ("y", "yes"):
-        try:
-            run_git("reset", "--hard", "HEAD", capture=False, check=True)
-            console.print("[bold green]✔[/bold green] Successfully discarded all local changes (hard reset to HEAD).")
-        except subprocess.CalledProcessError:
-            console.print("[bold red]✖ Reset operation failed.[/bold red]")
+    revert_tracked = False
+    delete_untracked = False
+
+    if changed_tracked:
+        console.print("[bold cyan]Revert all modifications in tracked files? (y/N)[/bold cyan]")
+        ans = input(" ❯ ").strip().lower()
+        if ans in ("y", "yes"):
+            revert_tracked = True
+
+    if untracked_to_delete:
+        console.print("[bold red]Permanently delete all listed untracked files? (y/N)[/bold red]")
+        ans = input(" ❯ ").strip().lower()
+        if ans in ("y", "yes"):
+            delete_untracked = True
+
+    if not revert_tracked and not delete_untracked:
+        console.print("[bold yellow]⚠ Aborted: No changes were discarded.[/bold yellow]")
+        return
+
+    try:
+        if revert_tracked:
+            # 1. Reset tracked files if HEAD exists
+            code_head, _, _ = run_git("rev-parse", "--verify", "HEAD")
+            if code_head == 0:
+                run_git("reset", "--hard", "HEAD", capture=False, check=True)
+            console.print("[bold green]✔[/bold green] Tracked files successfully reverted.")
+            
+        if delete_untracked:
+            # 2. Safely delete listed untracked files
+            for path in untracked_to_delete:
+                full_path = WORK_TREE / path
+                if full_path.is_file() or full_path.is_symlink():
+                    full_path.unlink()
+                elif full_path.is_dir():
+                    shutil.rmtree(full_path)
+            console.print("[bold green]✔[/bold green] Untracked files successfully deleted.")
+    except subprocess.CalledProcessError:
+        console.print("[bold red]✖ Operation failed.[/bold red]")
 
 def reset_local_to_remote() -> None:
     """Hard resets the local repository to match the remote branch tracking state."""
