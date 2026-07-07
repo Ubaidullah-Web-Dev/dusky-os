@@ -244,7 +244,7 @@ declare -ra UPDATE_SEQUENCE=(
 #    "U | 185_terminal_default.sh"
 #    "S | 190_dusk_fstab.py"
 #    "S | 195_firefox_symlink_parition.sh"
-#    "S | 200_tlp_config.sh"
+#    "S | 200_tlp_config.py"
 #    "S | 205_zram_configuration.sh"
 #    "S | 210_zram_optimize_swappiness.sh"
 #    "S | 215_powerkey_lid_close_behaviour.sh"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # configures /etc/tlp.conf for ASUS TUF F15 (personal, dusk)
 # -----------------------------------------------------------------------------
-# Script: 200_tlp_config.sh
+# Script: 200_tlp_config.py
 # Description: Conditionally configures /etc/tlp.conf for ASUS TUF F15.
 #              Includes auto-installation, backup logic, and strict state detection.
 # Author: Elite DevOps (Arch/Hyprland)

@@ -104,7 +104,7 @@ INSTALL_SEQUENCE=(
     "U | 185_terminal_default.py -t foot"
     "S | 190_dusk_fstab.py"
     "S | 195_firefox_symlink_parition.sh"
-    "S | 200_tlp_config.sh"
+    "S | 200_tlp_config.py"
     "S | 205_zram_configuration.sh"
     "S | 206_zram_tmpfs_mounts.py --zram"
     "S | 210_zram_optimize_swappiness.sh"
