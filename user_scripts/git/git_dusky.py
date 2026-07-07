@@ -560,20 +560,29 @@ def main() -> Never:
     while True:
         console.clear()
         table = Table(title="󰏖 Dusky Dotfiles Manager", show_header=False, box=None, title_style="bold blue")
-        table.add_column("Key", style="bold cyan")
+        table.add_column("Key", style="bold cyan", width=4, justify="right")
         table.add_column("Action", style="bold white")
         
+        table.add_row("", "[bold cyan]⚡ DAILY WORKFLOWS[/bold cyan]")
         table.add_row("1", "Sync All (via .git_dusky_list)")
         table.add_row("2", "Sync Specific File(s)")
         table.add_row("3", "Commit Staged Changes (Local Only)")
         table.add_row("4", "Push Existing Local Commits")
         table.add_row("5", "View Delta Differential")
+        
+        table.add_row("", "")
+        table.add_row("", "[bold yellow]🛡 RECOVERY & TIMELINE[/bold yellow]")
         table.add_row("6", "Undo Last Commit Safely (Creates new revert commit)")
         table.add_row("7", "Delete Last Commit Completely (Rewrites local & remote history)")
         table.add_row("8", "Discard All Uncommitted Local Changes")
         table.add_row("9", "Nuclear Revert (Local & Remote Sync)")
+        
+        table.add_row("", "")
+        table.add_row("", "[bold magenta]⚙ ADVANCED SYSTEMS[/bold magenta]")
         table.add_row("10", "Engage Ephemeral Time Machine (TUI)")
-        table.add_row("q", "Quit Dashboard")
+        
+        table.add_row("", "")
+        table.add_row("q", "[bold red]Quit Dashboard[/bold red]")
 
         console.print(table)
         
