@@ -459,11 +459,16 @@ def commit_and_push(files: list[str] | None = None, local_only: bool = False) ->
             console.print("[bold yellow]⚠[/bold yellow] Index empty. Nothing to commit.")
             return
 
-    console.print("\n[bold cyan]Commit Message[/bold cyan]")
-    msg = input(" ❯ ").strip()
-    if not msg:
-        console.print("[bold red]✖ Aborted:[/bold red] Commit message cannot be empty or whitespace.")
-        return
+    console.print("\n[bold cyan]Commit Message (or type 'abort' to cancel)[/bold cyan]")
+    while True:
+        msg = input(" ❯ ").strip()
+        if not msg:
+            console.print("[bold red]✖ Error: Commit message cannot be empty.[/bold red]")
+            continue
+        if msg.lower() in ("abort", "q"):
+            console.print("[bold yellow]⚠ Aborted: Commit cancelled by user.[/bold yellow]")
+            return
+        break
 
     try:
         commit_args = ["commit"]
