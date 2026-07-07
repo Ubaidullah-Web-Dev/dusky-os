@@ -817,6 +817,35 @@ def run_time_machine() -> None:
 def main() -> Never:
     check_dependencies()
     
+    # CLI Quick Routing
+    if len(sys.argv) > 1:
+        choice = sys.argv[1].strip()
+        if choice in ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "q"):
+            match choice:
+                case "1": sync_all()
+                case "2": sync_single()
+                case "3": sync_all(local_only=True)
+                case "4": 
+                    console.print("[bold blue]Establishing connection...[/bold blue]")
+                    try:
+                        run_git("push", capture=False, check=True)
+                    except subprocess.CalledProcessError:
+                        pass
+                case "5": show_delta()
+                case "6": safe_revert_last_commit()
+                case "7": undo_local_commits_to_commit()
+                case "8": delete_local_commits_to_commit()
+                case "9": quick_step_back()
+                case "10": discard_local_changes()
+                case "11": reset_local_to_remote()
+                case "12": nuclear_revert()
+                case "13": run_time_machine()
+                case "q": sys.exit(0)
+            sys.exit(0)
+        else:
+            console.print(f"[bold red]✖ Invalid choice argument '{choice}'.[/bold red]")
+            sys.exit(1)
+            
     while True:
         console.clear()
         console.print("[bold blue]󰏖 Dusky Dotfiles Manager[/bold blue]\n")
