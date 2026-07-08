@@ -609,11 +609,11 @@ icon = "security-high-symbolic"
 key = "warp_state"
 [pages.layout.items.on_toggle.enabled]
 type = "exec"
-command = "$HOME/user_scripts/networking/warp_toggle.sh --connect"
+command = "$HOME/user_scripts/networking/warp_toggle.py --connect"
 terminal = false
 [pages.layout.items.on_toggle.disabled]
 type = "exec"
-command = "$HOME/user_scripts/networking/warp_toggle.sh --disconnect"
+command = "$HOME/user_scripts/networking/warp_toggle.py --disconnect"
 terminal = false
 
 [[pages.layout.items]]

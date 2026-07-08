@@ -143,7 +143,7 @@ declare -r UPSTREAM_TRACKING_REF="refs/dusky-updater/upstream/${BRANCH}"
 # Example:
 #   "${WORK_TREE}/user_scripts/networking"
 #   Then in UPDATE_SEQUENCE add:
-#     "S | warp_toggle.sh"
+#     "S | warp_toggle.py"
 
 declare -a SCRIPT_SEARCH_DIRS=(
     "${WORK_TREE}/user_scripts/arch_setup_scripts/scripts"

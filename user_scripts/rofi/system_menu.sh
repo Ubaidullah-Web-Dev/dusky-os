@@ -526,7 +526,7 @@ show_networking_menu() {
 
         case "$choice" in
             '󰖂  Warp VPN Toggle')
-                run_app "$SCRIPTS_DIR/networking/warp_toggle.sh"
+                run_app "$SCRIPTS_DIR/networking/warp_toggle.py"
                 ;;
             '󰣀  OpenSSH Setup')
                 require_executable_file "$SCRIPTS_DIR/networking/02_openssh_setup.sh" || continue
