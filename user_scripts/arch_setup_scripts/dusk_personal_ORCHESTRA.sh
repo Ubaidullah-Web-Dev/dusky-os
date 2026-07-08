@@ -103,7 +103,9 @@ INSTALL_SEQUENCE=(
     "S | 180_udev_usb_notify.sh"
     "U | 185_terminal_default.py -t foot"
     "S | 190_dusk_fstab.py"
+
     "S | firefox_symlink_partition.py"
+
     "S | 200_tlp_config.py"
     "S | 205_zram_configuration.sh"
     "S | 206_zram_tmpfs_mounts.py --zram"
@@ -152,9 +154,13 @@ INSTALL_SEQUENCE=(
     "S | 385_waydroid_setup.sh"
     "U | 390_clipboard_persistance.sh"
     "S | 395_intel_media_sdk_check.sh"
+
     "U | 400_firefox_matugen_pywalfox.sh"
+
     "U | optimize_firefox.py"
-    "U | 405_spicetify_matugen_setup.sh"
+
+#    "U | 405_spicetify_matugen_setup.sh"
+
     "U | 410_waybar_swap_config.py --set waybar=15"
     "U | 415_mpv_setup.sh"
     "S | 430_btrfs_zstd_compression_stats.sh"
