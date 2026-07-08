@@ -41,6 +41,7 @@ class FstabEngine(BaseEngine):
             "btrfs_ops/subvol": "@",
             "btrfs_ops/cow_enabled": True,
             "system_flags/auto_mount": True,
+            "system_flags/gvfs_show": True,
         }
 
     @property
@@ -232,6 +233,9 @@ class FstabEngine(BaseEngine):
                         else:
                             new_state["system_flags/auto_mount"] = True
                             
+                        # GVfs show detection
+                        new_state["system_flags/gvfs_show"] = "comment=x-gvfs-show" in opts
+                            
                         # Btrfs specific subvol and CoW toggles
                         if fs_type == "btrfs":
                             subvol_val = "@"
@@ -395,6 +399,7 @@ class FstabEngine(BaseEngine):
         subvol = self.state.get("btrfs_ops/subvol", "@")
         cow = self.state.get("btrfs_ops/cow_enabled", True)
         auto_mnt = self.state.get("system_flags/auto_mount", True)
+        gvfs_show = self.state.get("system_flags/gvfs_show", True)
 
         # Validation Checks
         SUPPORTED_FS = {"btrfs", "vfat", "exfat", "ntfs", "ext4", "ext3", "ext2", "swap"}
@@ -464,7 +469,8 @@ class FstabEngine(BaseEngine):
             options += f",subvol={subvol}"
             if auto_flag != "defaults":
                 options += f",{auto_flag}"
-            options += ",comment=x-gvfs-show"
+            if gvfs_show:
+                options += ",user,comment=x-gvfs-show"
             dump_pass = "0 0"
 
         elif fs == "vfat":
@@ -472,12 +478,16 @@ class FstabEngine(BaseEngine):
             options = f"rw,relatime,fmask=0133,dmask=0022,shortname=mixed,utf8,errors=remount-ro"
             if auto_flag != "defaults":
                 options += f",{auto_flag}"
+            if gvfs_show:
+                options += ",user,comment=x-gvfs-show"
             dump_pass = "0 0"
 
         elif fs == "exfat":
             options = f"rw,noatime,uid={uid},gid={gid},dmask=0022,fmask=0133,iocharset=utf8,errors=remount-ro"
             if auto_flag != "defaults":
                 options += f",{auto_flag}"
+            if gvfs_show:
+                options += ",user,comment=x-gvfs-show"
             dump_pass = "0 0"
 
         elif fs == "ntfs":
@@ -485,7 +495,8 @@ class FstabEngine(BaseEngine):
             options = f"defaults,noatime,uid={uid},gid={gid},umask=002,windows_names,iocharset=utf8,prealloc"
             if auto_flag != "defaults":
                 options += f",{auto_flag}"
-            options += ",comment=x-gvfs-show"
+            if gvfs_show:
+                options += ",user,comment=x-gvfs-show"
             dump_pass = "0 0"
 
         elif fs in ("ext4", "ext3", "ext2"):
@@ -494,6 +505,8 @@ class FstabEngine(BaseEngine):
             options = "defaults,noatime,lazytime"
             if auto_flag != "defaults":
                 options += f",{auto_flag}"
+            if gvfs_show:
+                options += ",user,comment=x-gvfs-show"
             dump_pass = f"0 {pass_val}"
 
         elif fs == "swap":

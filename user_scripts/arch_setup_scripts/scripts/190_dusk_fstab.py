@@ -31,32 +31,32 @@ FSTAB_CONTENT = """
 #XXXXXXXXXXXXXXXXXXXXXXXX--SSDs BTRFS, NTFS, & EXT4--XXXXXXXXXXXXXXXXXXXXXXXXX
 
 # SSD NTFS (Windows)
-UUID=848a215e8a214e4c	/mnt/windows	ntfs	defaults,noatime,uid=1000,gid=1000,umask=002,windows_names,iocharset=utf8,prealloc,nofail,comment=x-gvfs-show	0 0
+UUID=848a215e8a214e4c	/mnt/windows	ntfs	defaults,noatime,uid=1000,gid=1000,umask=002,windows_names,iocharset=utf8,prealloc,nofail,user,comment=x-gvfs-show	0 0
 
-# SSD BTRFS with Copy-on-Write Disabled (Browser)
-UUID=1adeb61a-0605-4bbc-8178-bb81fe1fca09	/mnt/browser	btrfs	defaults,noatime,discard=async,nodatacow,subvol=/,nofail,comment=x-gvfs-show	0 0
+# SSD Ext4 (Browser)
+UUID=b982f02e-32f6-40cd-86de-964c90676cc2	/home/dusk/.config/mozilla	ext4	defaults,noatime,lazytime,nofail,user,comment=x-gvfs-show	0 2
 
 # SSD Ext4 (Media)
-UUID=a7230e67-34e8-4cd2-981d-ea02d1253539	/mnt/media	ext4	defaults,noatime,lazytime,nofail	0 2
+UUID=a7230e67-34e8-4cd2-981d-ea02d1253539	/mnt/media	ext4	defaults,noatime,lazytime,nofail,user,comment=x-gvfs-show	0 2
 
 #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 #XXXXXXXXXXXXXXXXXXXXXXXX--HARD DISKS BTRFS & NTFS--XXXXXXXXXXXXXXXXXXXXXXXXX
 
 # HDD Ext4 (Fast)
-UUID=8c1f87fc-dcea-4d2e-81fd-d8028c0fa86b	/mnt/fast	ext4	defaults,noatime,lazytime,nofail	0 2
+UUID=8c1f87fc-dcea-4d2e-81fd-d8028c0fa86b	/mnt/fast	ext4	defaults,noatime,lazytime,nofail,user,comment=x-gvfs-show	0 2
 
 # HDD NTFS (Slow)
-UUID=5a921a119219f26d	/mnt/slow	ntfs	defaults,noatime,uid=1000,gid=1000,umask=002,windows_names,iocharset=utf8,prealloc,nofail,comment=x-gvfs-show	0 0
+UUID=5a921a119219f26d	/mnt/slow	ntfs	defaults,noatime,uid=1000,gid=1000,umask=002,windows_names,iocharset=utf8,prealloc,nofail,user,comment=x-gvfs-show	0 0
 
 # HDD BTRFS (WD Book Fast)
-UUID=46798d3b-cda7-4031-818f-37a06abbeb37	/mnt/wdfast	btrfs	defaults,noatime,compress=zstd:3,autodefrag,subvol=/,nofail,comment=x-gvfs-show	0 0
+UUID=46798d3b-cda7-4031-818f-37a06abbeb37	/mnt/wdfast	btrfs	defaults,noatime,compress=zstd:3,autodefrag,subvol=/,nofail,user,comment=x-gvfs-show	0 0
 
 # HDD BTRFS (WD Book Slow)
-UUID=2765359f-232e-4165-bc69-ef402b50c74c	/mnt/wdslow	btrfs	defaults,noatime,compress=zstd:3,autodefrag,subvol=/,nofail,comment=x-gvfs-show	0 0
+UUID=2765359f-232e-4165-bc69-ef402b50c74c	/mnt/wdslow	btrfs	defaults,noatime,compress=zstd:3,autodefrag,subvol=/,nofail,user,comment=x-gvfs-show	0 0
 
 # HDD NTFS (Enclosure)
-UUID=5a428b8a428b6a19	/mnt/enclosure	ntfs	defaults,noatime,uid=1000,gid=1000,umask=002,windows_names,iocharset=utf8,prealloc,nofail,comment=x-gvfs-show	0 0
+UUID=5a428b8a428b6a19	/mnt/enclosure	ntfs	defaults,noatime,uid=1000,gid=1000,umask=002,windows_names,iocharset=utf8,prealloc,nofail,user,comment=x-gvfs-show	0 0
 
 #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 """

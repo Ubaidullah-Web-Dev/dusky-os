@@ -125,6 +125,20 @@ SCHEMA[3].append(ConfigItem(
     )
 ))
 
+SCHEMA[3].append(ConfigItem(
+    label="Show in File Manager (GVfs)",
+    key="gvfs_show",
+    scope="system_flags",
+    type_="bool",
+    default=True,
+    extended_help=(
+        "**Show in File Manager (GVfs):** Toggles visibility of this mount in your file manager (like Thunar/Nautilus).\n\n"
+        "- **ON**: Appends the `comment=x-gvfs-show` and `user` mount options so the drive shows in the sidebar and mounts without root prompts.\n"
+        "- **OFF**: Removes the option, hiding the mountpoint from file managers."
+    )
+))
+
+
 def DEFERRED_LOAD() -> list[int]:
     """
     Queries lsblk dynamically at startup to populate the target ID options and hints.
