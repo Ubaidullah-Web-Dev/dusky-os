@@ -43,7 +43,7 @@ except ImportError:
     sys.exit(1)
 
 console = Console()
-PANEL_WIDTH: int = min(console.width if console.is_terminal else 112, 112)
+PANEL_WIDTH: int = min(console.width if console.is_terminal else 132, 132)
 
 type SectorRange = tuple[int, int]
 type DeviceTree = dict[str, dict[str, Any]]
@@ -595,10 +595,10 @@ def scan_unallocated_regions(dev_path: str, gaps: list[SectorRange], sector_size
     return (dirty_count / tested) if tested > 0 else 0.0
 
 def _format_bytes(bytes_val: int) -> str:
-    if bytes_val <= 0: return "0 B (No hardware support)"
+    if bytes_val <= 0: return "[dim]0 B (No hardware support)[/]"
     for unit, threshold in (("TiB", 1 << 40), ("GiB", 1 << 30), ("MiB", 1 << 20), ("KiB", 1 << 10)):
-        if bytes_val >= threshold: return f"{bytes_val / threshold:.1f} {unit}"
-    return f"{bytes_val} B"
+        if bytes_val >= threshold: return f"[bold bright_cyan]{bytes_val / threshold:.1f} {unit}[/]"
+    return f"[bold bright_cyan]{bytes_val} B[/]"
 
 def _query_nvme_driver_type(kernel_ver: str) -> str:
     for config_path in (f"/boot/config-{kernel_ver}", "/proc/config.gz"):
@@ -632,14 +632,14 @@ def query_system_telemetry(device: str, is_mock: bool = False, is_nvme: bool = T
     telemetry: dict[str, str] = {
         "kernel": "7.1.2-arch3-1" if is_mock else "Unknown",
         "fstrim_timer": "Active (Weekly)" if is_mock else "Inactive",
-        "discard_granularity": "512 B" if is_mock else "N/A",
-        "discard_max_bytes": "2.0 TiB" if is_mock else "N/A",
+        "discard_granularity": "[bold bright_cyan]512 B[/]" if is_mock else "N/A",
+        "discard_max_bytes": "[bold bright_cyan]2.0 TiB[/]" if is_mock else "N/A",
         "storage_driver": "Active (Mainline Rust NVMe Driver)" if is_mock and is_nvme else "Active (ahci SATA HBA driver)" if is_mock else "Unknown"
     }
 
     if is_mock:
-        if is_nvme and "nvme1n1" in device: telemetry["discard_granularity"] = "4.0 KiB"
-        if not is_nvme: telemetry["discard_max_bytes"] = "2.0 GiB"
+        if is_nvme and "nvme1n1" in device: telemetry["discard_granularity"] = "[bold bright_cyan]4.0 KiB[/]"
+        if not is_nvme: telemetry["discard_max_bytes"] = "[bold bright_cyan]2.0 GiB[/]"
         return telemetry
 
     with suppress(subprocess.TimeoutExpired):
@@ -702,17 +702,17 @@ def _build_smart_table(smart: SmartData) -> Table:
     flash_type, interface = smart.get("flash_type", "TLC"), smart.get("interface", "NVMe")
 
     table = Table.grid(padding=(0, 2))
-    table.add_column("Key", style="dim", width=24)
+    table.add_column("Key", style="dim", width=23)
     table.add_column("Value", style="bold")
     for k, v in [
         ("Model / Silicon:", smart.get("model", "N/A")), ("Serial Number:", smart.get("serial", "N/A")),
         ("Firmware Version:", smart.get("firmware", "N/A")), ("Interface Bus:", f"[bold blue]{interface}[/]"),
         ("Flash Cell Type:", f"[bold {'magenta' if flash_type == 'QLC' else 'green'}]{flash_type}[/]"),
-        ("Controller Temp:", f"{smart.get('temp', 0):.1f}°C"), ("Total Host Writes:", f"{smart.get('tbw_written', 0):.2f} TB"),
-        ("Device Rated Endurance:", f"{smart.get('tbw_rated', 0):.0f} TBW"), ("SMART Health Remaining:", health_str),
-        ("Health Bar Representation:", health_bar), ("Power On Hours:", f"{smart.get('power_on_hours', 0):,} hours"),
-        ("Unsafe Power Cuts:", f"[red]{unsafe:,}[/]" if unsafe > 100 else f"{unsafe:,}"),
-        ("Physical Media Errors:", f"[bold red]{media_err}[/]" if media_err > 0 else "0 (Healthy)")
+        ("Controller Temp:", f"[bold bright_yellow]{smart.get('temp', 0):.1f}°C[/]"), ("Total Host Writes:", f"[bold bright_cyan]{smart.get('tbw_written', 0):.2f} TB[/]"),
+        ("Device Rated Endurance:", f"[bold bright_cyan]{smart.get('tbw_rated', 0):.0f} TBW[/]"), ("SMART Health Remaining:", health_str),
+        ("Health Bar Representation:", health_bar), ("Power On Hours:", f"[bold blue]{smart.get('power_on_hours', 0):,}[/] hours"),
+        ("Unsafe Power Cuts:", f"[red]{unsafe:,}[/]" if unsafe > 100 else f"[bold yellow]{unsafe:,}[/]"),
+        ("Physical Media Errors:", f"[bold red]{media_err}[/]" if media_err > 0 else "[bold green]0 (Healthy)[/]")
     ]: table.add_row(k, v)
     return table
 
@@ -723,14 +723,14 @@ def _build_op_table(layout: DiskLayout, smart: SmartData, scan_ratio: float | No
     op_raw_pct = (unalloc_sec / total_sec) * 100.0 if total_sec else 0.0
     
     table = Table.grid(padding=(0, 2))
-    table.add_column("Key", style="dim", width=24)
+    table.add_column("Key", style="dim", width=29)
     table.add_column("Value", style="bold")
     
     ss = layout.sector_size
-    table.add_row("Total Block Capacity:", f"{total_sec * ss / (1 << 30):.2f} GiB ({total_sec:,} sectors)")
-    table.add_row("Partitioned Extents:", f"{part_sec * ss / (1 << 30):.2f} GiB ({part_sec:,} sectors)")
-    table.add_row("Unallocated Free Extents:", f"{unalloc_sec * ss / (1 << 30):.2f} GiB ({unalloc_sec:,} sectors)")
-    table.add_row("Raw Over-Provisioning Limit:", f"{op_raw_pct:.2f}% of disk")
+    table.add_row("Total Block Capacity:", f"[bold bright_cyan]{total_sec * ss / (1 << 30):.2f} GiB[/] ([bold blue]{total_sec:,}[/] sectors)")
+    table.add_row("Partitioned Extents:", f"[bold bright_cyan]{part_sec * ss / (1 << 30):.2f} GiB[/] ([bold blue]{part_sec:,}[/] sectors)")
+    table.add_row("Unallocated Free Extents:", f"[bold bright_cyan]{unalloc_sec * ss / (1 << 30):.2f} GiB[/] ([bold blue]{unalloc_sec:,}[/] sectors)")
+    table.add_row("Raw Over-Provisioning Limit:", f"[bold yellow]{op_raw_pct:.2f}%[/] of disk")
 
     if is_cleared:
         table.add_row("FTL Allocation Status:", "[bold green]Active (Cleared during this session)[/]")
@@ -742,11 +742,11 @@ def _build_op_table(layout: DiskLayout, smart: SmartData, scan_ratio: float | No
     active_op_pct = op_raw_pct * (1.0 - scan_ratio)
     proj = get_lifespan_projections(smart.get("tbw_written", 0.0), smart.get("tbw_rated", 100.0), active_op_pct, op_raw_pct, smart.get("flash_type", "TLC") == "QLC")
 
-    table.add_row("Dirty Free Space (Mapped):", f"[{'bold red' if scan_ratio > 0 else 'bold green'}]{scan_ratio * 100:.2f}% of free space[/]")
+    table.add_row("Dirty Free Space (Mapped):", f"[{'bold red' if scan_ratio > 0 else 'bold green'}]{scan_ratio * 100:.2f}%[/] of free space")
     table.add_row("Functional OP Pool:", f"[bold green]{active_op_pct:.2f}%[/]")
-    table.add_row("Steady-State WAF:", f"Current: {proj['current_waf']:.2f} → Post-Discard Target: {proj['target_waf']:.2f}")
-    table.add_row("Write Longevity Multiplier:", f"[bold green]{proj['multiplier']:.2f}x lifespan extension[/]")
-    table.add_row("Future Host Write Capacity:", f"{proj['remaining_tbw']:.1f} TB → [bold green]{proj['extended_remaining_tbw']:.1f} TB[/] via OP discard")
+    table.add_row("Steady-State WAF:", f"Current: [bold yellow]{proj['current_waf']:.2f}[/] → Target: [bold green]{proj['target_waf']:.2f}[/]")
+    table.add_row("Write Longevity Multiplier:", f"[bold green]{proj['multiplier']:.2f}x[/] lifespan extension")
+    table.add_row("Future Host Write Capacity:", f"[bold yellow]{proj['remaining_tbw']:.1f} TB[/] → [bold green]{proj['extended_remaining_tbw']:.1f} TB[/] via OP")
     return table
 
 def _build_partition_table(layout: DiskLayout) -> Table:
@@ -775,10 +775,10 @@ def render_drive_diagnostics(layout: DiskLayout, smart: SmartData, scan_ratio: f
     
     sys_tel = query_system_telemetry(layout.device, is_mock=is_mock, is_nvme=(smart.get("interface", "NVMe") == "NVMe"))
     sys_table = Table.grid(padding=(0, 2))
-    sys_table.add_column("Key", style="dim", width=27)
+    sys_table.add_column("Key", style="dim", width=30)
     sys_table.add_column("Value", style="bold")
     drv = sys_tel.get("storage_driver", "N/A")
-    for k, v in [("Arch Linux Kernel Version:", sys_tel.get("kernel", "N/A")), ("Systemd TRIM Service Timer:", sys_tel.get("fstrim_timer", "N/A")), ("Device Discard Granularity:", sys_tel.get("discard_granularity", "N/A")), ("Device Max Discard Block Size:", sys_tel.get("discard_max_bytes", "N/A")), ("Active Storage Driver:", f"[bold green]{drv}[/]" if "Active" in drv else drv)]:
+    for k, v in [("Arch Linux Kernel Version:", f"[bold bright_blue]{sys_tel.get('kernel', 'N/A')}[/]"), ("Systemd TRIM Service Timer:", f"[bold green]{sys_tel.get('fstrim_timer', 'N/A')}[/]" if "Active" in sys_tel.get("fstrim_timer", "") else f"[bold yellow]{sys_tel.get('fstrim_timer', 'N/A')}[/]"), ("Device Discard Granularity:", sys_tel.get("discard_granularity", "N/A")), ("Device Max Discard Block Size:", sys_tel.get("discard_max_bytes", "N/A")), ("Active Storage Driver:", f"[bold green]{drv}[/]" if "Active" in drv else drv)]:
         sys_table.add_row(k, v)
 
     sys_panel = Panel(sys_table, title="[bold white]Host OS & Storage Queue Telemetry[/]", border_style="dim", width=PANEL_WIDTH)
@@ -789,8 +789,8 @@ def render_drive_diagnostics(layout: DiskLayout, smart: SmartData, scan_ratio: f
     group = Group(
         Text.from_markup(f"\n[bold white]DEVICE TELEMETRY DASHBOARD FOR {layout.device}[/]\n{smart.get('model', 'N/A')}  |  Serial: {smart.get('serial', 'N/A')}  |  Health: {health_str}\n"),
         Columns([
-            Panel(_build_smart_table(smart), title="[bold white]S.M.A.R.T. Hardware Health[/]", border_style="dim", width=PANEL_WIDTH // 2 - 1),
-            Panel(_build_op_table(layout, smart, scan_ratio, is_cleared=exec_discard), title="[bold white]FTL Over-Provisioning Mapping[/]", border_style="dim", width=PANEL_WIDTH // 2 + 1)
+            Panel(_build_smart_table(smart), title="[bold white]S.M.A.R.T. Hardware Health[/]", border_style="dim", width=int(PANEL_WIDTH * 0.41)),
+            Panel(_build_op_table(layout, smart, scan_ratio, is_cleared=exec_discard), title="[bold white]FTL Over-Provisioning Mapping[/]", border_style="dim", width=int(PANEL_WIDTH * 0.58))
         ]),
         sys_panel,
         Text.from_markup(f"\n[bold white]Physical Disk Sector Map Layout:[/]\n{draw_layout_bar(layout, visual_ratio)}\n[dim]{legend}[/]\n")
@@ -800,7 +800,6 @@ def render_drive_diagnostics(layout: DiskLayout, smart: SmartData, scan_ratio: f
     console.print(Panel(Align.center(group), border_style=border, width=PANEL_WIDTH))
     console.print(_build_partition_table(layout))
 
-    
     # 1. Render Status Condition (Independent of dry-run execution logic)
     if scan_ratio is not None:
         if scan_ratio == 0.0 and not exec_discard:
@@ -872,7 +871,7 @@ def interactive_menu() -> int:
         "[bold cyan]INTERACTIVE MODE SELECTOR[/]\n"
         "[dim]Dusky Drive Health Diagnostics Selector[/]",
         border_style="cyan",
-        width=PANEL_WIDTH
+        expand=False
     )))
 
     table = Table(box=None, expand=False)
@@ -932,7 +931,12 @@ def main() -> None:
             console.print(f"[bold red][x] Privilege auto-elevation failed: {e}[/]")
             sys.exit(1)
 
-    console.print(Align.center(Panel("[bold cyan]DUSKY DRIVE HEALTH DIAGNOSTIC SUITE[/]\n[dim]Linux Kernel 7.1 & Python 3.14+ Modern Storage Engine Diagnostics[/]", border_style="cyan", width=PANEL_WIDTH)))
+    console.print(Align.center(Panel(
+        "[bold cyan]DUSKY DRIVE HEALTH DIAGNOSTIC SUITE[/]\n"
+        "[dim]Linux Kernel 7.1 & Python 3.14+ Modern Storage Engine Diagnostics[/]", 
+        border_style="cyan", 
+        expand=False
+    )))
 
     if args.mock:
         console.print("[bold green][*] Mode: Safe Isolation Mock Demonstration[/]")
