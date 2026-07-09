@@ -60,7 +60,7 @@ except ImportError:
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import Prompt
+from rich.prompt import Prompt, Confirm
 from rich.progress import Progress, DownloadColumn, TransferSpeedColumn, TextColumn, TimeRemainingColumn
 
 # Force terminal and interactive capabilities so the progress bar renders 
@@ -303,9 +303,26 @@ def main() -> None:
     try:
         target_user = resolve_target_user()
         stage_packages()
-        aur_success = try_aur_virtio(target_user)
+        
+        # Check command-line arguments or prompt the user
+        stage_virtio = True
+        if "--skip-virtio" in sys.argv:
+            stage_virtio = False
+        elif "--virtio" in sys.argv:
+            stage_virtio = True
+        else:
+            stage_virtio = Confirm.ask(
+                "\n[bold cyan]Do you want to stage Windows VirtIO driver ISO? (Required for Windows VMs)[/bold cyan]",
+                default=False
+            )
+            
+        if stage_virtio:
+            aur_success = try_aur_virtio(target_user)
+            stage_iso(aur_success)
+        else:
+            console.print("\n[bold yellow]Skipping VirtIO Windows driver staging (Linux-only mode).[/bold yellow]")
+            
         configure_access(target_user)
-        stage_iso(aur_success)
         
         console.print("\n[bold green]=== PHASE 1 COMPLETE ===[/bold green]")
         console.print("The host file system and user access rights are fully prepared.")
