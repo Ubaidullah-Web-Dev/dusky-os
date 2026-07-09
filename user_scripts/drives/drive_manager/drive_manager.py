@@ -47,6 +47,7 @@ from dataclasses import dataclass
 # ------------------------------------------------------------------------------
 try:
     import keyring
+    import secretstorage
     from rich.console import Console
     from rich.table import Table
     from rich.panel import Panel
@@ -54,11 +55,11 @@ try:
     from rich.align import Align
     from rich.markup import escape
 except ImportError:
-    print("\n[INFO] Missing required Python libraries: 'keyring' and/or 'rich'.")
+    print("\n[INFO] Missing required Python libraries: 'keyring', 'secretstorage', and/or 'rich'.")
     print("[INFO] Attempting to auto-install via pacman...")
     try:
         subprocess.run(
-            ["sudo", "pacman", "-S", "--needed", "--noconfirm", "python-keyring", "python-rich"],
+            ["sudo", "pacman", "-S", "--needed", "--noconfirm", "python-keyring", "python-secretstorage", "python-rich"],
             check=True
         )
         print("[SUCCESS] Dependencies installed. Seamlessly restarting script...\n")
@@ -272,8 +273,28 @@ def get_crypt_mapper_name(outer_uuid: str) -> str | None:
             pass
     return None
 
+def is_keyring_unlocked() -> bool:
+    """Checks if the default keyring collection is unlocked (takes 0.00s and never hangs)."""
+    try:
+        # Check active keyring backend name
+        backend_name = type(keyring.get_keyring()).__name__.lower()
+        
+        # Only perform the lock check if using a D-Bus SecretService/libsecret or Chainer backend
+        if "secretservice" not in backend_name and "libsecret" not in backend_name and "chainer" not in backend_name:
+            return True
+            
+        connection = secretstorage.dbus_init()
+        collection = secretstorage.get_default_collection(connection)
+        return not collection.is_locked()
+    except Exception:
+        return True
+
 def get_keyring_password_with_timeout(service: str, name: str, timeout: int = 60) -> str | None:
     """Attempts keyring lookup with a daemon thread timeout to prevent hanging on exit."""
+    if not is_keyring_unlocked():
+        log("Keyring is locked. Skipping keyring lookup to prevent hang.")
+        return None
+
     result = [None]
     
     def fetch():
@@ -294,6 +315,10 @@ def get_keyring_password_with_timeout(service: str, name: str, timeout: int = 60
 
 def set_keyring_password_with_timeout(service: str, name: str, password: str, timeout: int = 60) -> bool:
     """Saves password to keyring with a daemon thread timeout to prevent hanging on locked keyring."""
+    if not is_keyring_unlocked():
+        err("Keyring is locked. Skipping saving password to prevent hang.")
+        return False
+
     success_flag = [False]
 
     def store():
