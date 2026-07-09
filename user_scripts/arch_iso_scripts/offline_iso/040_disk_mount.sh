@@ -466,7 +466,7 @@ assemble_fhs() {
 
     if [[ "$BOOT_MODE" == "UEFI" ]]; then
         echo -e "${C_YELLOW}>> Mounting EFI ($EFI_PART) to /mnt/boot...${C_RESET}"
-        mount "$EFI_PART" /mnt/boot
+        mount -t vfat "$EFI_PART" /mnt/boot
     fi
 }
 
