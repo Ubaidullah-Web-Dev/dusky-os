@@ -233,6 +233,7 @@ def main() -> None:
         MAIN_CONF.write_text(main_conf_content.rstrip('\n') + f"\n\n-- Source User Custom Config Overlay\n{OVERLAY_REQUIRE}\n")
         log_success(f"Appended '{OVERLAY_REQUIRE}' to '{MAIN_CONF}'.")
 
+
     # Hot-Reload
     if shutil.which("hyprctl"):
         try:

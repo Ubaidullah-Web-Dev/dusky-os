@@ -11,7 +11,6 @@ After=graphical-session-pre.target
 # BindsTo creates requirement + stop propagation, Before ensures ordering
 BindsTo=graphical-session.target
 Wants=graphical-session.target
-Before=graphical-session.target
 
 # Modern desktop integration - pulls autostart and portals on Arch bleeding-edge
 Wants=xdg-desktop-autostart.target

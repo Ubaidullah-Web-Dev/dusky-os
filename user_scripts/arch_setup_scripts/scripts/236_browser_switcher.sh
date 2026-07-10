@@ -265,8 +265,8 @@ switch_browser() {
         release_lock "$lock_fd"; return 1
     fi
 
-    if [[ "$t_type" == "1" ]]; then exec_cmd='"uwsm-app -- " .. terminal .. " " .. browser'
-    else exec_cmd='"uwsm-app -- " .. browser'; fi
+    if [[ "$t_type" == "1" ]]; then exec_cmd='terminal .. " " .. browser'
+    else exec_cmd='browser'; fi
 
     new_binds=$(awk -v new_cmd="$exec_cmd" '
         { lines[NR] = $0 }
