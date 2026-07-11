@@ -29,6 +29,22 @@ export MAKEFLAGS="-j$(nproc)"
 # Clipboard DB path - dynamic, set by 390_clipboard_persistance.sh toggle
 [ -f "$HOME/.config/dusky/settings/cliphist_db_env" ] && source "$HOME/.config/dusky/settings/cliphist_db_env"
 
+# --- Clipboard DB path auto-reload (live RAM/disk switch) ---
+# Ensures old shells pick up new CLIPHIST_DB_PATH after running 390_clipboard_persistance.py
+# in another terminal, without needing reboot or manual source.
+__clip_db_env_file="$HOME/.config/dusky/settings/cliphist_db_env"
+__clip_db_env_mtime=0
+__reload_clip_env() {
+  [[ -f "$__clip_db_env_file" ]] || return 0
+  local mtime
+  mtime=$(stat -c %Y "$__clip_db_env_file" 2>/dev/null || echo 0)
+  if (( mtime != __clip_db_env_mtime )); then
+    # shellcheck source=/dev/null
+    source "$__clip_db_env_file" 2>/dev/null && __clip_db_env_mtime=$mtime
+  fi
+}
+autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook precmd __reload_clip_env
+
 # Configure PATH (Uncomment to enable local binaries)
 # export PATH="$HOME/.local/bin:$PATH"
 
@@ -290,3 +306,9 @@ fi
 # =============================================================================
 # End of ~/.zshrc
 # =============================================================================
+
+# >>> grok installer >>>
+export PATH="$HOME/.grok/bin:$PATH"
+fpath=(~/.grok/completions/zsh $fpath)
+autoload -Uz compinit && compinit -C
+# <<< grok installer <<<

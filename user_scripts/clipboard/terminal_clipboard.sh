@@ -47,13 +47,23 @@ if [[ -r "$USER_STATE_FILE" ]]; then
     [[ -n "$_pl" ]] && PREVIEW_LAYOUT="$_pl"
 fi
 
-# --- Persistence Integration ---
+# --- Persistence Integration - FIXED: force re-read, ignore stale Hyprland env ---
 readonly STATE_FILE="${HOME}/.config/dusky/settings/clipboard_persistance"
 readonly DB_ENV_FILE="${HOME}/.config/dusky/settings/cliphist_db_env"
+
+# Critical: unset stale inherited value from Hyprland/systemd, then re-source authoritative file
+unset CLIPHIST_DB_PATH 2>/dev/null || true
 if [[ -f "$DB_ENV_FILE" ]]; then
-    # We allow sourcing this specifically because it's managed entirely by your static toggler
+    # File is managed atomically by 390_clipboard_persistance.py, always contains: export CLIPHIST_DB_PATH="..."
+    # shellcheck source=/dev/null
     source "$DB_ENV_FILE"
 fi
+# Fallback safety: if file missing/empty, use standard cache location (prevents silent fallback confusion)
+if [[ -z "${CLIPHIST_DB_PATH:-}" ]]; then
+    export CLIPHIST_DB_PATH="${XDG_CACHE_HOME:-$HOME/.cache}/cliphist/db"
+fi
+# Ensure the variable is exported for all child cliphist invocations
+export CLIPHIST_DB_PATH
 
 readonly PINS_DIR="$XDG_DATA_HOME/rofi-cliphist/pins"
 

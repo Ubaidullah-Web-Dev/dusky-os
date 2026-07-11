@@ -27,6 +27,11 @@ hl.config({
 -- -------------------------------------------------------------------------------------------------
 hl.on("hyprland.start", function()
 
+    -- --- Sync variables with D-Bus and Systemd - FIXED 2026-07-11 ---
+    -- Must be first, ensures CLIPHIST_DB_PATH from environment_variables.lua reaches systemd/dbus for live switches
+    hl.exec_cmd("systemctl --user import-environment CLIPHIST_DB_PATH XDG_RUNTIME_DIR XDG_CACHE_HOME")
+    hl.exec_cmd("dbus-update-activation-environment --systemd --all")
+
     -- --- SYSTEM ESSENTIALS ---
 
     -- Gnome Keyring: Stores passwords for apps (VSCode, Chrome, etc.). (recommanded to enable systemd service instead of auto starting with exec-once)
@@ -38,6 +43,12 @@ hl.on("hyprland.start", function()
     -- XHost: Grants root access to the display (needed for GParted/Synaptic to run).
     -- make sure to install xorg-xhost beofre uncommenting the following line, sudo pacman -S xorg-xhost
     -- hl.exec_cmd("xhost +si:localuser:root")
+
+    -- --- Start graphical session target ---
+    hl.exec_cmd("systemctl --user start hyprland-session.target")
+
+    -- --- Protect Compositor from OOM Killer ---
+    hl.exec_cmd("sudo choom -n -250 -p $(pgrep -x Hyprland)")
 
     -- --- BACKGROUND SERVICES ---
     hl.exec_cmd("awww-daemon")           -- Wallpaper engine
@@ -59,16 +70,6 @@ hl.on("hyprland.start", function()
     hl.exec_cmd("$HOME/user_scripts/waybar/waybar_toggle.sh")
     -- hl.exec_cmd("$HOME/user_scripts/waybar/toggle_timer_waybar.sh")
     -- hl.exec_cmd("nm-applet")
-
-    -- --- Sync variables with D-Bus and Systemd ---
-    -- Must be first, services like mako/hypridle/localsearch live outside Hyprland tree
-    hl.exec_cmd("dbus-update-activation-environment --systemd --all")
-
-    -- --- Start graphical session target ---
-    hl.exec_cmd("systemctl --user start hyprland-session.target")
-
-    -- --- Protect Compositor from OOM Killer ---
-    hl.exec_cmd("sudo choom -n -250 -p $(pgrep -x Hyprland)")
 
     -- EG: dusky glance (uncomment only one at a time)
     -- hl.exec_cmd("~/user_scripts/rofi/dusky_glance.sh --cpu")
