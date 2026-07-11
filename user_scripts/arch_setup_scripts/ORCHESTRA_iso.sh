@@ -151,7 +151,7 @@ INSTALL_SEQUENCE=(
     "U | 380_nvidia_open_source.sh --auto"
     "S | 381_nvidia_services.sh"
 #    "S | 385_waydroid_setup.sh"
-    "U | 390_clipboard_persistance.sh --ram --quiet"
+    "U | 390_clipboard_persistance.py --ram --quiet"
     "S | 395_intel_media_sdk_check.sh --auto"
     "U | 400_firefox_matugen_pywalfox.sh"
 #    "U | optimize_firefox.py"

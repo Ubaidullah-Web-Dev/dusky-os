@@ -577,8 +577,8 @@ hl.window_rule({
 
 --- Clipbard_persistance ---
 hl.window_rule({
-    name = "390_clipboard_persistance.sh",
-    match = { class = "^(390_clipboard_persistance.sh)$" },
+    name = "390_clipboard_persistance.py",
+    match = { class = "^(390_clipboard_persistance.py)$" },
     float = true,
     size = {805, 323},
     center = true
