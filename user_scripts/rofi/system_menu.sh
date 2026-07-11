@@ -375,7 +375,7 @@ show_utils_menu() {
                 exit 0
                 ;;
             '󰅇  Clipboard Persistence')
-                run_term_hold "clipboard_persistance.sh" "$SCRIPTS_DIR/desktop_apps/clipboard_persistance.sh"
+                run_term_hold "clipboard_persistance.py" "$SCRIPTS_DIR/desktop_apps/clipboard_persistance.py"
                 ;;
             '󰉋  File Manager Switch')
                 run_term_hold "file_manager_switch.sh" "$SCRIPTS_DIR/desktop_apps/file_manager_switch.sh"
