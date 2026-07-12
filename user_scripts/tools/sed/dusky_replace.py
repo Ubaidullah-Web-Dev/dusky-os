@@ -21,7 +21,7 @@ import tempfile
 from pathlib import Path
 from typing import Final
 
-# --- Dependency pre-flight (no auto-install) ---
+# --- Dependency pre-flight (Safe Auto-Install) ---
 
 CONSOLE_STDERR = None
 CONSOLE_STDOUT = None
@@ -46,23 +46,37 @@ def check_environment() -> None:
         sys.exit(2)
 
     missing: list[str] = []
+    
+    # Check Python modules
     for mod, pkg in (("rich", "python-rich"), ("regex", "python-regex"), ("charset_normalizer", "python-charset-normalizer")):
         if importlib.util.find_spec(mod) is None:
             missing.append(pkg)
 
+    # Check System binaries
     if shutil.which("rg") is None:
         missing.append("ripgrep")
+    if shutil.which("delta") is None:
+        missing.append("git-delta")
 
     if missing:
-        sys.stderr.write(f"[✖] Missing dependencies: {', '.join(missing)}\n")
-        sys.stderr.write("Install on Arch with:\n")
-        sys.stderr.write(f"  sudo pacman -Syu --needed {' '.join(missing)}\n")
-        sys.stderr.write("Then re-run. No automatic install is performed by design (avoids partial upgrades).\n")
-        sys.exit(2)
+        sys.stderr.write(f"[*] Missing dependencies detected: {', '.join(missing)}\n")
+        sys.stderr.write("[*] Elevating via pacman for seamless installation...\n")
+        sys.stderr.write("[*] (Using -S without -y to strictly prevent partial upgrades)\n")
+        try:
+            # -S without -y is safe on Arch: it installs from local cache without syncing.
+            subprocess.run(["sudo", "pacman", "-S", "--needed", "--noconfirm"] + missing, check=True)
+            sys.stderr.write("[✔] Dependencies installed. Reloading environment...\n\n")
+            # Reload the script seamlessly now that dependencies exist
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        except subprocess.CalledProcessError:
+            sys.stderr.write("\n[✖] Auto-install failed (likely stale package cache).\n")
+            sys.stderr.write("    Please safely synchronize and install manually:\n")
+            sys.stderr.write(f"    sudo pacman -Syu --needed {' '.join(missing)}\n")
+            sys.exit(2)
 
 check_environment()
 
-# Safe imports - now guaranteed
+# Safe imports - now guaranteed to exist
 import regex as re
 import charset_normalizer
 from rich.console import Console as RichConsole
@@ -161,7 +175,7 @@ def detect_encoding_and_decode(raw: bytes) -> tuple[str, str]:
     return "utf-8", raw.decode("utf-8", errors="surrogateescape")
 
 def display_diff_limited(path: Path, old: str, new: str, base: Path | None = None) -> None:
-    # Compute relative path for diff headers to avoid a//tmp/... and leak absolute paths
+    # Compute relative path for diff headers to avoid leaking absolute paths
     try:
         if base is not None:
             try:
@@ -197,12 +211,37 @@ def display_diff_limited(path: Path, old: str, new: str, base: Path | None = Non
         tofile=f"b/{rel}",
         n=3,
     )
+    
     diff_str = "".join(diff)
     if not diff_str:
         return
+        
     if len(diff_str) > MAX_DIFF_BYTES:
         diff_str = diff_str[:MAX_DIFF_BYTES] + "\n... [truncated] ...\n"
 
+    # --- Side-by-Side Delta Integration ---
+    if shutil.which("delta"):
+        try:
+            # Print our own header so it matches the script's visual flow
+            console_out.print(f"\n[bold blue]╭── Diff: {markup_escape(str(rel))}[/]")
+            
+            # Pipe raw unified diff to delta, forcing side-by-side and disabling the pager
+            subprocess.run(
+                [
+                    "delta", 
+                    "--side-by-side", 
+                    "--paging=never", 
+                    "--file-style=omit", 
+                    "--hunk-header-style=omit"
+                ],
+                input=diff_str.encode("utf-8", errors="replace"),
+                check=False
+            )
+            return
+        except Exception as e:
+            console_err.print(f"[dim yellow][!] Failed to launch delta ({e}). Falling back to unified view.[/]")
+
+    # --- Fallback: Native Rich Unified Diff ---
     syntax = Syntax(diff_str, "diff", theme="monokai", background_color="default", word_wrap=False)
     console_out.print(Panel(syntax, title=f"[bold blue]Diff: {markup_escape(str(rel))}[/]", border_style="blue"))
 
@@ -230,7 +269,7 @@ def main() -> None:
     parser.add_argument("target_dir", type=Path, help="Directory to search within.")
     parser.add_argument("--multiline", action="store_true", help="Enable rg --multiline (allows \\n in pattern).")
     parser.add_argument("--dotall", action="store_true", help="Enables --multiline and --multiline-dotall; '.' matches newline (implies --multiline).")
-    parser.add_argument("--allow-binary", action="store_true", help="Do not skip files containing NUL bytes; passes -a to ripgrep to search binary files as text.")
+    parser.add_argument("--allow-binary", action="store_true", help="Do not skip files containing NUL bytes; passes -a to ripgrep.")
     parser.add_argument("--dry-run", action="store_true", help="Preview diffs only, no writes.")
     parser.add_argument("-y", "--yes", action="store_true", help="Batch mode: apply to all without prompting.")
     parser.add_argument("--max-files", type=int, default=0, help="Abort if more than N files match (0 = no limit).")
@@ -273,8 +312,6 @@ def main() -> None:
         console_err.print("[bold red][✖] ripgrep binary not found (shutil.which failed).[/]")
         sys.exit(1)
 
-    # ripgrep exit codes: 0=match, 1=no match, 2=error (including soft errors like Permission denied)
-    # Since 11.0, soft errors still emit 2 even when matches exist, so we must parse stdout on 2.
     match proc.returncode:
         case 0:
             pass
@@ -284,8 +321,7 @@ def main() -> None:
         case 2:
             err_msg = proc.stderr.decode("utf-8", errors="replace")[:2000]
             if proc.stdout:
-                console_err.print(f"[yellow][!] ripgrep warnings (continuing with {len(proc.stdout.split(b"\x00"))-1} files):[/] {markup_escape(err_msg)}")
-                # fall through - do not exit, parse stdout below
+                console_err.print(f"[yellow][!] ripgrep warnings (continuing with {len(proc.stdout.split(b'\x00'))-1} files):[/] {markup_escape(err_msg)}")
             else:
                 console_err.print(f"[bold red][✖] ripgrep error:[/] {markup_escape(err_msg)}")
                 sys.exit(1)
@@ -310,6 +346,7 @@ def main() -> None:
         sys.exit(1)
 
     console_out.print(f"\n[bold]Found {len(files)} files containing matches.[/]")
+    
     if not args.yes and not args.dry_run:
         console_out.print("  [bold cyan][1][/] Interactive (preview diffs and confirm per-file)")
         console_out.print("  [bold cyan][2][/] Batch All   (apply without per-file prompt)")
