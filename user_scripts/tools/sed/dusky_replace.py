@@ -284,7 +284,7 @@ def main() -> None:
         case 2:
             err_msg = proc.stderr.decode("utf-8", errors="replace")[:2000]
             if proc.stdout:
-                console_err.print(f"[yellow][!] ripgrep warnings (continuing with {len(proc.stdout.split(b'\\0'))-1} files):[/] {markup_escape(err_msg)}")
+                console_err.print(f"[yellow][!] ripgrep warnings (continuing with {len(proc.stdout.split(b"\x00"))-1} files):[/] {markup_escape(err_msg)}")
                 # fall through - do not exit, parse stdout below
             else:
                 console_err.print(f"[bold red][✖] ripgrep error:[/] {markup_escape(err_msg)}")
