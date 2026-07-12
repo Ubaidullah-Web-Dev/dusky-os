@@ -38,6 +38,7 @@ Tools       | zellij                | Modern terminal workspace/multiplexer (Rus
 Tools       | tealdeer              | Fast tldr client (simplified man pages)
 Tools       | man-db                | The standard manual pager suite
 Tools       | avahi                 | Service Discovery using mDNS/DNS-SD (compatible with Bonjour)
+Tools       | xdg-desktop-portal-kde | KDE backend for xdg-desktop-portal (file chooser, etc.)
 Tools       | evince                | Document viewer (PDF, PostScript, XPS, djvu, dvi, tiff, cbr, cbz, cb7, cbt)
 Tools       | aria2                 | High-speed download utility (Pair with uget)
 Tools       | uget                  | Download Manager GUI (Pair with aria2)
