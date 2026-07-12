@@ -105,7 +105,7 @@
         "format": "{:%I:%M %p}",
         "format-alt": "{:%A, %B %d, %Y}",
         "tooltip-format": "<big>{:%Y %B}</big>\n<tt><small>{calendar}</small></tt>",
-        "on-click": "uwsm-app -- gnome-clocks"
+        "on-click": "dusky-run -- gnome-clocks"
     },
 
     "custom/notification": {
@@ -137,7 +137,7 @@
         "return-type": "json",
         "format": "{}",
         "tooltip": true,
-        "on-click": "uwsm-app -- kitty --class system_update.sh --hold -e ~/user_scripts/update_dusky/system_update.sh --all"
+        "on-click": "dusky-run -- kitty --class system_update.sh --hold -e ~/user_scripts/update_dusky/system_update.sh --all"
     },
 
     "hyprland/workspaces": {
@@ -158,7 +158,7 @@
     "cpu": {
         "interval": 2,
         "format": " {usage}%",
-        "on-click": "uwsm-app -- kitty -e btop"
+        "on-click": "dusky-run -- kitty -e btop"
     },
     
     "memory": {
@@ -199,7 +199,7 @@
         "format": "",
         "format-connected": " {num_connections}",
         "tooltip-format": "{controller_alias}\n{num_connections} connected",
-        "on-click": "uwsm-app -- blueman-manager"
+        "on-click": "dusky-run -- blueman-manager"
     },
     
     "battery": {
@@ -220,7 +220,7 @@
 
     "custom/power": {
         "format": "⏻",
-        "on-click": "uwsm-app -- ~/user_scripts/wlogout/wlogout_scale.sh",
+        "on-click": "dusky-run -- ~/user_scripts/wlogout/wlogout_scale.sh",
         "tooltip-format": "Power Menu"
     },
 
@@ -230,7 +230,7 @@
         "return-type": "json",
         "interval": 5,
         "signal": 9,
-        "on-click": "uwsm-app -- ~/user_scripts/waybar/toggle_hypridle.sh",
+        "on-click": "dusky-run -- ~/user_scripts/waybar/toggle_hypridle.sh",
         "escape": true
     }
 }

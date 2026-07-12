@@ -91,7 +91,7 @@
         "justify": "center",
         "format": "\n{usage}",
         "interval": 2,
-        "on-click": "uwsm-app -- kitty --class htop -e htop",
+        "on-click": "dusky-run -- kitty --class htop -e htop",
         "tooltip-format": "CPU: {usage}%",
         "states": {
             "critical": 80
@@ -102,7 +102,7 @@
         "justify": "center",
         "format": "\n{percentage}",
         "interval": 2,
-        "on-click": "uwsm-app -- kitty --class io_monitor.sh -e $HOME/user_scripts/drives/io_monitor.sh",
+        "on-click": "dusky-run -- kitty --class io_monitor.sh -e $HOME/user_scripts/drives/io_monitor.sh",
         "tooltip-format": "Used: {used}GiB",
         "states": {
             "critical": 80
@@ -123,8 +123,8 @@
         "format": "{:%I\n%M}",
         "tooltip-format": "<big>{:%A, %d %B}</big>\n<tt><small>{calendar}</small></tt>",
         "interval": 60,
-        "on-click": "uwsm-app -- gnome-clocks",
-        "on-click-middle": "uwsm-app -- kitty --class peaclock -e peaclock",
+        "on-click": "dusky-run -- gnome-clocks",
+        "on-click-middle": "dusky-run -- kitty --class peaclock -e peaclock",
         "calendar": {
             "mode": "year",
             "mode-mon-col": 3,
@@ -169,15 +169,15 @@
         "return-type": "json",
         "format": "{}",
         "tooltip": true,
-        "on-click": "uwsm-app -- kitty --class system_update.sh --hold -e ~/user_scripts/update_dusky/system_update.sh --all"
+        "on-click": "dusky-run -- kitty --class system_update.sh --hold -e ~/user_scripts/update_dusky/system_update.sh --all"
     },
 
     "pulseaudio": {
         "justify": "center",
         "format": "{icon}\n{volume}",
         "format-muted": "󰖁\nMute",
-        "on-click": "uwsm-app -- pavucontrol",
-        "on-click-right": "uwsm-app -- \"$HOME/user_scripts/dusky_system/quickpanal/dusky_quickpanal.py\"",
+        "on-click": "dusky-run -- pavucontrol",
+        "on-click-right": "dusky-run -- \"$HOME/user_scripts/dusky_system/quickpanal/dusky_quickpanal.py\"",
         "format-icons": ["", "", ""],
         "tooltip-format": "Volume: {volume}%"
     },
@@ -189,7 +189,7 @@
         "format-icons": ["","","","","","","","","","","","","","",""],
         "tooltip": true,
         "tooltip-format": "Brightness: {percent}%",
-        "on-click": "uwsm-app -- \"$HOME/user_scripts/dusky_system/quickpanal/dusky_quickpanal.py\"",
+        "on-click": "dusky-run -- \"$HOME/user_scripts/dusky_system/quickpanal/dusky_quickpanal.py\"",
         "on-scroll-up": "brightnessctl set +5%",
         "on-scroll-down": "brightnessctl set 5%-",
         "min-length": 4,
@@ -202,8 +202,8 @@
         "format-disabled": "󰂲",
         "format-connected": "\n{num_connections}",
         "tooltip-format": "Devices connected: {num_connections}",
-        "on-click": "uwsm-app -- blueman-manager",
-        "on-click-right": "uwsm-app -- kitty --class bluetui -e bluetui"
+        "on-click": "dusky-run -- blueman-manager",
+        "on-click-right": "dusky-run -- kitty --class bluetui -e bluetui"
     },
 
     "custom/network": {
@@ -230,8 +230,8 @@
         "format": "",
         "tooltip": true,
         "tooltip-format": "Power Menu\nRMB - Control Center",
-        "on-click": "uwsm-app -- ~/user_scripts/wlogout/wlogout_scale.sh",
-        "on-click-right": "uwsm-app -- python3 ~/user_scripts/dusky_system/control_center/dusky_control_center.py"
+        "on-click": "dusky-run -- ~/user_scripts/wlogout/wlogout_scale.sh",
+        "on-click-right": "dusky-run -- python3 ~/user_scripts/dusky_system/control_center/dusky_control_center.py"
     },
 
     "custom/inhibit-suspend": {
@@ -242,7 +242,7 @@
         "return-type": "json",
         "interval": 5,
         "signal": 9,
-        "on-click": "uwsm-app -- \"$HOME/user_scripts/waybar/toggle_hypridle.sh\"",
+        "on-click": "dusky-run -- \"$HOME/user_scripts/waybar/toggle_hypridle.sh\"",
         "escape": true
     }
 }
