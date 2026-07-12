@@ -99,8 +99,8 @@ CORE_SYSTEM_DEFS = {
         "Allows remote access"
     ),
     "dusky_snapshot.timer": (
-        "3 Day Auto Snapshots (Backup)",
-        "Triggers a snapshot automaticaly every 3 days, while automatically cleaning up the oldest snapshot (max 6)."
+        "8 PM Daily Snapshots (Backup)",
+        "Triggers a snapshot automaticaly everyday at 8PM, while automatically cleaning up the oldest snapshot (max 6)."
     ),
     "zram-recompress.timer": (
         "ZRAM 15M Cold Pages Compressor",
