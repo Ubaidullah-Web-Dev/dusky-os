@@ -78,12 +78,12 @@
   "cpu": {
     "interval": 2,
     "format": "󰍛 {usage}%",
-    "on-click-right": "dusky-run -- kitty --class htop -e htop"
+    "on-click-right": "dusky-run kitty --class htop -e htop"
   },
   "memory": {
     "interval": 2,
     "format": "󰍛 {percentage}%",
-    "on-click-right": "dusky-run -- kitty --class io_monitor.sh -e $HOME/user_scripts/drives/io_monitor.sh",
+    "on-click-right": "dusky-run kitty --class io_monitor.sh -e $HOME/user_scripts/drives/io_monitor.sh",
     "states": {
       "warning": 70,
       "critical": 90
@@ -110,7 +110,7 @@
     "return-type": "json",
     "interval": 5,
     "signal": 9,
-    "on-click": "dusky-run -- ~/user_scripts/waybar/toggle_hypridle.sh",
+    "on-click": "dusky-run ~/user_scripts/waybar/toggle_hypridle.sh",
     "escape": true
   },
   "network": {
@@ -177,12 +177,12 @@
     "format-off": "󰂲",
     "format-connected": "󰂱",
     "tooltip-format": "Devices connected: {num_connections}",
-    "on-click": "dusky-run -- blueman-manager",
-    "on-click-right": "dusky-run -- kitty --class bluetui -e bluetui"
+    "on-click": "dusky-run blueman-manager",
+    "on-click-right": "dusky-run kitty --class bluetui -e bluetui"
   },
   "pulseaudio": {
     "format": "{icon} {volume}%",
-    "on-click": "dusky-run -- pavucontrol",
+    "on-click": "dusky-run pavucontrol",
     "on-click-right": "pactl set-sink-mute @DEFAULT_SINK@ toggle",
     "tooltip-format": "Playing at {volume}%",
     "scroll-step": 5,

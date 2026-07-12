@@ -156,7 +156,7 @@
         "return-type": "json",
         "interval": 5,
         "signal": 9,
-        "on-click": "dusky-run -- ~/user_scripts/waybar/toggle_hypridle.sh",
+        "on-click": "dusky-run ~/user_scripts/waybar/toggle_hypridle.sh",
         "escape": true
     },
 
@@ -182,29 +182,29 @@
         "return-type": "json",
         "format": "{}",
         "tooltip": true,
-        "on-click": "dusky-run -- kitty --class system_update.sh --hold -e ~/user_scripts/update_dusky/system_update.sh --all"
+        "on-click": "dusky-run kitty --class system_update.sh --hold -e ~/user_scripts/update_dusky/system_update.sh --all"
     },
 
     "custom/snip": {
         "format": "󰆞",
         "tooltip": true,
         "tooltip-format": "Screenshot",
-        "on-click": "dusky-run -- ~/user_scripts/images/dusky_screenshot.sh --region --freeze --no-notify --smart",
-        "on-click-right": "dusky-run -- ~/user_scripts/images/dusky_screenshot.sh --region --freeze --annotate --no-notify --tool arrow --smart"
+        "on-click": "dusky-run ~/user_scripts/images/dusky_screenshot.sh --region --freeze --no-notify --smart",
+        "on-click-right": "dusky-run ~/user_scripts/images/dusky_screenshot.sh --region --freeze --annotate --no-notify --tool arrow --smart"
     },
 
     "custom/clip": {
         "format": "",
         "tooltip": true,
         "tooltip-format": "Clipboard",
-        "on-click": "dusky-run -- pkill rofi; rofi -modi 'clipboard:~/user_scripts/rofi/rofi_clipboard.sh' -show clipboard"
+        "on-click": "dusky-run pkill rofi; rofi -modi 'clipboard:~/user_scripts/rofi/rofi_clipboard.sh' -show clipboard"
     },
 
     "custom/calculator": {
         "format": "",
         "tooltip": true,
         "tooltip-format": "Calculator",
-        "on-click": "dusky-run -- pkill rofi; ~/user_scripts/rofi/calculator.sh"
+        "on-click": "dusky-run pkill rofi; ~/user_scripts/rofi/calculator.sh"
     },
 
     "custom/net-speed": {
@@ -231,8 +231,8 @@
         "format-connected": "󰂱 {num_connections}",
         "tooltip-format": "{controller_alias}\n{controller_address}",
         "tooltip-format-connected": "Connected: {num_connections}",
-        "on-click": "dusky-run -- blueman-manager",
-        "on-click-right": "dusky-run -- kitty --class bluetui -e bluetui"
+        "on-click": "dusky-run blueman-manager",
+        "on-click-right": "dusky-run kitty --class bluetui -e bluetui"
     },
 
     "tray": {
@@ -256,8 +256,8 @@
     "clock": {
         "format": "{:%I:%M}",
         "tooltip-format": "<big>{:%Y %B}</big>\n<tt><small>{calendar}</small></tt>",
-        "on-click-right": "dusky-run -- gnome-clocks",
-        "on-click-middle": "dusky-run -- kitty --class peaclock -e peaclock"
+        "on-click-right": "dusky-run gnome-clocks",
+        "on-click-middle": "dusky-run kitty --class peaclock -e peaclock"
     },
 
     "battery": {
@@ -276,7 +276,7 @@
         "device": "intel_backlight",
         "format": "{icon} {percent}%",
         "format-icons": [" ", " "],
-        "on-click": "dusky-run -- ~/user_scripts/dusky_system/quickpanal/dusky_quickpanal.py",
+        "on-click": "dusky-run ~/user_scripts/dusky_system/quickpanal/dusky_quickpanal.py",
         "on-scroll-up": "brightnessctl s +5%",
         "on-scroll-down": "brightnessctl s 5%-",
         "tooltip-format": "Brightness: {percent}%"
@@ -286,7 +286,7 @@
         "format": "{icon} {volume}%",
         "format-muted": "󰖁",
         "format-icons": { "default": ["󰕿", "󰖀", "󰕾"] },
-        "on-click": "dusky-run -- pavucontrol",
+        "on-click": "dusky-run pavucontrol",
         "on-scroll-up": "pactl set-sink-volume @DEFAULT_SINK@ +5%",
         "on-scroll-down": "pactl set-sink-volume @DEFAULT_SINK@ -5%",
         "tooltip-format": "Volume: {volume}%\nLMB: Pavucontrol"

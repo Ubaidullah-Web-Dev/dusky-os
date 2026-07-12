@@ -113,7 +113,7 @@
 
   "custom/launcher": {
     "format": "󰣇",
-    "on-click": "dusky-run -- python3 ~/user_scripts/dusky_system/control_center/dusky_control_center.py",
+    "on-click": "dusky-run python3 ~/user_scripts/dusky_system/control_center/dusky_control_center.py",
     "on-click-right": "gdbus call --session --dest org.dusky.quickpanal --object-path /org/dusky/quickpanal --method org.freedesktop.Application.Activate '{}'",
     "tooltip-format": "Control Center"
   },
@@ -122,8 +122,8 @@
     "format": "{:%I:%M %p}",
     "format-alt": "󰃭 {:%A, %B %d}",
     "tooltip-format": "<tt><span size='12pt' font='JetBrainsMono Nerd Font'>{calendar}</span></tt>",
-    "on-click-right": "dusky-run -- gnome-clocks",
-    "on-click-middle": "dusky-run -- kitty --class peaclock -e peaclock",
+    "on-click-right": "dusky-run gnome-clocks",
+    "on-click-middle": "dusky-run kitty --class peaclock -e peaclock",
     "calendar": {
       "mode": "month",
       "mode-mon-col": 3,
@@ -152,7 +152,7 @@
     "return-type": "json",
     "interval": 5,
     "signal": 9,
-    "on-click": "dusky-run -- ~/user_scripts/waybar/toggle_hypridle.sh",
+    "on-click": "dusky-run ~/user_scripts/waybar/toggle_hypridle.sh",
     "escape": true
   },
 
@@ -169,7 +169,7 @@
     "return-type": "json",
     "format": "{}",
     "tooltip": true,
-    "on-click": "dusky-run -- kitty --class system_update.sh --hold -e ~/user_scripts/update_dusky/system_update.sh --all"
+    "on-click": "dusky-run kitty --class system_update.sh --hold -e ~/user_scripts/update_dusky/system_update.sh --all"
   },
 
   "custom/notification": {
@@ -191,9 +191,9 @@
   "custom/theme-toggle": {
     "format": "",
     "tooltip-format": "Theme Controls\n\n LMB  Dark Mode\n RMB  Light Mode\n MMB  Wallpaper",
-    "on-click": "dusky-run -- ~/user_scripts/theme_matugen/theme_ctl.sh set --mode dark",
-    "on-click-right": "dusky-run -- ~/user_scripts/theme_matugen/theme_ctl.sh set --mode light",
-    "on-click-middle": "dusky-run -- ~/user_scripts/images/wallpaper_selector.py"
+    "on-click": "dusky-run ~/user_scripts/theme_matugen/theme_ctl.sh set --mode dark",
+    "on-click-right": "dusky-run ~/user_scripts/theme_matugen/theme_ctl.sh set --mode light",
+    "on-click-middle": "dusky-run ~/user_scripts/images/wallpaper_selector.py"
   },
 
   "tray": {
@@ -280,8 +280,8 @@
     "tooltip-format-connected": "{controller_alias}\n\n{device_enumerate}",
     "tooltip-format-enumerate-connected": "󰂱 {device_alias}",
     "tooltip-format-enumerate-connected-battery": "󰂱 {device_alias} ({device_battery_percentage}%)",
-    "on-click": "dusky-run -- blueman-manager",
-    "on-click-right": "dusky-run -- kitty --class bluetui -e bluetui"
+    "on-click": "dusky-run blueman-manager",
+    "on-click-right": "dusky-run kitty --class bluetui -e bluetui"
   },
 
   "pulseaudio#output": {
@@ -298,8 +298,8 @@
       "car": "",
       "default": ["󰕿", "󰖀", "󰕾"]
     },
-    "on-click": "dusky-run -- pavucontrol",
-    "on-click-right": "dusky-run -- kitty --class cava -e cava",
+    "on-click": "dusky-run pavucontrol",
+    "on-click-right": "dusky-run kitty --class cava -e cava",
     "on-click-middle": "pactl set-sink-mute @DEFAULT_SINK@ toggle",
     "on-scroll-up": "pactl set-sink-volume @DEFAULT_SINK@ +5%",
     "on-scroll-down": "pactl set-sink-volume @DEFAULT_SINK@ -5%",
@@ -311,9 +311,9 @@
   "backlight": {
     "format": "{icon} {percent}",
     "tooltip-format": "Brightness: {percent}%\n\n LMB  Brightness\n RMB  Night Light\n MMB  Shaders",
-    "on-click": "dusky-run -- ~/user_scripts/dusky_system/quickpanal/dusky_quickpanal.py",
-    "on-click-right": "dusky-run -- ~/user_scripts/dusky_system/quickpanal/dusky_quickpanal.py",
-    "on-click-middle": "dusky-run -- ~/user_scripts/rofi/shader_menu.sh",
+    "on-click": "dusky-run ~/user_scripts/dusky_system/quickpanal/dusky_quickpanal.py",
+    "on-click-right": "dusky-run ~/user_scripts/dusky_system/quickpanal/dusky_quickpanal.py",
+    "on-click-middle": "dusky-run ~/user_scripts/rofi/shader_menu.sh",
     "on-scroll-up": "brightnessctl set +5%",
     "on-scroll-down": "brightnessctl set 5%-",
     "format-icons": ["󰃞", "󰃟", "󰃠"]
@@ -322,7 +322,7 @@
   "cpu": {
     "interval": 2,
     "format": "󰍛 {usage}%",
-    "on-click": "dusky-run -- kitty -e btop",
+    "on-click": "dusky-run kitty -e btop",
     "states": {
       "warning": 70,
       "critical": 90
@@ -332,7 +332,7 @@
   "memory": {
     "interval": 2,
     "format": "󰘚 {percentage}%",
-    "on-click": "dusky-run -- kitty --class io_monitor.sh -e $HOME/user_scripts/drives/io_monitor.sh",
+    "on-click": "dusky-run kitty --class io_monitor.sh -e $HOME/user_scripts/drives/io_monitor.sh",
     "states": {
       "warning": 70,
       "critical": 90
@@ -345,8 +345,8 @@
       "warning": 30,
       "critical": 15
     },
-    "on-click": "dusky-run -- kitty --class power_saver.sh --hold -e $HOME/user_scripts/battery/power_saving/power_saver.sh",
-    "on-click-right": "dusky-run -- kitty --class dusky_hypridle.sh -e $HOME/user_scripts/hypridle/dusky_hypridle.sh",
+    "on-click": "dusky-run kitty --class power_saver.sh --hold -e $HOME/user_scripts/battery/power_saving/power_saver.sh",
+    "on-click-right": "dusky-run kitty --class dusky_hypridle.sh -e $HOME/user_scripts/hypridle/dusky_hypridle.sh",
     "format": "{icon} {capacity}%",
     "format-charging": "󰂄 {capacity}%",
     "format-plugged": "󰚥 {capacity}%",
@@ -357,7 +357,7 @@
 
   "custom/power": {
     "format": "⏻",
-    "on-click": "dusky-run -- ~/user_scripts/wlogout/wlogout_scale.sh",
+    "on-click": "dusky-run ~/user_scripts/wlogout/wlogout_scale.sh",
     "tooltip-format": "Power Menu"
   }
 }
