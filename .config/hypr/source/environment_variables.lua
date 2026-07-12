@@ -89,7 +89,7 @@ hl_env("EDITOR", "nvim")
 hl_env("VISUAL", "nvim")
 hl_env("LIBVIRT_DEFAULT_URI", "qemu:///system")
 
--- 9. Clipboard persistence - dynamic path from toggler - FIXED 2026-07-11
+-- 9. Clipboard persistence - dynamic path from toggler
 -- Reads ~/.config/dusky/settings/cliphist_db_env atomically written by 390_clipboard_persistance.py
 do
   local f = io.open(home.. "/.config/dusky/settings/cliphist_db_env", "r")
