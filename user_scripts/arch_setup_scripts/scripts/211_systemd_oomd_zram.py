@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Hyprland 0.55.4 + systemd 261.1 + kernel 7.1 OOM protection - v5 actual fixed
-Arch Linux latest only (July 2026). systemd 261, Python 3.14.6.
+Hyprland 0.55.4 + systemd 261.1 + kernel 7.1 OOM protection - v6 actual fixed
+Arch Linux latest only (July 2026). systemd 261.1, Python 3.14.6.
 """
 import os
 import sys
@@ -23,7 +23,6 @@ def _bootstrap_rich() -> None:
         return
     except ImportError:
         pass
-    # Arch only per spec
     if not shutil.which("pacman"):
         print("python-rich not found and pacman missing, please install python-rich", file=sys.stderr)
         sys.exit(1)
@@ -33,7 +32,6 @@ def _bootstrap_rich() -> None:
     if result.returncode != 0:
         print("Failed to install python-rich, please install manually", file=sys.stderr)
         sys.exit(1)
-    # re-exec to pick up newly installed module
     os.execv(sys.executable, [sys.executable, str(SELF_PATH), *sys.argv[1:]])
 
 _bootstrap_rich()
@@ -46,8 +44,6 @@ from rich import box
 console: Final[Console] = Console()
 
 # --- Rules (systemd 261+) ---
-# Validated: .oomrule files loaded from /etc/systemd/oomd/rules.d, units opt in via OOMRules=
-# Action values mandatory and must be kill-all|kill-by-pgscan|kill-by-swap in 261
 PRESSURE_RULE: Final[str] = """[Rule]
 # PSI full avg10 >75% for 20s -> kill heaviest pgscan child
 MemoryPressureAbove=75%
@@ -63,7 +59,6 @@ Action=kill-by-swap
 """
 
 OOMD_TUNE: Final[str] = """[OOM]
-# Old-style fallbacks still valid in 261, new hook support added in 260
 DefaultMemoryPressureLimit=75%
 DefaultMemoryPressureDurationSec=20s
 SwapUsedLimit=90%
@@ -76,7 +71,6 @@ ManagedOOMSwap=kill
 ManagedOOMMemoryPressureLimit=70%
 ManagedOOMPreference=none
 OOMRules=30-desktop-pressure 30-desktop-swap
-# % is relative to installed RAM, converted to bytes by systemd
 MemoryHigh=85%
 MemoryMax=90%
 MemoryAccounting=yes
@@ -94,14 +88,13 @@ MemoryAccounting=yes
 
 SESSION_SLICE: Final[str] = """[Slice]
 ManagedOOMPreference=avoid
-# 256M hard protection - keep low to avoid pinning too much on 4GB boxes
 MemoryMin=256M
 MemoryAccounting=yes
 """
 
 COMPOSITOR_SCOPE: Final[str] = """[Scope]
-# session-.scope.d is valid via truncated prefix logic: foo-bar-baz searches foo-.d
-# Scope units have no exec, OOMScoreAdjust defaults to inherit for non-service units
+# session-.scope.d valid via truncated prefix: session-3.scope searches session-.scope.d
+# OOMScoreAdjust NOT valid for Scope (only Service/Socket/Mount/Swap in systemd.exec)
 OOMPolicy=continue
 ManagedOOMPreference=avoid
 MemoryAccounting=yes
@@ -114,12 +107,9 @@ OOMPolicy=continue
 
 USER_CONF: Final[str] = """[Manager]
 DefaultOOMScoreAdjust=100
-# yes forces accounting, auto would let systemd decide. Keep yes for reliable pressure watch on Arch desktop.
 DefaultMemoryPressureWatch=yes
 """
 
-# ManagedOOMPreference=omit requires xattr and same UID owner for effective avoidance when parent is root-owned.
-# For user services (UID 1000) under user@.service, root slice -.slice will ignore xattrs, but user-1000.slice calculation respects them.
 OOM_SHIELD: Final[str] = """[Service]
 OOMScoreAdjust=-100
 OOMPolicy=continue
@@ -128,7 +118,6 @@ MemoryAccounting=yes
 """
 
 OOMD_SERVICE_SHIELD: Final[str] = """[Service]
-# Upstream oomd already ships -1000, this drop-in enforces it if vendor changes
 OOMScoreAdjust=-1000
 """
 
@@ -138,15 +127,17 @@ CRITICAL_USER: Final[tuple[str, ...]] = (
     "xdg-desktop-portal-gtk.service", "dbus.service", "mako.service",
 )
 
+# v6: NO --property=OOMScoreAdjust - scope does not support it on systemd 261
+# Correct method is inheritance via /proc/self/oom_score_adj (unprivileged may only increase)
 DUSKY_RUN_WRAPPER: Final[str] = """#!/bin/bash
-# dusky-run v5 - unprivileged OOM score elevation for transient scopes
-# systemd 261: OOMScoreAdjust in [Scope] defaults to inherit for scopes, so we set parent adj
-# New process inherits parent's oom_score_adj (kernel proc docs). Unprivileged may only increase.
+# dusky-run v6 - unprivileged OOM score elevation for transient scopes
+# systemd 261: Scope units do NOT support OOMScoreAdjust property -> Unknown assignment
+# So we set parent's oom_score_adj and let systemd-run --scope inherit it
+# Kernel: new process inherits parent's oom_score_adj, unprivileged may increase
 set -euo pipefail
 if [[ $# -eq 0 ]]; then
   echo "usage: dusky-run <cmd> [args...]" >&2; exit 1
 fi
-# 200 = more killable. Increase allowed for unprivileged.
 if ! printf '%d\\n' 200 > /proc/self/oom_score_adj 2>/dev/null; then
   echo "dusky-run: warning: cannot set oom_score_adj" >&2
 fi
@@ -176,7 +167,7 @@ def specs() -> list[FileSpec]:
         FileSpec(dest=Path("/etc/systemd/system/user@.service.d/90-desktop-oom-score.conf"), content=USER_MANAGER_SCORE, desc="user@ -100"),
         FileSpec(dest=Path("/etc/systemd/user.conf.d/90-desktop-oom.conf"), content=USER_CONF, desc="DefaultOOMScoreAdjust 100"),
         FileSpec(dest=Path("/etc/systemd/system/systemd-oomd.service.d/90-desktop-oomd.conf"), content=OOMD_SERVICE_SHIELD, desc="systemd-oomd kernel-OOM protection"),
-        FileSpec(dest=Path("/usr/local/bin/dusky-run"), content=DUSKY_RUN_WRAPPER, mode=0o755, desc="dusky-run v5 fixed"),
+        FileSpec(dest=Path("/usr/local/bin/dusky-run"), content=DUSKY_RUN_WRAPPER, mode=0o755, desc="dusky-run v6 corrected"),
     ]
     for svc in CRITICAL_USER:
         s.append(FileSpec(dest=Path(f"/etc/systemd/user/{svc}.d/90-desktop-oom.conf"), content=OOM_SHIELD, desc=f"shield {svc} omit -100"))
@@ -246,14 +237,12 @@ def reload_user_manager() -> None:
             "XDG_RUNTIME_DIR": runtime,
             "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime}/bus",
         }
-        # Prefer run0 (systemd 261) over runuser
         if shutil.which("run0"):
             cmd = ["run0", f"--user={sudo_user}", "systemctl", "--user", "daemon-reload"]
             result = subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
             if result.returncode != 0:
                 console.print(f"[yellow]run0 reload failed: {result.stderr.strip()}[/]")
             return
-        # Fallback runuser - preserve env with -w
         subprocess.run(["runuser", "-u", sudo_user, "-w", "XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS", "--",
                         "systemctl", "--user", "daemon-reload"],
                        env={**os.environ, **env}, check=False,
@@ -274,7 +263,7 @@ def main() -> None:
         console.print("[red]cgroup v2 required for systemd-oomd[/]")
         sys.exit(1)
 
-    console.print(Panel.fit("[bold cyan]Hyprland 0.55.4 + systemd 261.1 OOM fix v5 - audited[/]", box=box.DOUBLE))
+    console.print(Panel.fit("[bold cyan]Hyprland 0.55.4 + systemd 261.1 OOM fix v6 - corrected[/]", box=box.DOUBLE))
     all_specs = specs()
     obsoletes = obsolete_paths()
 
@@ -323,7 +312,6 @@ def main() -> None:
     console.print(Panel.fit(
         f"[bold green]✔ {updated} updated, {len(all_specs)-updated} up-to-date\n"
         f"✔ Removed {removed} obsolete files\n"
-        f"✔ Keep in autostart: hyprland exec for choom if desired\n"
         f"✔ Verify: oomctl dump && systemctl status systemd-oomd\n"
         f"✔ Re-login required for DefaultOOMScoreAdjust to apply[/]",
         box=box.ROUNDED))
