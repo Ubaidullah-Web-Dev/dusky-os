@@ -346,26 +346,12 @@ if (( needs_reexec )); then
     systemctl daemon-reexec || true
 fi
 
-# --- Fix #3: Correct user manager re-exec enumeration ---
-# systemd --user runs as user, not root, so pgrep -u root finds nothing.
-# Enumerate via loginctl (systemd 261) or fallback to /run/user.
+# --- Re-exec user manager instance for active sessions (fixed for systemd 261) ---
 if command -v loginctl >/dev/null 2>&1; then
-    while read -r uid _; do
+    while read -r uid username _; do
         [[ "$uid" =~ ^[0-9]+$ ]] || continue
-        if user="$(id -un "$uid" 2>/dev/null)"; then
-            if [[ -d "/run/user/$uid" ]]; then
-                sudo -u "$user" XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user daemon-reexec >/dev/null 2>&1 || true
-            fi
-        fi
+        systemctl --user -M "${username}@.host" daemon-reexec >/dev/null 2>&1 || true
     done < <(loginctl --no-legend list-users 2>/dev/null || true)
-else
-    for d in /run/user/[0-9]*; do
-        [[ -d "$d" ]] || continue
-        uid="${d##*/}"
-        if user="$(id -un "$uid" 2>/dev/null)"; then
-            sudo -u "$user" XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user daemon-reexec >/dev/null 2>&1 || true
-        fi
-    done
 fi
 
 # --- Hardened Live Verification ---
