@@ -72,6 +72,7 @@ if [[ $EUID -ne 0 && $DRY_RUN -eq 0 ]]; then
 fi
 
 # --- 3. System State Detection ---
+declare -i SYSTEM_RAM_KB=0
 declare -i SYSTEM_RAM_GB=0
 declare -i ACTIVE_ZRAM_COUNT=0
 declare -i ACTIVE_OTHER_COUNT=0
@@ -79,7 +80,8 @@ ZRAM_MAX_PRIO=""
 OTHER_MAX_PRIO=""
 
 if [[ $(< /proc/meminfo) =~ MemTotal:[[:space:]]+([0-9]+) ]]; then
-    SYSTEM_RAM_GB=$(( BASH_REMATCH[1] / 1048576 ))
+    SYSTEM_RAM_KB=$(( BASH_REMATCH[1] ))
+    SYSTEM_RAM_GB=$(( SYSTEM_RAM_KB / 1048576 ))
 else
     die "FATAL: Could not parse /proc/meminfo natively."
 fi
@@ -115,7 +117,8 @@ declare -i EXPECTED_DIRTY_EXPIRE
 declare -i EXPECTED_MGLRU_TTL
 
 # 30 GiB demarcation (note: GiB, not GB)
-if [[ "$MODE" == "AGGRESSIVE" ]] || [[ "$MODE" == "AUTO" && SYSTEM_RAM_GB -ge 30 ]]; then
+declare -i THRESHOLD_KB=$((30 * 1048576))
+if [[ "$MODE" == "AGGRESSIVE" ]] || { [[ "$MODE" == "AUTO" ]] && (( SYSTEM_RAM_KB >= THRESHOLD_KB )); }; then
     EXPECTED_MODE="PERFORMANCE_LEAN (32GB+)"
     EXPECTED_SWAPPINESS=150
     EXPECTED_VFS_PRESSURE=100
