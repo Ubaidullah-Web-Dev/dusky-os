@@ -2964,6 +2964,11 @@ init_sudo() {
         return 0
     fi
 
+    if sudo -n true 2>/dev/null; then
+        log INFO "Passwordless sudo detected. Proceeding..."
+        return 0
+    fi
+
     log INFO "Acquiring sudo privileges for execution sequence..."
     sudo -v || { log ERROR "Sudo auth failed."; exit 1; }
 

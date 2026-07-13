@@ -90,6 +90,10 @@ log() {
 
 # 6. Privilege Escalation Management
 init_sudo() {
+    if sudo -n true 2>/dev/null; then
+        log "INFO" "Passwordless sudo detected. Proceeding..."
+        return 0
+    fi
     log "INFO" "Root privileges required for upcoming patches. Authenticating..."
     if ! sudo -v; then
         log "ERROR" "Sudo authentication failed. Cannot apply root patches."

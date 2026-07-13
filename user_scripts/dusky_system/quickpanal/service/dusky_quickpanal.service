@@ -32,6 +32,7 @@ RestartMode=direct
 RestartSec=250ms
 RestartSteps=5
 RestartMaxDelaySec=4s
+RestartPreventExitStatus=5
 
 # --- Anti-Hang & Freeze Protection ---
 TimeoutStopSec=2s

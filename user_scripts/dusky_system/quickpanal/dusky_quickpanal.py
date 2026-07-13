@@ -4,9 +4,13 @@ Dusky Quick Panal: Configurable Main Execution
 Dynamically parses config.toml and applies it to the GTK components via tomllib.
 """
 
-from __future__ import annotations
 import sys
 import os
+
+# Safe check to prevent systemd service restart loops when running headless
+if not os.environ.get("WAYLAND_DISPLAY") and not os.environ.get("DISPLAY"):
+    sys.stderr.write("dusky-quickpanal: error: WAYLAND_DISPLAY and DISPLAY are not set. Cannot run GUI application.\n")
+    sys.exit(5)
 import json
 import gc
 import signal

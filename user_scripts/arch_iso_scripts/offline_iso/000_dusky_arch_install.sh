@@ -33,7 +33,6 @@ declare -ra CHROOT_SEQUENCE=(
   "135_plymouth_setup.sh"
   "130_chroot_package_installer.sh --auto --cachyos"
   "131_chroot_aur_packages.sh --auto --cachyos"
-  "133_uwsm_gpu_env.py --auto"
   "151_systemd_bootloader.sh"
   "156_snapper_isolation_subvolume.sh --auto"
   "158_mkinitcpio_restore_and_generate.sh"

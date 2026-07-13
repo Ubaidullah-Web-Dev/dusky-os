@@ -63,7 +63,7 @@
     "custom/logout": {
         "format": "󰍃",
         "tooltip-format": "Logout",
-        "on-click": "uwsm stop"
+        "on-click": "hyprctl dispatch exit"
     },
     "custom/reboot": {
         "format": "󰜉",
