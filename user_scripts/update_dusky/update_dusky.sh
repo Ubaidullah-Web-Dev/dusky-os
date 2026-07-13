@@ -198,6 +198,8 @@ declare -ra UPDATE_SEQUENCE=(
     "U | 005_hypr_custom_config_setup.py"
     "U | 006_animation_default.sh"
 #    "U | 005_hypr_custom_config_setup.py --force --workspace_rules"
+    "U | 005_hypr_custom_config_setup.py --force --environment_variables"
+    "U | 005_hypr_custom_config_setup.py --force --autostart"
     "U | 010_package_removal.sh --auto"
 
 
