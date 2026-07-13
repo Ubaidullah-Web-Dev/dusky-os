@@ -159,8 +159,37 @@ sleep 0.3
 python3 "$SCRIPT" --ram --quiet; sleep 0.4
 python3 "$SCRIPT" --disk --quiet; sleep 0.5
 CLIPHIST_DB_PATH=$DISK_DB cliphist list | grep -F "$RT_WL" >/dev/null && ok "wl-copy round-trip preserves DISK entry" || bad "wl-copy round-trip lost DISK entry"
+say "G: clipboard copy-on-close text persistence (Wayland test)"
+M_PERSIST="VERIFY_PERSIST_$(date +%s)_$RANDOM"
+wl-copy --foreground "$M_PERSIST" &
+WL_PID=$!
+sleep 0.8
+kill "$WL_PID" 2>/dev/null || true
+wait "$WL_PID" 2>/dev/null || true
+sleep 0.2
+PASTED=$(wl-paste -n 2>/dev/null || true)
+if [[ "$PASTED" == "$M_PERSIST" ]]; then
+  ok "clipboard selection persisted after source closed"
+else
+  bad "clipboard selection lost after source closed (persistence failed, got: ${PASTED:0:40})"
+fi
 
-say "F: harness still alive"
+say "H: clipboard copy-on-close image persistence (Wayland test)"
+M_IMG_PERSIST="DUMMY_IMAGE_DATA_$(date +%s)_$RANDOM"
+printf '%s' "$M_IMG_PERSIST" | wl-copy --type image/png --foreground &
+WL_IMG_PID=$!
+sleep 0.8
+kill "$WL_IMG_PID" 2>/dev/null || true
+wait "$WL_IMG_PID" 2>/dev/null || true
+sleep 0.2
+PASTED_IMG=$(wl-paste --type image/png 2>/dev/null || true)
+if [[ "$PASTED_IMG" == "$M_IMG_PERSIST" ]]; then
+  ok "clipboard image selection persisted after source closed"
+else
+  bad "clipboard image selection lost after source closed (persistence failed, got: ${PASTED_IMG:0:40})"
+fi
+
+say "I: harness still alive"
 ok "test harness completed without being killed"
 
 say "SUMMARY"
