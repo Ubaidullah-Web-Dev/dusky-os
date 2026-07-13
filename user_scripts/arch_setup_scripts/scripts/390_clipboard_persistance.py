@@ -154,8 +154,8 @@ def reload(db):
     ids_before=list_ids(db)
     update_session_env(db); kill_watchers()
     
-    cmd_t=[wp,"--type","text","--watch",cb,"store"]
-    cmd_i=[wp,"--type","image","--watch",cb,"store"]
+    cmd_t = ["sh", "-c", 'exec wl-paste --type text --watch sh -c "[ \\\"\\$CLIPBOARD_STATE\\\" = data ] && cliphist store"']
+    cmd_i = ["sh", "-c", 'exec wl-paste --type image --watch sh -c "[ \\\"\\$CLIPBOARD_STATE\\\" = data ] && cliphist store"']
     try:
         subprocess.Popen(cmd_t,env=denv,start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         subprocess.Popen(cmd_i,env=denv,start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
