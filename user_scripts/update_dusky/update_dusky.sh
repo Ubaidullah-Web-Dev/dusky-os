@@ -284,7 +284,7 @@ declare -ra UPDATE_SEQUENCE=(
 #    "U | 375_cursor_theme_bibata_classic_modern.sh"
 #    "S | 380_nvidia_open_source.sh"
 #    "S | 385_waydroid_setup.sh"
-#    "U | 390_clipboard_persistance.py"
+    "U | 390_clipboard_persistance.py --ram --quiet"
 #    "S | 395_intel_media_sdk_check.sh"
 #    "U | 400_firefox_matugen_pywalfox.sh"
 #     "U | 402_gecko_engine_colors_extention.sh"
