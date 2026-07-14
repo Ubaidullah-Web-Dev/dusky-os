@@ -116,17 +116,6 @@ def get_active_profile() -> str:
                 return name
         except Exception:
             pass
-            
-    # Fallback/Inference
-    for target in TARGETS:
-        target_path = GEMINI_DIR / target
-        if target_path.is_symlink():
-            try:
-                resolved = target_path.readlink()
-                if PROFILES_DIR in resolved.parents:
-                    return resolved.parent.name
-            except Exception:
-                pass
     return None
 
 def stash_keyring(profile_name: str):
@@ -165,43 +154,72 @@ def ensure_profile_structure(profile_name: str):
     """Ensure the profile directories exist."""
     profile_path = PROFILES_DIR / profile_name
     profile_path.mkdir(parents=True, exist_ok=True)
-    for target in TARGETS:
-        (profile_path / target).mkdir(parents=True, exist_ok=True)
 
-def migrate_existing_to_profile(profile_name: str):
-    """Migrate existing non-symlink directories to a profile."""
-    ensure_profile_structure(profile_name)
-    profile_path = PROFILES_DIR / profile_name
+def migrate_to_global():
+    """Migrate from symlink-based profiles to global directories with key stashing."""
+    if not PROFILES_DIR.exists():
+        return
+
+    # Determine currently active profile
+    active = get_active_profile()
     
+    # Convert symlinks to real directories
     for target in TARGETS:
         target_path = GEMINI_DIR / target
-        if target_path.exists() and not target_path.is_symlink():
-            console.print(f"[bold blue][[Info][/bold blue] Migrating existing directory {target_path} to profile '[bold green]{profile_name}[/bold green]'...")
-            dest_path = profile_path / target
-            if dest_path.exists():
-                shutil.rmtree(dest_path)
-            shutil.move(str(target_path), str(dest_path))
-
-def setup_symlinks(profile_name: str):
-    """Link the main config paths to the target profile."""
-    profile_path = PROFILES_DIR / profile_name
-    
-    for target in TARGETS:
-        target_path = GEMINI_DIR / target
-        if target_path.exists() or target_path.is_symlink():
-            if target_path.is_symlink():
-                target_path.unlink()
-            elif target_path.is_dir():
-                backup_path = GEMINI_DIR / f"{target}.bak"
-                console.print(f"[bold yellow][[Warning][/bold yellow] Unexpected directory at {target_path}, backing up to {backup_path}")
-                if backup_path.exists():
-                    shutil.rmtree(backup_path)
-                shutil.move(str(target_path), str(backup_path))
+        if target_path.is_symlink():
+            resolved = target_path.resolve()
+            target_path.unlink()
+            if resolved.exists():
+                shutil.copytree(resolved, target_path, symlinks=True, dirs_exist_ok=True)
             else:
-                target_path.unlink()
+                target_path.mkdir(parents=True, exist_ok=True)
+        elif not target_path.exists():
+            target_path.mkdir(parents=True, exist_ok=True)
+
+    # Merge data from all profiles into the new global directories
+    for profile_dir in PROFILES_DIR.iterdir():
+        if not profile_dir.is_dir():
+            continue
+        profile_name = profile_dir.name
+        
+        # Merge target directories into global ones
+        for target in TARGETS:
+            profile_target_path = profile_dir / target
+            if profile_target_path.exists() and profile_target_path.is_dir():
+                global_target_path = GEMINI_DIR / target
                 
-        target_path.symlink_to(profile_path / target)
-        console.print(f"[bold dim][[Link] {target_path} -> {profile_path / target}[/bold dim]")
+                # Merge brain
+                profile_brain = profile_target_path / "brain"
+                if profile_brain.exists():
+                    global_brain = global_target_path / "brain"
+                    global_brain.mkdir(parents=True, exist_ok=True)
+                    shutil.copytree(profile_brain, global_brain, symlinks=True, dirs_exist_ok=True)
+                
+                # Merge conversations
+                profile_convs = profile_target_path / "conversations"
+                if profile_convs.exists():
+                    global_convs = global_target_path / "conversations"
+                    global_convs.mkdir(parents=True, exist_ok=True)
+                    shutil.copytree(profile_convs, global_convs, symlinks=True, dirs_exist_ok=True)
+
+                # Merge history.jsonl
+                profile_hist = profile_target_path / "history.jsonl"
+                if profile_hist.exists():
+                    global_hist = global_target_path / "history.jsonl"
+                    try:
+                        lines = set()
+                        if global_hist.exists():
+                            lines.update(global_hist.read_text().splitlines())
+                        lines.update(profile_hist.read_text().splitlines())
+                        global_hist.write_text("\n".join(lines) + "\n")
+                    except Exception:
+                        pass
+                
+                # Clean up the migrated target directory from the profile
+                try:
+                    shutil.rmtree(profile_target_path)
+                except Exception:
+                    pass
 
 def switch_profile(profile_name: str):
     """Perform the full switch to the target profile."""
@@ -227,14 +245,8 @@ def switch_profile(profile_name: str):
             
     current_profile = get_active_profile()
     
-    # Check if migration is needed
-    needs_migration = any((GEMINI_DIR / t).exists() and not (GEMINI_DIR / t).is_symlink() for t in TARGETS)
-    if needs_migration:
-        migration_profile = "default"
-        console.print(f"[bold blue][[Info][/bold blue] Non-symlink directories detected. Performing initial migration to '[bold green]{migration_profile}[/bold green]' profile...")
-        migrate_existing_to_profile(migration_profile)
-        current_profile = migration_profile
-        ACTIVE_PROFILE_FILE.write_text(migration_profile)
+    # Perform migration from symlinks to global if necessary
+    migrate_to_global()
         
     # Stash keyring of current profile before switching away
     if current_profile:
@@ -242,9 +254,6 @@ def switch_profile(profile_name: str):
         
     # Ensure target profile folders exist
     ensure_profile_structure(profile_name)
-    
-    # Setup symlinks
-    setup_symlinks(profile_name)
     
     # Restore keyring for the new profile
     restore_keyring(profile_name)
@@ -259,8 +268,6 @@ def list_profiles_rich():
     active = get_active_profile()
     profiles = sorted([p.name for p in PROFILES_DIR.iterdir() if p.is_dir()])
     
-    needs_migration = any((GEMINI_DIR / t).exists() and not (GEMINI_DIR / t).is_symlink() for t in TARGETS)
-    
     table = Table(title="Available Antigravity Profiles", title_style="bold magenta", border_style="violet", expand=True)
     table.add_column("No.", justify="right", style="cyan", no_wrap=True)
     table.add_column("Status", justify="center", no_wrap=True)
@@ -268,20 +275,17 @@ def list_profiles_rich():
     table.add_column("Credentials State", justify="center", no_wrap=True)
     table.add_column("Storage Path", style="dim white")
     
-    if not profiles and needs_migration:
-        table.add_row("-", "⚠️", "Unmigrated Local Config", "Logged In", str(GEMINI_DIR))
-    else:
-        for idx, p in enumerate(profiles, start=1):
-            is_active = p == active
-            status_text = Text("● Active", style="bold green") if is_active else Text("○ Inactive", style="dim white")
+    for idx, p in enumerate(profiles, start=1):
+        is_active = p == active
+        status_text = Text("● Active", style="bold green") if is_active else Text("○ Inactive", style="dim white")
+        
+        token_file = PROFILES_DIR / p / "keyring_token.json"
+        session_status = Text("Logged In", style="bold green") if (token_file.exists() and token_file.stat().st_size > 0) else Text("Logged Out", style="yellow")
+        
+        path_str = "~/.gemini"
+        table.add_row(str(idx), status_text, p, session_status, path_str)
             
-            token_file = PROFILES_DIR / p / "keyring_token.json"
-            session_status = Text("Logged In", style="bold green") if (token_file.exists() and token_file.stat().st_size > 0) else Text("Logged Out", style="yellow")
-            
-            path_str = f"~/.gemini/profiles/{p}"
-            table.add_row(str(idx), status_text, p, session_status, path_str)
-            
-    if not profiles and not needs_migration:
+    if not profiles:
         console.print("\n[dim]No profiles created yet.[/dim]\n")
     else:
         console.print(table)
@@ -324,7 +328,7 @@ def print_help():
     if active:
         console.print(f"  ● [bold green]{active}[/bold green] (Currently selected)")
     else:
-        console.print("  ⚠️ [bold yellow]Unmigrated Local Config[/bold yellow]")
+        console.print("  ⚠️ [bold yellow]No Active Profile[/bold yellow]")
         
     console.print("\n[bold cyan]Available Profiles:[/bold cyan]")
     if profiles:
