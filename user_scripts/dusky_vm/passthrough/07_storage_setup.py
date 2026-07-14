@@ -74,15 +74,15 @@ def apply_acls(target_dir: Path) -> None:
     with console.status("[cyan]Validating parent directory traversal rights...", spinner="dots"):
         for parent in target_dir.parents:
             if str(parent) != "/":
-                if not check_acl_exists(parent, "user:qemu:--x"):
-                    subprocess.run(["setfacl", "-m", "u:qemu:x", str(parent)], check=False, stderr=subprocess.DEVNULL)
+                if not check_acl_exists(parent, "user:libvirt-qemu:--x"):
+                    subprocess.run(["setfacl", "-m", "u:libvirt-qemu:x", str(parent)], check=False, stderr=subprocess.DEVNULL)
                 
     # Grant full R/W/X to target directory and set defaults
     with console.status("[cyan]Applying strict R/W/X controls to target...", spinner="dots"):
-        if not check_acl_exists(target_dir, "user:qemu:rwx"):
-            subprocess.run(["setfacl", "-m", "u:qemu:rwx", str(target_dir)], check=True)
-        if not check_acl_exists(target_dir, "default:user:qemu:rwx"):
-            subprocess.run(["setfacl", "-d", "-m", "u:qemu:rwx", str(target_dir)], check=True)
+        if not check_acl_exists(target_dir, "user:libvirt-qemu:rwx"):
+            subprocess.run(["setfacl", "-m", "u:libvirt-qemu:rwx", str(target_dir)], check=True)
+        if not check_acl_exists(target_dir, "default:user:libvirt-qemu:rwx"):
+            subprocess.run(["setfacl", "-d", "-m", "u:libvirt-qemu:rwx", str(target_dir)], check=True)
             
     console.print("[bold green]  ✓ ACL Traversal and Inheritance perfectly staged.[/bold green]")
 

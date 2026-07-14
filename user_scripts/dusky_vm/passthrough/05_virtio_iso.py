@@ -99,7 +99,7 @@ def resolve_target_user() -> str:
 def stage_packages() -> None:
     """Install core hypervisor and networking packages."""
     packages = [
-        "qemu-full", "libvirt", "virt-install", "virt-manager", 
+        "qemu-desktop", "libvirt", "virt-install", "virt-manager", 
         "virt-viewer", "dnsmasq", "iproute2", "openbsd-netcat", 
         "edk2-ovmf", "swtpm", "nftables", "iptables", "libosinfo"
     ]
