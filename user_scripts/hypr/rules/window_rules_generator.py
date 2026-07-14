@@ -130,9 +130,18 @@ hl.window_rule({{
         -- pin = false,           -- match only non-pinned windows
     }},
     float = true,
-    -- pin = true,                   -- pin window (always on top, all workspaces)
+
+    -- [OPTION A: STICKY/PINNED DIALOG]
+    -- pin = true,                   -- locks window to show on ALL workspaces
+
+    -- [OR]
+
+    -- [OPTION B: NATIVE ACTIVE-WORKSPACE ONLY DIALOG] (Requires initial_workspace_tracking = 2 in workspace_rules.lua)
+    -- workspace = "unset",          -- Spawns dynamically on the ACTIVE workspace only (won't follow you when switching)
+    -- focus_on_activate = true,     -- Automatically steal focus on spawn
+    -- stay_focused = true,          -- Keep focus locked on this window as long as it remains visible
+
     -- tile = true,                  -- force tiled (not floating)
-    -- stay_focused = true,           -- window cannot lose focus
 
     size = {{{client.w}, {client.h}}},
     -- size = {{"monitor_w * {r_w_str}", "monitor_h * {r_h_str}"}},

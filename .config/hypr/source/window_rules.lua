@@ -1181,7 +1181,8 @@ hl.window_rule({
     rounding = 20,
     move = {"(monitor_w-window_w-20)", "(monitor_h-window_h-20)"},
     border_size = 0,
-    pin = true
+    workspace = "unset",
+    focus_on_activate = true
 })
 
 --- Audio Router Popup ---
@@ -1483,19 +1484,35 @@ hl.window_rule({
 
 --- Hyprland Share Picker ---
 hl.window_rule({
-    name = "float-share-picker",
+    name = "share-picker-native",
     match = { class = "^(hyprland-share-picker)$" },
     float = true,
-    size = {500, 300},  -- Small dialog box
+    size = {500, 300},
     center = true,
-    pin = true
+    workspace = "unset",
+    focus_on_activate = true,
+    stay_focused = true
 })
 
 --- GTK File Dialog Portal ---
 hl.window_rule({
-    name = "pin-gtk-portal",
+    name = "gtk-portal-fix",
     match = { class = "^(xdg-desktop-portal-gtk)$" },
-    pin = true
+    float = true,
+    center = true,
+    workspace = "unset",
+    focus_on_activate = true,
+    no_initial_focus = false
+})
+
+hl.window_rule({
+    name = "gtk-portal-modal",
+    match = {
+        class = "^(xdg-desktop-portal-gtk)$",
+        modal = true
+    },
+    stay_focused = true,
+    dim_around = true
 })
 
 --- Hyprland Polkit Agent ---
@@ -1504,7 +1521,10 @@ hl.window_rule({
     match = { class = "^(hyprpolkitagent)$" },
     float = true,
     center = true,
-    pin = true
+    workspace = "unset",
+    focus_on_activate = true,
+    stay_focused = true,
+    dim_around = true
 })
 
 --- GCR / Gnome Keyring Prompter ---
@@ -1513,7 +1533,10 @@ hl.window_rule({
     match = { class = "^(gcr-prompter|gnome-keyring-prompt)$" },
     float = true,
     center = true,
-    pin = true
+    workspace = "unset",
+    focus_on_activate = true,
+    stay_focused = true,
+    dim_around = true
 })
 
 --- Pinentry Dialogs (GnuPG Passphrase Prompts) ---
@@ -1522,7 +1545,10 @@ hl.window_rule({
     match = { class = "^([Pp]inentry.*)$" },
     float = true,
     center = true,
-    pin = true
+    workspace = "unset",
+    focus_on_activate = true,
+    stay_focused = true,
+    dim_around = true
 })
 
 --- NWG Look (GTK Theming) ---
@@ -1861,7 +1887,7 @@ hl.config({
         -- REQUIRED: Force new windows to spawn on the *current* workspace.
         -- Without this, the new window might open "behind" or on a different 
         -- workspace (value 0 or 1 or 2), failing to trigger the unfullscreen logic.
-        initial_workspace_tracking = 1,
+        initial_workspace_tracking = 2,
 
         -- OPTIONAL: Useful if the app (like Steam) asks to be focused but Hyprland ignores it.
         focus_on_activate = true
