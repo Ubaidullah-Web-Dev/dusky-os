@@ -1654,7 +1654,8 @@ hl.window_rule({
     --move = {"monitor_w - window_w - 20", "monitor_h - window_h - 20"},
     move = {"monitor_w * 0.8258", "monitor_h * 0.8125"},
 
-    no_initial_focus = true,            -- do not focus when first opened
+    no_initial_focus = true,
+    focus_on_activate = false,
     -- Visuals
     no_dim = true,
     opaque = true
