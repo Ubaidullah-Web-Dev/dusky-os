@@ -48,6 +48,46 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
+def check_startup_elevation_and_deps():
+    if not os.path.exists("/etc/arch-release"):
+        return
+    if "-h" in sys.argv or "--help" in sys.argv:
+        return
+    required_tools = {
+        "git": "git",
+        "mkarchiso": "archiso",
+        "paccache": "pacman-contrib",
+        "rsync": "rsync",
+        "bsdtar": "libarchive",
+        "zstd": "zstd",
+        "xz": "xz",
+    }
+    missing_packages = []
+    for tool, package in required_tools.items():
+        if shutil.which(tool) is None:
+            missing_packages.append(package)
+    try:
+        import rich
+    except ImportError:
+        missing_packages.append("python-rich")
+        
+    if os.geteuid() != 0:
+        print("Elevating privileges to root (may prompt for sudo password)...")
+        sudo_args = ["sudo"]
+        if not sys.stdin.isatty():
+            sudo_args.append("-S")
+        args_exec = sudo_args + [sys.executable] + sys.argv
+        os.execvp("sudo", args_exec)
+        
+    if missing_packages:
+        print(f"Installing missing system dependencies: {', '.join(missing_packages)}...")
+        r = subprocess.run(["pacman", "-S", "--needed", "--noconfirm"] + missing_packages, shell=False)
+        if r.returncode != 0:
+            print("Error: pacman failed to install dependencies. Exiting.")
+            sys.exit(1)
+
+check_startup_elevation_and_deps()
+
 try:
     from rich.console import Console
     from rich.prompt import Prompt, Confirm
@@ -725,7 +765,7 @@ def configure_iso_pacman_conf(cfg: ISOConfig):
 
 def build_iso_image(cfg: ISOConfig)->Path:
     info("Building ISO - safe injection")
-    final_name=f"dusky_{datetime.now().strftime('%m_%d')}.iso"
+    final_name=f"dusky_{datetime.now().strftime('%m_%y')}.iso"
     final_path=cfg.final_dest/final_name
     final_sha=cfg.final_dest/f"{final_path.stem}_iso.sha256"
     for f in [final_path, final_sha]:
@@ -821,13 +861,6 @@ def main():
     parser.add_argument("--source-dir", type=Path, help="Source payload dir")
     parser.add_argument("--auto", action="store_true", help="Non-interactive defaults")
     args=parser.parse_args()
-    if os.geteuid() != 0:
-        console.print("[yellow]Elevating privileges to root (may prompt for sudo password)...[/]")
-        sudo_args = ["sudo"]
-        if not sys.stdin.isatty():
-            sudo_args.append("-S")
-        args_exec = sudo_args + [sys.executable] + sys.argv
-        os.execvp("sudo", args_exec)
     console.print(Panel(f"Dusky Factory v{VERSION} — Python 3.14.6 / Pacman 7.1 / Systemd 261 / Archiso 88", style="bold cyan", box=box.DOUBLE))
     check_is_arch()
     repo_mode=1 if args.arch else 2
@@ -932,7 +965,8 @@ def main():
         if not official_repo.exists(): die(f"Official repo missing at {official_repo} - build it first")
         try:
             setup_clean_room(cfg); stage_payloads(cfg); configure_live_hooks(cfg); inject_dotfiles(cfg); configure_iso_pacman_conf(cfg); iso_path=build_iso_image(cfg)
-            console.print(Panel(f"[bold green]SUCCESS[/]\nISO: {iso_path}\nSize: {human_bytes(iso_path.stat().st_size)}\nSHA256: {(iso_path.with_suffix('.iso.sha256')).read_text().split()[0][:16]}...", style="green", box=box.DOUBLE))
+            sha_path = iso_path.with_name(f"{iso_path.stem}_iso.sha256")
+            console.print(Panel(f"[bold green]SUCCESS[/]\nISO: {iso_path}\nSize: {human_bytes(iso_path.stat().st_size)}\nSHA256: {sha_path.read_text().split()[0][:16]}...", style="green", box=box.DOUBLE))
         finally:
             if workspace.exists() and (str(workspace).startswith("/tmp/") or "/dusky_iso_" in str(workspace) or str(workspace).startswith(str(ZRAM_CANDIDATE))):
                 try:
