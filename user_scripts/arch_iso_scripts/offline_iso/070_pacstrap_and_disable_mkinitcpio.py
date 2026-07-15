@@ -39,7 +39,7 @@ MOUNT_POINT = Path("/mnt")
 FINAL_PACKAGES = [
     "base", "base-devel", "linux", "linux-headers", "mkinitcpio",
     "neovim", "btrfs-progs", "dosfstools", "git", "zsh",
-    "networkmanager", "yazi", "linux-firmware-other"
+    "networkmanager", "yazi", "linux-firmware-other", "otf-atkinsonhyperlegiblemono-nerd"
 ]
 
 def wait_for_pacman_lock():
