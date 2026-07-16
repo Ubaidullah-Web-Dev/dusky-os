@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# battery_notify.sh — Hyprland-only Event-Driven Battery Monitor
+# battery_notify.sh — Hyprland-only Event-Driven Battery Monitor (Fixed)
 # Arch bleeding-edge, Hyprland 0.55.4+ (July 2026), systemd 261+, bash 5.2+, upower 1.90+
 # No backwards compat, no UWSM. Part of hyprland-session.target
 #
@@ -10,29 +10,19 @@ export LC_NUMERIC=C
 ##########################
 # CONFIGURATION — EDIT ME
 ##########################
-readonly BATTERY_DEVICE="${BATTERY_DEVICE:-}" # empty = auto DisplayDevice -> aggregate
-
-# Thresholds — must satisfy CRITICAL < LOW < FULL, all 0..100
+readonly BATTERY_DEVICE="${BATTERY_DEVICE:-}"
 readonly BATTERY_FULL_THRESHOLD="${BATTERY_FULL_THRESHOLD:-100}"
 readonly BATTERY_LOW_THRESHOLD="${BATTERY_LOW_THRESHOLD:-20}"
 readonly BATTERY_CRITICAL_THRESHOLD="${BATTERY_CRITICAL_THRESHOLD:-10}"
 readonly BATTERY_UNPLUG_THRESHOLD="${BATTERY_UNPLUG_THRESHOLD:-100}"
 
-# Repeat timers in minutes — 999 = effectively disable full
 readonly REPEAT_FULL_MIN="${REPEAT_FULL_MIN:-999}"
 readonly REPEAT_LOW_MIN="${REPEAT_LOW_MIN:-3}"
 readonly REPEAT_CRITICAL_MIN="${REPEAT_CRITICAL_MIN:-1}"
-
-# Grace after suspend/resume before next suspend allowed (seconds)
 readonly SUSPEND_GRACE_SEC="${SUSPEND_GRACE_SEC:-60}"
-
-# Safety poll if monitor misses events (seconds) 5..600
 readonly SAFETY_POLL_INTERVAL="${SAFETY_POLL_INTERVAL:-60}"
-
-# Behavior
 readonly DO_SUSPEND="${DO_SUSPEND:-true}"
 
-# Messages & sounds — set to "disabled" to silence
 readonly MSG_CRITICAL="${MSG_CRITICAL:-Suspending system!}"
 readonly SOUND_LOW="${SOUND_LOW:-/usr/share/sounds/freedesktop/stereo/complete.oga}"
 readonly SOUND_CRITICAL="${SOUND_CRITICAL:-/usr/share/sounds/freedesktop/stereo/suspend-error.oga}"
@@ -41,9 +31,6 @@ readonly SOUND_UNPLUG="${SOUND_UNPLUG:-/usr/share/sounds/freedesktop/stereo/devi
 
 readonly MAX_RETRIES=5
 
-##########################
-# RUNTIME STATE
-##########################
 declare -g RUNNING=true
 declare -g MON_FD=-1
 declare -g UPMON_PID=""
@@ -60,23 +47,13 @@ declare -g STATE_LAST_LOW_NOTIFY=0
 declare -g STATE_LAST_CRITICAL_NOTIFY=0
 declare -g STATE_LAST_SUSPEND_MONO=0
 
-##########################
-# HELPERS
-##########################
-log() {
-    printf '[%(%Y-%m-%d %H:%M:%S)T] [battery_notify] %s\n' -1 "$*" >&2
-}
+log() { printf '[%(%Y-%m-%d %H:%M:%S)T] [battery_notify] %s\n' -1 "$*" >&2; }
 die() { log "FATAL: $*"; exit 1; }
 is_integer() { [[ ${1:-} =~ ^[0-9]+$ ]]; }
 get_wall_now() { printf '%s' "$EPOCHSECONDS"; }
-get_mono_now() {
-    local up
-    if up=$(awk '{print int($1)}' /proc/uptime 2>/dev/null) && is_integer "$up"; then printf '%s' "$up"
-    else printf '%s' "$SECONDS"; fi
-}
+get_mono_now() { local up; if up=$(awk '{print int($1)}' /proc/uptime 2>/dev/null) && is_integer "$up"; then printf '%s' "$up"; else printf '%s' "$SECONDS"; fi; }
 get_icon() {
-    local perc="${1:-0}" state="${2:-Discharging}"
-    perc="${perc%%.*}"; is_integer "$perc" || perc=0
+    local perc="${1:-0}" state="${2:-Discharging}"; perc="${perc%%.*}"; is_integer "$perc" || perc=0
     (( perc < 0 )) && perc=0; (( perc > 100 )) && perc=100
     local rounded=$(( (10#$perc + 5) / 10 * 10 )); (( rounded > 100 )) && rounded=100
     if [[ "$state" == "Charging" ]]; then printf 'battery-level-%s-charging-symbolic' "$rounded"
@@ -105,13 +82,13 @@ parse_upower_block() {
     energy=$(grep -i -m1 '^[[:space:]]*energy:[[:space:]]' <<< "$info" | grep -oE '[0-9]+(\.[0-9]+)?' | head -n1)
     energy_full=$(grep -i -m1 '^[[:space:]]*energy-full:' <<< "$info" | grep -oE '[0-9]+(\.[0-9]+)?' | head -n1)
     [[ -z "$state" ]] && return 1
-    printf '%s|%s|%s|%s' "$state" "${perc:-}" "${energy:-}" "${energy_full:-}"
+    printf '%s|%s|%s|%s' "$state" "${perc:-}" "${energy_full:-}"
 }
 normalize_state() {
     local s="${1,,}"; s=$(echo "$s" | xargs)
     case "$s" in
         discharging) echo "Discharging" ;;
-        not\ charging|not-charging) echo "Charging" ;; # threshold case — avoid false low on AC
+        not\ charging|not-charging) echo "Charging" ;;
         charging|pending\ charge|pending-charge) echo "Charging" ;;
         fully\ charged|fully-charged|full) echo "Full" ;;
         empty) echo "Empty" ;;
@@ -142,17 +119,16 @@ read_battery_aggregated() {
             fi
         fi
     fi
-    local -a devices
-    mapfile -t devices < <(upower -e 2>/dev/null | grep -i 'battery\|BAT' | grep -v -i 'hidpp\|keyboard\|mouse\|headset' || true)
-    if (( ${#devices[@]} == 0 )); then mapfile -t devices < <(upower -e 2>/dev/null); fi
-    local total_energy=0 total_energy_full=0 sum_perc=0 count=0 any_charging=false any_discharging=false any_full=false
+    local -a devices; mapfile -t devices < <(upower -e 2>/dev/null | grep -i 'battery\|BAT' | grep -v -i 'hidpp\|keyboard\|mouse\|headset' || true)
+    (( ${#devices[@]} == 0 )) && mapfile -t devices < <(upower -e 2>/dev/null)
+    local total_energy=0 total_energy_full=0 sum_perc=0 count=0 any_charging=false any_discharging=false any_full=false any_empty=false
     for dev in "${devices[@]}"; do
         info=$(upower -i "$dev" 2>/dev/null) || continue
         grep -qi 'power supply:[[:space:]]*yes' <<< "$info" || continue
         parsed=$(parse_upower_block "$info") || continue
         IFS='|' read -r state perc energy e_full <<< "$parsed"; [[ -z "$perc" ]] && continue
         state=$(normalize_state "$state")
-        case "$state" in Charging) any_charging=true;; Discharging) any_discharging=true;; Full) any_full=true;; Empty) any_discharging=true;; esac
+        case "$state" in Charging) any_charging=true;; Discharging) any_discharging=true;; Full) any_full=true;; Empty) any_empty=true; any_discharging=true;; esac
         sum_perc=$(awk -v a="$sum_perc" -v b="$perc" 'BEGIN{print a+b}'); ((count++))
         if [[ -n "$energy" && -n "$e_full" ]]; then total_energy=$(awk -v a="$total_energy" -v b="$energy" 'BEGIN{print a+b}'); total_energy_full=$(awk -v a="$total_energy_full" -v b="$e_full" 'BEGIN{print a+b}'); fi
     done
@@ -161,10 +137,7 @@ read_battery_aggregated() {
     if awk -v tf="$total_energy_full" 'BEGIN{exit!(tf>0)}'; then final_perc=$(awk -v te="$total_energy" -v tf="$total_energy_full" 'BEGIN{printf "%.0f", (te/tf)*100}')
     else final_perc=$(awk -v sp="$sum_perc" -v c="$count" 'BEGIN{printf "%.0f", sp/c}'); fi
     is_integer "${final_perc%%.*}" || return 1; final_perc="${final_perc%%.*}"; (( final_perc < 0 )) && final_perc=0; (( final_perc > 100 )) && final_perc=100
-    local final_state="Unknown"
-    if [[ "$any_charging" == "true" ]]; then final_state="Charging"
-    elif [[ "$any_discharging" == "true" ]]; then final_state="Discharging"
-    elif [[ "$any_full" == "true" ]]; then final_state="Full"; fi
+    local final_state="Unknown"; if [[ "$any_charging" == "true" ]]; then final_state="Charging"; elif [[ "$any_discharging" == "true" ]]; then final_state="Discharging"; elif [[ "$any_full" == "true" ]]; then final_state="Full"; fi
     printf '%s;%s;%s' "$final_state" "$final_perc" "aggregate:$count"
 }
 do_suspend() {
