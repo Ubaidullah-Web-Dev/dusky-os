@@ -399,25 +399,26 @@ def download_packages(isolated: IsolatedDB, master: List[str], repo_dir: Path):
         try: os.chown(repo_dir, 0, gid); repo_dir.chmod(0o775)
         except PermissionError: pass
     for part in repo_dir.glob("*.part"): part.unlink(missing_ok=True)
-    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), BarColumn(), TaskProgressColumn(), console=console) as prog:
-        task=prog.add_task("Downloading", total=len(master))
-        for attempt in range(1,13):
-            prog.update(task, description=f"Download attempt {attempt}/12")
-            for part in repo_dir.glob("*.part"): part.unlink(missing_ok=True)
-            r=isolated.pacman("-Sw","--cachedir",str(repo_dir),"--color","never","--noprogressbar","--",*master, capture=True, sudo=True)
-            if r.returncode==0:
-                corrupt=0
-                for pkg in repo_dir.glob("*.pkg.tar.*"):
-                    if pkg.name.endswith(".sig") or ".part" in pkg.name: continue
-                    if pkg.stat().st_size==0: pkg.unlink(missing_ok=True); corrupt+=1; continue
-                    if pkg.name.endswith(".zst"): chk=subprocess.run(["zstd","-t","-q","--",str(pkg)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=False)
-                    elif pkg.name.endswith(".xz"): chk=subprocess.run(["xz","-t","-q","--",str(pkg)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=False)
-                    else: chk=subprocess.run(["bsdtar","-tqf",str(pkg)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=False)
-                    if chk.returncode!=0: step(f"Corrupt removed: {pkg.name}"); pkg.unlink(missing_ok=True); Path(str(pkg)+".sig").unlink(missing_ok=True); corrupt+=1
-                if corrupt==0: prog.update(task, completed=len(master)); ok("Download complete"); return
-                warn(f"{corrupt} corrupt, resuming...")
-            else: warn(f"Download attempt {attempt} failed: {(r.stderr or '')[:400]}")
-            time.sleep(min(30, (1.5**attempt)+random.uniform(0,2)))
+    for attempt in range(1, 13):
+        info(f"Download attempt {attempt}/12")
+        for part in repo_dir.glob("*.part"): part.unlink(missing_ok=True)
+        r = isolated.pacman("-Sw", "--cachedir", str(repo_dir), "--", *master, capture=False, sudo=True)
+        if r.returncode == 0:
+            corrupt = 0
+            for pkg in repo_dir.glob("*.pkg.tar.*"):
+                if pkg.name.endswith(".sig") or ".part" in pkg.name: continue
+                if pkg.stat().st_size == 0: pkg.unlink(missing_ok=True); corrupt += 1; continue
+                if pkg.name.endswith(".zst"): chk = subprocess.run(["zstd", "-t", "-q", "--", str(pkg)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=False)
+                elif pkg.name.endswith(".xz"): chk = subprocess.run(["xz", "-t", "-q", "--", str(pkg)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=False)
+                else: chk = subprocess.run(["bsdtar", "-tqf", str(pkg)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=False)
+                if chk.returncode != 0: step(f"Corrupt removed: {pkg.name}"); pkg.unlink(missing_ok=True); Path(str(pkg)+".sig").unlink(missing_ok=True); corrupt += 1
+            if corrupt == 0:
+                ok("Download complete")
+                return
+            warn(f"{corrupt} corrupt, resuming...")
+        else:
+            warn(f"Download attempt {attempt} failed")
+        time.sleep(min(30, (1.5**attempt) + random.uniform(0, 2)))
     die("Download failed after retries")
 
 def prune_unneeded(repo_dir: Path, whitelist: List[str]):
