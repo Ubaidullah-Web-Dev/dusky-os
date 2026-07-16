@@ -80,8 +80,8 @@ fn_notify() {
     if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -S "$bus_path" ]]; then export DBUS_SESSION_BUS_ADDRESS="unix:path=$bus_path"; fi
     if [[ "$HAS_NOTIFY" == "true" ]]; then
         local err
-        if [[ "$urgency" == "critical" ]]; then err=$(notify-send -a "Battery Monitor" -u "$urgency" -i "$icon" -- "$title" "$body" 2>&1) || log "notify-send failed: $err"
-        else err=$(notify-send -a "Battery Monitor" -u "$urgency" -t 5000 -i "$icon" -- "$title" "$body" 2>&1) || log "notify-send failed: $err"; fi
+        if [[ "$urgency" == "critical" ]]; then err=$(notify-send -a "Battery Monitor" -u "$urgency" --hint=string:x-canonical-private-synchronous:battery-status -i "$icon" -- "$title" "$body" 2>&1) || log "notify-send failed: $err"
+        else err=$(notify-send -a "Battery Monitor" -u "$urgency" --hint=string:x-canonical-private-synchronous:battery-status -t 5000 -i "$icon" -- "$title" "$body" 2>&1) || log "notify-send failed: $err"; fi
     else log "Notification: [$urgency] $title - $body"; fi
     play_sound "$sound"
 }
