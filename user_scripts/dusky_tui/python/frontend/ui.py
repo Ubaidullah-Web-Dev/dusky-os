@@ -8,6 +8,9 @@ import shlex
 import shutil
 import asyncio
 import math
+import copy
+import sys
+import threading
 from pathlib import Path
 from typing import Any
 from collections import deque
@@ -25,6 +28,7 @@ from textual.timer import Timer
 from textual.widget import Widget
 
 from rich.text import Text
+from rich.cells import cell_len
 
 from python.frontend.core_types import ConfigItem, BaseEngine, KNOWN_COLORS, is_theme_variable
 
@@ -45,6 +49,22 @@ _RE_HSLA_ALPHA = re.compile(r"hsla\([^,]+,[^,]+,[^,]+,\s*([0-9.]+)\)")
 # =============================================================================
 
 CYCLE_COLORS = ["Red", "Lime", "Blue", "Yellow", "Cyan", "Magenta", "White", "Black"]
+
+def _oklch_to_rgb(L: float, C: float, H: float) -> tuple[int, int, int]:
+    h = math.radians(H)
+    a, b = C * math.cos(h), C * math.sin(h)
+    l_ = L + 0.3963377774 * a + 0.2158037573 * b
+    m_ = L - 0.1055613458 * a - 0.0638541728 * b
+    s_ = L - 0.0894841775 * a - 1.2914855480 * b
+    l, m, s = l_**3, m_**3, s_**3
+    r = +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
+    g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
+    b2 = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+    def gam(c: float) -> int:
+        c = max(0.0, min(1.0, c))
+        c = 12.92 * c if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055
+        return round(c * 255)
+    return (gam(r), gam(g), gam(b2))
 
 def parse_color_format(val: str) -> str:
     val = str(val).strip().lower()
@@ -94,8 +114,8 @@ def color_to_rgb(val: str) -> tuple[int, int, int]:
     m_oklch = _RE_OKLCH.match(val)
     if m_oklch:
         l_val, c_val, h_val = float(m_oklch.group(1)), float(m_oklch.group(2)), float(m_oklch.group(3))
-        r, g, b = colorsys.hls_to_rgb(h_val/360.0, l_val, min(c_val*2.5, 1.0))
-        return (max(0, min(255, int(r*255))), max(0, min(255, int(g*255))), max(0, min(255, int(b*255))))
+        r, g, b = _oklch_to_rgb(l_val, c_val, h_val)
+        return (max(0, min(255, int(r))), max(0, min(255, int(g))), max(0, min(255, int(b))))
 
     return (128, 128, 128)
 
@@ -165,6 +185,10 @@ def load_matugen_json(file_path: Path) -> dict[str, str] | None:
         with open(file_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except (OSError, json.JSONDecodeError): return None
+
+def _pad_cells(s: str, width: int) -> str:
+    """Pad string to specific cell width considering unicode/emoji character length"""
+    return s + " " * max(0, width - cell_len(s))
 
 # =============================================================================
 # NOTICES & DISCLAIMERS
@@ -290,13 +314,51 @@ class PasswordScreen(ModalScreen[str | None]):
         if event.control is self:
             self.dismiss(None)
 
+class UnsavedChangesDialog(ModalScreen[str]):
+    BINDINGS = [
+        Binding("escape", "dismiss_cancel", "Cancel"),
+    ]
+
+    def __init__(self, count: int) -> None:
+        super().__init__()
+        self.count = count
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="unsaved-dialog", classes="-warning"):
+            yield Label("UNSAVED CHANGES", id="modal-title")
+            yield Markdown(f"You have **{self.count}** unsaved batch changes.\n\nDo you want to save them before quitting?", id="confirm-message")
+            with Horizontal(classes="modal-btn-container"):
+                yield Label(" Cancel ", classes="modal-cancel-btn", id="btn-cancel")
+                yield Label(" Discard ", classes="modal-cancel-btn", id="btn-discard")
+                yield Label(" Save ", classes="modal-close-btn", id="btn-save")
+
+    def action_dismiss_cancel(self) -> None:
+        self.dismiss("cancel")
+
+    @on(events.Click, "#btn-cancel")
+    def on_cancel_click(self) -> None:
+        self.dismiss("cancel")
+
+    @on(events.Click, "#btn-discard")
+    def on_discard_click(self) -> None:
+        self.dismiss("discard")
+
+    @on(events.Click, "#btn-save")
+    def on_save_click(self) -> None:
+        self.dismiss("save")
+
+    @on(events.Click)
+    def on_background_click(self, event: events.Click) -> None:
+        if event.control is self:
+            self.dismiss("cancel")
+
 class HybridInputScreen(ModalScreen[str | None]):
     BINDINGS = [
         Binding("down,j", "focus_list", "Focus List"),
         Binding("up,k", "focus_input", "Focus Input"),
     ]
 
-    def __init__(self, prompt: str, default: str, options: list[Any] = None) -> None:
+    def __init__(self, prompt: str, default: str, options: list[Any] | None = None) -> None:
         super().__init__()
         self.prompt_text = prompt
         self.default_text = default
@@ -508,6 +570,8 @@ class SearchScreen(ModalScreen[tuple[int, int] | None]):
         ol = self.query_one(OptionList)
         if ol.highlighted is not None and ol.highlighted < len(self.results):
             self.dismiss(self.results[ol.highlighted])
+        elif self.results:
+            self.dismiss(self.results[0])
 
     def action_cursor_down(self) -> None: self.query_one(OptionList).action_cursor_down()
     def action_cursor_up(self) -> None: self.query_one(OptionList).action_cursor_up()
@@ -589,11 +653,14 @@ class ShortcutsInfoScreen(ModalScreen[None]):
             ("escape", "Clear inline search / Close modals"),
             ("tab", "Switch to Next Tab"),
             ("shift+tab", "Switch to Previous Tab"),
+            ("alt+1..7", "Jump directly to tab N"),
             ("d", "Show pending or modified items (Diff)"),
             ("u", "Undo last change (or batch change)"),
             ("ctrl+r", "Redo last undone change"),
             ("ctrl+t", "Toggle between Auto and Batch save modes"),
             ("ctrl+s", "Commit all pending changes (only available in Batch mode)"),
+            ("ctrl+p", "Save current state as a user preset"),
+            ("D", "Delete highlighted user preset"),
             ("enter, space", "Trigger action / Toggle boolean / Open Picker / Expand Folder"),
             ("e", "Expand / Collapse nested option menus"),
             ("j, down", "Move cursor down"),
@@ -652,37 +719,23 @@ class ConfigOptionList(OptionList):
     _last_click_x: int = 0
     _last_click_button: int = 1
 
-    def action_scroll_top(self) -> None: self.highlighted = 0
+    def action_scroll_top(self) -> None:
+        for i in range(self.option_count):
+            if not self.get_option_at_index(i).disabled:
+                self.highlighted = i
+                break
+
     def action_scroll_bottom(self) -> None:
-        if self.option_count > 0: self.highlighted = self.option_count - 1
-    def action_page_down(self) -> None:
-        if self.option_count == 0: return
-        idx = self.highlighted if self.highlighted is not None else 0
-        self.highlighted = min(self.option_count - 1, idx + 10)
-    def action_page_up(self) -> None:
-        if self.option_count == 0: return
-        idx = self.highlighted if self.highlighted is not None else 0
-        self.highlighted = max(0, idx - 10)
+        for i in range(self.option_count - 1, -1, -1):
+            if not self.get_option_at_index(i).disabled:
+                self.highlighted = i
+                break
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
-        real_button = getattr(event, "button", 1)
         self._last_click_x = getattr(event, "x", 0)
-        self._last_click_button = real_button
-
-        # SURGICAL FIX FOR POINT 2: Textual's OptionList naturally swallows right-clicks.
-        # We spoof a left-click purely to trick Textual into registering the UI selection,
-        # ensuring OptionSelected fires. The true button (3) is preserved above and evaluated below.
-        if real_button == 3:
-            try: event.button = 1
-            except AttributeError: object.__setattr__(event, 'button', 1)
-
+        self._last_click_button = getattr(event, "button", 1)
         if hasattr(super(), "on_mouse_down"):
             super().on_mouse_down(event)
-
-        if real_button == 3:
-            try: event.button = real_button
-            except AttributeError: object.__setattr__(event, 'button', real_button)
-
         self._mouse_down_highlight = self.highlighted
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
@@ -701,10 +754,6 @@ class ConfigOptionList(OptionList):
                         path = self.app.user_presets_dir / f"{name}.json"
                         new_tooltip = f"Preset Path: {path}\nLeft/Right Click to open externally"
             
-            # The critical fix for tooltip consistency:
-            # Only update the property if the string actually changes.
-            # Constantly reassigning it on every pixel of mouse movement
-            # resets Textual's hover delay timer, causing it to fail to show.
             if self.tooltip != new_tooltip:
                 self.tooltip = new_tooltip
         except Exception:
@@ -740,7 +789,7 @@ class ScrollIndicator(Label):
         self._track_height = int(viewport_height) - 2
 
         if self._track_height < 1:
-            self.update("▲\n▼"); return
+            self.display = False; return
 
         thumb_size = max(1, int(self._track_height * (viewport_height / virtual_height)))
         max_pos = self._track_height - thumb_size
@@ -911,6 +960,7 @@ class FlowContainer(Widget):
 
 class AppFooter(Vertical):
     status_msg = reactive("")
+    status_level = reactive("info")
 
     def compose(self) -> ComposeResult:
         with FlowContainer(id="footer-shortcuts-container"):
@@ -948,7 +998,8 @@ class AppFooter(Vertical):
                 if new_val:
                     txt = Text()
                     txt.append(" │ Status: ", style=self.app.theme_colors["accent"])
-                    txt.append(new_val, style=self.app.theme_colors["error"])
+                    color = self.app.theme_colors.get(self.status_level, self.app.theme_colors["fg"])
+                    txt.append(new_val, style=color)
                     bar.update(txt)
                     bar.display = True
                 else:
@@ -1022,7 +1073,7 @@ class DuskyTUI(App):
     #content-area.-show-help #help-panel { display: block; }
 
     Tabs { width: auto; height: 1; background: transparent; }
-    Tabs > .underline { display: none; }
+    Tabs > Underline { display: none; }
     Tab { height: 1; padding: 0 1; color: $primary 60%; background: transparent; border: none; }
     Tab:hover { color: $foreground; background: $primary 25%; }
     Tab.-active { color: $background; background: $primary; text-style: bold; border: none; }
@@ -1072,7 +1123,7 @@ class DuskyTUI(App):
     #file-link { padding: 0 1; background: transparent; }
     #file-link:hover { text-style: bold; color: $foreground; background: $primary 25%; }
 
-    HybridInputScreen, PickerScreen, SearchScreen, DiffScreen, ShortcutsInfoScreen, ConfirmDialog, AlertDialog, PasswordScreen { align: center middle; background: rgba(0, 0, 0, 0.75); }
+    HybridInputScreen, PickerScreen, SearchScreen, DiffScreen, ShortcutsInfoScreen, ConfirmDialog, AlertDialog, PasswordScreen, UnsavedChangesDialog { align: center middle; background: rgba(0, 0, 0, 0.75); }
 
     #picker-dialog { width: 60; height: 70%; background: $background; border: solid $primary; padding: 1 2; }
     #search-dialog { width: 60; height: 80%; background: $background; border: solid $primary; padding: 1 2; }
@@ -1081,17 +1132,12 @@ class DuskyTUI(App):
     #modal-dialog { width: 50; height: auto; background: $background; border: solid $primary; padding: 1 2; }
 
     /* Modals with Dynamic Severities */
-    #alert-dialog { width: 50; height: auto; max-height: 80%; background: $background; padding: 1 2; }
-    #alert-dialog.-info { border: solid $primary; }
-    #alert-dialog.-warning { border: solid $warning; }
-    #alert-dialog.-danger { border: solid $error; }
-    #alert-dialog.-success { border: solid $success; }
-
-    #confirm-dialog { width: 50; height: auto; max-height: 80%; background: $background; padding: 1 2; }
-    #confirm-dialog.-info { border: solid $primary; }
-    #confirm-dialog.-warning { border: solid $warning; }
-    #confirm-dialog.-danger { border: solid $error; }
-    #confirm-dialog.-success { border: solid $success; }
+    #alert-dialog, #confirm-dialog, #unsaved-dialog { width: 50; height: auto; max-height: 80%; background: $background; padding: 1 2; }
+    
+    #alert-dialog.-info, #confirm-dialog.-info, #unsaved-dialog.-info { border: solid $primary; }
+    #alert-dialog.-warning, #confirm-dialog.-warning, #unsaved-dialog.-warning { border: solid $warning; }
+    #alert-dialog.-danger, #confirm-dialog.-danger, #unsaved-dialog.-danger { border: solid $error; }
+    #alert-dialog.-success, #confirm-dialog.-success, #unsaved-dialog.-success { border: solid $success; }
 
     #alert-message, #confirm-message { color: $foreground; margin-bottom: 1; }
 
@@ -1156,7 +1202,7 @@ class DuskyTUI(App):
         Binding("/", "focus_local_search", "Search Inline", priority=True),
         Binding("tab", "next_tab", "Next Tab", priority=True),
         Binding("shift+tab", "prev_tab", "Prev Tab", priority=True),
-        Binding("escape", "clear_local_search", "Clear Search", priority=True),
+        Binding("escape", "clear_local_search", "Clear Search"),
         Binding("alt+1", "switch_tab(0)", "Tab 1", show=False),
         Binding("alt+2", "switch_tab(1)", "Tab 2", show=False),
         Binding("alt+3", "switch_tab(2)", "Tab 3", show=False),
@@ -1184,6 +1230,7 @@ class DuskyTUI(App):
         self.enable_user_presets = enable_user_presets
         self.user_presets_tab_name = user_presets_tab
         self.user_presets_tab_idx = 0
+        self._schema_dirty_counter = 0
         
         # Route User Presets to their proper schema tab assignment automatically
         if self.user_presets_tab_name and self.user_presets_tab_name in self.tabs:
@@ -1202,6 +1249,7 @@ class DuskyTUI(App):
         
         self._key_map: dict[str, tuple[int, int]] = {}
         self._save_timers: dict[tuple[int, int], Timer] = {}
+        self._pending_autosave_args: dict[tuple[int, int], tuple[ConfigItem, str, Any]] = {}
         self._indent_cache: dict[str, str] = {}
         
         # Debounce timer for preset UI refreshes to prevent extreme lag spikes
@@ -1232,6 +1280,42 @@ class DuskyTUI(App):
         # Track external configuration file modifications dynamically across multiple engines
         self.last_target_mtimes: dict[tuple[str, str], float] = {}
         self._initial_target_mtimes_set: bool = False
+
+    def action_quit(self) -> None:
+        # Batch mode: don't silently throw away queued writes
+        if not self.auto_save and self.pending_commits:
+            def on_reply(reply: str) -> None:
+                if reply == "save":
+                    def on_quit_save(success: bool):
+                        if success:
+                            self.exit()
+                    self.action_save_batch(on_complete=on_quit_save)
+                elif reply == "discard":
+                    self.exit()
+            self.push_screen(UnsavedChangesDialog(len(self.pending_commits)), on_reply)
+            return
+
+        # AUTO mode: flush debounced writes safely
+        if self.auto_save and self._save_timers:
+            for (ti, ii), timer in self._save_timers.items():
+                timer.stop()
+                self.pending_commits.add((ti, ii))
+            self._save_timers.clear()
+            self._pending_autosave_args.clear()
+
+            def on_auto_quit_save(success: bool):
+                if success:
+                    self.exit()
+                else:
+                    self.notify_status("Quit aborted: Could not save final changes.", level="warning")
+            
+            self.action_save_batch(on_complete=on_auto_quit_save)
+            return
+
+        self.exit()
+
+    def _modal_active(self) -> bool:
+        return isinstance(self.screen, ModalScreen)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="main-box"):
@@ -1294,16 +1378,35 @@ class DuskyTUI(App):
         return (e_type, t_file)
 
     def _get_engine_for_item(self, item: ConfigItem) -> BaseEngine:
-        return self.engine_pool.get(self._get_item_engine_info(item), self.engine_pool[self.default_engine_key])
+        key = self._get_item_engine_info(item)
+        engine = self.engine_pool.get(key)
+        if engine is None:
+            raise KeyError(
+                f"No engine registered for {key} (required by item {item.uid!r}). "
+                f"Registered: {list(self.engine_pool)}"
+            )
+        return engine
 
     def _get_item_uid(self, item: ConfigItem) -> str:
         """Robust internal resolver for mapping children to parents safely."""
         return f"{item.scope}.{item.key}" if item.scope and item.scope != "DEFAULT" else item.key
 
+    def _lookup_state(self, state: dict, item: ConfigItem) -> Any:
+        uid_key = f"{item.scope}/{item.key}" if item.scope and item.scope != "DEFAULT" else item.key
+        scope_key = f"{item.scope}/{item.key}"
+        if uid_key in state: return state[uid_key]
+        if scope_key in state: return state[scope_key]
+        return None
+
     def _get_preset_match_ratio(self, preset_item: ConfigItem) -> float:
         """Calculates how much of a preset's payload currently matches reality."""
         if preset_item.preset_payload is None:
             return 0.0
+
+        if not hasattr(preset_item, "_ratio_cache"):
+            preset_item._ratio_cache = (None, None)
+        if preset_item._ratio_cache[0] == self._schema_dirty_counter:
+            return preset_item._ratio_cache[1]
 
         total, matches = 0, 0
         payload = preset_item.preset_payload
@@ -1331,7 +1434,9 @@ class DuskyTUI(App):
                 if val1 == val2:
                     matches += 1
 
-        return matches / total if total > 0 else 0.0
+        ratio = matches / total if total > 0 else 0.0
+        preset_item._ratio_cache = (self._schema_dirty_counter, ratio)
+        return ratio
 
     def _is_preset_active(self, preset_item: ConfigItem) -> bool:
         return self._get_preset_match_ratio(preset_item) == 1.0
@@ -1405,13 +1510,13 @@ class DuskyTUI(App):
                 
             if warning_marker:
                 txt.append(warning_marker, style=f"bold {self.theme_colors['warning']}")
-                txt.append(f"{item.label:<32}", style=label_style)
+                txt.append(_pad_cells(item.label, 32), style=label_style)
             else:
-                txt.append(f"{item.label:<35}", style=label_style)
+                txt.append(_pad_cells(item.label, 35), style=label_style)
         else:
             label_style = f"{self.theme_colors['muted']} strike" if not is_highlighted else f"{self.theme_colors['muted']} strike bold"
             raw_label = f"{warning_marker}{item.label} [Missing]"
-            padding_len = max(0, 35 - len(raw_label))
+            padding_len = max(0, 35 - cell_len(raw_label))
             txt.append(raw_label, style=label_style)
             txt.append(" " * padding_len)
 
@@ -1637,25 +1742,28 @@ class DuskyTUI(App):
             except OSError: pass
             
         if not expanded_path.exists():
-            self.notify_status("File does not exist on disk.")
+            self.notify_status("File does not exist on disk.", level="warning")
             return
 
         try:
             if button == 1:
-                cmd = ["mousepad", str(expanded_path)] if shutil.which("mousepad") else ["xdg-open", str(expanded_path)]
-                subprocess.Popen(
-                    cmd,
-                    start_new_session=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
+                cmd = ["xdg-open", str(expanded_path)] if shutil.which("xdg-open") else (["mousepad", str(expanded_path)] if shutil.which("mousepad") else None)
+                if cmd:
+                    subprocess.Popen(
+                        cmd,
+                        start_new_session=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                else:
+                    self.notify_status("No suitable external editor found (xdg-open or mousepad).", level="warning")
             elif button == 3:
                 editor_env = os.environ.get("VISUAL", os.environ.get("EDITOR", "nano"))
                 editor_cmd = shlex.split(editor_env)
                 with self.suspend():
                     subprocess.run([*editor_cmd, str(expanded_path)])
         except (FileNotFoundError, OSError):
-            self.notify_status("Error resolving path or launching external editor.")
+            self.notify_status("Error resolving path or launching external editor.", level="error")
 
     async def on_mount(self) -> None:
         self.query_one("#main-box").border_title = f" {self.editor_title} "
@@ -1704,18 +1812,18 @@ class DuskyTUI(App):
             for idx, item in enumerate(self.schema.get(i, [])):
                 engine_key = self._get_item_engine_info(item)
                 state = states.get(engine_key, {})
-                cache_key = f"{item.scope}/{item.key}" if item.scope else item.key
+                raw = self._lookup_state(state, item)
                 
                 if item.type_ in ("action", "preset", "menu"):
                     item.exists_in_target = True
-                elif cache_key in state:
+                elif raw is not None:
                     item.exists_in_target = True
-                    item.value = item.deserialize(state[cache_key])
+                    item.value = item.deserialize(raw)
                 else:
                     item.exists_in_target = (item.default == "nil")
 
                 if not item._initial_loaded:
-                    item.initial_value = item.value
+                    item.initial_value = copy.deepcopy(item.value)
                     item._initial_loaded = True
 
         # PASS 2: Safely Build DOM Components Dynamically
@@ -1750,18 +1858,20 @@ class DuskyTUI(App):
 
         # Kick off deferred loading in a background thread after the initial render is complete
         if self.deferred_load:
-            import threading
             def _deferred_worker():
                 try:
-                    updated_tabs = self.deferred_load()
+                    res = self.deferred_load()
+                    if isinstance(res, tuple) and len(res) == 2:
+                        updated_tabs, new_items = res
+                    else:
+                        updated_tabs = res
+                        new_items = None
+                        
                     # Load full states for the newly populated items (still in background thread)
-                    deferred_states = {}
-                    for ekey, eng in self.engine_pool.items():
-                        deferred_states[ekey] = eng.load_state()
+                    deferred_states = {ekey: eng.load_state() for ekey, eng in self.engine_pool.items()}
                     # Schedule UI update on the main Textual thread
-                    self.call_from_thread(self._apply_deferred_tabs, updated_tabs, deferred_states)
+                    self.call_from_thread(self._apply_deferred_tabs, updated_tabs, deferred_states, new_items)
                 except Exception as e:
-                    import sys
                     print(f"[DuskyTUI] Deferred load error: {e}", file=sys.stderr)
             threading.Thread(target=_deferred_worker, daemon=True).start()
 
@@ -1872,27 +1982,32 @@ class DuskyTUI(App):
         ol.scroll_y = scroll_y
         self.call_after_refresh(self._update_scroll_indicators)
 
-    def _apply_deferred_tabs(self, tab_indices: list[int], states: dict) -> None:
+    def _apply_deferred_tabs(self, tab_indices: list[int], states: dict, new_items: dict[int, list[ConfigItem]] | None = None) -> None:
         """
         Hot-reloads deferred tabs after background data fetch completes.
         Called on the main Textual thread via call_from_thread.
         """
+        self._schema_dirty_counter += 1
+        
         for tab_idx in tab_indices:
+            if new_items and tab_idx in new_items:
+                self.schema[tab_idx] = new_items[tab_idx]
+
             for idx, item in enumerate(self.schema.get(tab_idx, [])):
                 engine_key = self._get_item_engine_info(item)
                 state = states.get(engine_key, {})
-                cache_key = f"{item.scope}/{item.key}" if item.scope else item.key
+                raw = self._lookup_state(state, item)
 
                 if item.type_ in ("action", "preset", "menu"):
                     item.exists_in_target = True
-                elif cache_key in state:
+                elif raw is not None:
                     item.exists_in_target = True
-                    item.value = item.deserialize(state[cache_key])
+                    item.value = item.deserialize(raw)
                 else:
                     item.exists_in_target = (item.default == "nil")
 
                 if not item._initial_loaded:
-                    item.initial_value = item.value
+                    item.initial_value = copy.deepcopy(item.value)
                     item._initial_loaded = True
 
             self._populate_option_list(tab_idx)
@@ -1925,7 +2040,11 @@ class DuskyTUI(App):
         except Exception: pass
 
         if new and getattr(self, "pending_commits", None):
-            self.action_save_batch()
+            def on_toggle_save(success: bool):
+                if not success and getattr(self, "pending_commits", None):
+                    self.notify_status("Pending commits failed. Reverting to BATCH mode.", level="warning")
+                    self.auto_save = False
+            self.action_save_batch(on_complete=on_toggle_save)
 
     def _update_footer_legend(self) -> None:
         if not getattr(self, "is_mounted", False): return
@@ -2001,10 +2120,10 @@ class DuskyTUI(App):
                             if not self.auto_save and (i, idx) in self.pending_commits: continue
                             if item.type_ in ("action", "preset", "menu"): continue
                                 
-                            cache_key = f"{item.scope}/{item.key}" if item.scope else item.key
+                            raw = self._lookup_state(new_state, item)
                             
-                            if cache_key in new_state:
-                                new_val = item.deserialize(new_state[cache_key])
+                            if raw is not None:
+                                new_val = item.deserialize(raw)
                                 if str(item.value) != str(new_val):
                                     item.value = new_val
                                     item.exists_in_target = True
@@ -2025,6 +2144,7 @@ class DuskyTUI(App):
             return
             
         if changed_any:
+            self._schema_dirty_counter += 1
             self._refresh_all_ui()
             self.notify_status("Config modified externally. Refreshed UI.")
 
@@ -2063,6 +2183,7 @@ class DuskyTUI(App):
                 return
                 
             if changed_any:
+                self._schema_dirty_counter += 1
                 self._preset_mtimes = current_mtimes
                 self._load_user_presets()
                 self._rebuild_key_map()
@@ -2079,6 +2200,7 @@ class DuskyTUI(App):
             if current_mtime > self.last_theme_mtime:
                 new_theme = await asyncio.to_thread(load_matugen_json, self.theme_path)
                 if new_theme is not None:
+                    self._schema_dirty_counter += 1
                     self.last_theme_mtime = current_mtime
                     self.theme_colors.update(new_theme)
                     self.apply_theme_to_engine()
@@ -2237,9 +2359,10 @@ class DuskyTUI(App):
                 indicator.display = False
         except Exception: pass
 
-    def notify_status(self, msg: str) -> None:
+    def notify_status(self, msg: str, level: str = "info") -> None:
         app_footer = self.query_one(AppFooter)
         app_footer.status_msg = msg
+        app_footer.status_level = level
         if self._status_timer: self._status_timer.stop()
         self._status_timer = self.set_timer(3, lambda: setattr(app_footer, 'status_msg', ""))
 
@@ -2257,6 +2380,7 @@ class DuskyTUI(App):
                 subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def _apply_transaction(self, transaction: list[tuple[int, int, Any, Any]], action_type: str = "new", success_msg: str = "") -> None:
+        self._schema_dirty_counter += 1
         for t, i, o, n in transaction:
             item = self.schema[t][i]
             item.value = o if action_type == "undo" else n
@@ -2265,34 +2389,40 @@ class DuskyTUI(App):
             self._refresh_single_ui(t, i, item)
         
         if self.auto_save:
-            self.action_save_batch() 
-            
-            successful_parts = []
-            failed_parts = []
-            
-            for t, i, o, n in transaction:
-                if (t, i) in self.pending_commits:
-                    failed_parts.append((t, i, o, n))
-                    item = self.schema[t][i]
-                    item.value = n if action_type == "undo" else o
-                    self._refresh_single_ui(t, i, item)
-                    self.pending_commits.discard((t, i))
-                else:
-                    successful_parts.append((t, i, o, n))
-            
-            if not failed_parts and success_msg:
-                self.notify_status(success_msg)
+            def finalize_transaction(batch_success: bool):
+                successful_parts = []
+                failed_parts = []
                 
-            if successful_parts:
-                if action_type == "undo": self.redo_stack.append(successful_parts)
-                elif action_type == "redo": self.undo_stack.append(successful_parts)
-                elif action_type == "new":
-                    self.undo_stack.append(successful_parts)
-                    self.redo_stack.clear()
+                for t, i, o, n in transaction:
+                    if (t, i) in self.pending_commits:
+                        failed_parts.append((t, i, o, n))
+                        item = self.schema[t][i]
+                        item.value = n if action_type == "undo" else o
+                        self._refresh_single_ui(t, i, item)
+                        self.pending_commits.discard((t, i))
+                    else:
+                        successful_parts.append((t, i, o, n))
+                
+                if not failed_parts and success_msg:
+                    self.notify_status(success_msg, level="success")
                     
-            if failed_parts:
-                if action_type == "undo": self.undo_stack.append(failed_parts)
-                elif action_type == "redo": self.redo_stack.append(failed_parts)
+                if successful_parts:
+                    if action_type == "undo": self.redo_stack.append(successful_parts)
+                    elif action_type == "redo": self.undo_stack.append(successful_parts)
+                    elif action_type == "new":
+                        self.undo_stack.append(successful_parts)
+                        self.redo_stack.clear()
+                        
+                if failed_parts:
+                    if action_type == "undo": self.undo_stack.append(failed_parts)
+                    elif action_type == "redo": self.redo_stack.append(failed_parts)
+                    
+                if getattr(self, "_preset_refresh_timer", None) is not None:
+                    self._preset_refresh_timer.stop()
+                    self._preset_refresh_timer = None
+                self._refresh_presets_ui()
+
+            self.action_save_batch(on_complete=finalize_transaction)
         else:
             self._update_footer_legend()
             if action_type == "undo": self.redo_stack.append(transaction)
@@ -2302,12 +2432,12 @@ class DuskyTUI(App):
                 self.redo_stack.clear()
 
             if success_msg:
-                self.notify_status(success_msg)
+                self.notify_status(success_msg, level="success")
 
-        if getattr(self, "_preset_refresh_timer", None) is not None:
-            self._preset_refresh_timer.stop()
-            self._preset_refresh_timer = None
-        self._refresh_presets_ui()
+            if getattr(self, "_preset_refresh_timer", None) is not None:
+                self._preset_refresh_timer.stop()
+                self._preset_refresh_timer = None
+            self._refresh_presets_ui()
 
     def _safe_apply_value(self, tab_idx: int, item_idx: int, item: ConfigItem, new_val: Any, is_undo: bool = False, batch_mode: bool = False, record_undo: bool = True) -> None:
         """Life-cycle interceptor managing confirmation dialog hooks before committing actual data mutation to RAM."""
@@ -2322,8 +2452,16 @@ class DuskyTUI(App):
     def _apply_value(self, tab_idx: int, item_idx: int, item: ConfigItem, new_val: Any, is_undo: bool = False, batch_mode: bool = False, record_undo: bool = True) -> bool:
         old_val = item.value
 
+        self._schema_dirty_counter += 1
+
         if not is_undo and record_undo:
-            self.undo_stack.append([(tab_idx, item_idx, old_val, new_val)])
+            item_uid = self._get_item_uid(item)
+            transaction = [(tab_idx, item_idx, old_val, new_val)]
+            for t_idx, items in self.schema.items():
+                for i_idx, other in enumerate(items):
+                    if other is not item and self._get_item_uid(other) == item_uid:
+                        transaction.append((t_idx, i_idx, other.value, new_val))
+            self.undo_stack.append(transaction)
             self.redo_stack.clear()
 
         item.value = new_val
@@ -2347,6 +2485,7 @@ class DuskyTUI(App):
             self._save_timers[k] = self.set_timer(
                 0.25, lambda ti=tab_idx, ii=item_idx, it=item, vs=val_str, ov=old_val: self._do_auto_save(ti, ii, it, vs, ov)
             )
+            self._pending_autosave_args[k] = (item, val_str, old_val)
         else:
             self.pending_commits.add((tab_idx, item_idx))
             if not batch_mode:
@@ -2367,9 +2506,14 @@ class DuskyTUI(App):
 
     def _do_auto_save(self, tab_idx: int, item_idx: int, item: ConfigItem, val_str: str, old_val: Any) -> None:
         self._save_timers.pop((tab_idx, item_idx), None)
+        self._pending_autosave_args.pop((tab_idx, item_idx), None)
         engine = self._get_engine_for_item(item)
 
-        success, msg, _ = engine.write_value(item.key, item.scope, val_str, item_type=item.type_)
+        try:
+            success, msg, _ = engine.write_value(item.key, item.scope, val_str, item_type=item.type_)
+        except Exception as e:
+            success, msg = False, f"Engine Error: {e}"
+
         if success:
             try:
                 ekey = self._get_item_engine_info(item)
@@ -2380,24 +2524,39 @@ class DuskyTUI(App):
             _opt0_lower = str(item.options[0]).lower() if item.options and isinstance(item.options, list) and len(item.options) > 0 else ""
             if item.type_ == "bool" and (_opt0_lower in ("trigger", "copy") or _opt0_lower.startswith("trigger:") or _opt0_lower.startswith("copy:")):
                 def reset_trigger():
-                    item.value = old_val
-                    self._refresh_single_ui(tab_idx, item_idx, item)
+                    itm_uid = self._get_item_uid(item)
+                    for t_idx, items in self.schema.items():
+                        for i_idx, other_item in enumerate(items):
+                            if self._get_item_uid(other_item) == itm_uid:
+                                other_item.value = item.default
+                                self._refresh_single_ui(t_idx, i_idx, other_item)
+                    self._schema_dirty_counter += 1
+                    self._refresh_presets_ui()
                 self.set_timer(0.15, reset_trigger)
                 
-            self.notify_status(f"Updated {item.label}")
-        elif msg == "AUTH_REQUIRED" or "AUTH_REQUIRED" in msg:
+            self.notify_status(f"Updated {item.label}", level="success")
+        elif "AUTH_REQUIRED" in msg:
+            if isinstance(self.screen, PasswordScreen):
+                self.notify_status("Another authorization is already in progress.", level="warning")
+                item.value = old_val
+                self._refresh_single_ui(tab_idx, item_idx, item)
+                if self.undo_stack:
+                    top_tx = self.undo_stack[-1]
+                    if len(top_tx) == 1 and top_tx[0][:2] == (tab_idx, item_idx):
+                        self.undo_stack.pop()
+                return
             async def on_pwd(pwd: str | None) -> None:
                 if pwd:
                     auth_res = await asyncio.to_thread(
                         subprocess.run, ["sudo", "-S", "-v"], input=(pwd + "\n").encode(), capture_output=True
                     )
                     if auth_res.returncode == 0:
-                        self.notify_status("Sudo authenticated. Retrying...")
+                        self.notify_status("Sudo authenticated. Retrying...", level="info")
                         if not hasattr(self, "_sudo_keepalive"):
                             self._sudo_keepalive = self.set_interval(60.0, lambda: subprocess.run(["sudo", "-n", "-v"], capture_output=True))
                         self._do_auto_save(tab_idx, item_idx, item, val_str, old_val)
                     else:
-                        self.notify_status("Incorrect sudo password.")
+                        self.notify_status("Incorrect sudo password.", level="error")
                         item.value = old_val
                         self._refresh_single_ui(tab_idx, item_idx, item)
                         if self.undo_stack:
@@ -2406,7 +2565,7 @@ class DuskyTUI(App):
                                 self.undo_stack.pop()
                         self.play_reset_sound()
                 else:
-                    self.notify_status("Sudo authentication cancelled.")
+                    self.notify_status("Sudo authentication cancelled.", level="warning")
                     item.value = old_val
                     self._refresh_single_ui(tab_idx, item_idx, item)
                     if self.undo_stack:
@@ -2416,7 +2575,7 @@ class DuskyTUI(App):
 
             self.push_screen(PasswordScreen(), on_pwd)
         else:
-            self.notify_status(f"Error: {msg}")
+            self.notify_status(f"Error: {msg}", level="error")
 
             item.value = old_val
             self._refresh_single_ui(tab_idx, item_idx, item)
@@ -2446,6 +2605,7 @@ class DuskyTUI(App):
             self._populate_option_list(tab_idx)
 
     def action_toggle_save_mode(self) -> None:
+        if self._modal_active(): return
         self.auto_save = not self.auto_save
 
     def action_toggle_expand(self) -> None:
@@ -2460,10 +2620,15 @@ class DuskyTUI(App):
             item.expanded = not item.expanded
             self._populate_option_list(tab_idx, maintain_highlight_id=ol.last_highlighted_id)
 
-    def action_save_batch(self) -> bool:
+    def action_save_batch(self, on_complete=None) -> bool:
+        if self._modal_active():
+            if on_complete: on_complete(False)
+            return False
+            
         self.trigger_shortcut_blink("ctrl-s")
         if not self.pending_commits:
-            self.notify_status("No pending changes.")
+            self.notify_status("No pending changes.", level="info")
+            if on_complete: on_complete(True)
             return True
 
         batches = {}
@@ -2484,10 +2649,26 @@ class DuskyTUI(App):
             changes = [b[0] for b in batch]
             commits = [b[1] for b in batch]
             
-            success, msg, _ = engine.write_batch(changes)
+            try:
+                success, msg, _ = engine.write_batch(changes)
+            except Exception as e:
+                success, msg, _ = False, f"Engine Error: {e}", ""
+                
             if success:
                 success_count += len(changes)
-                for c in commits: self.pending_commits.discard(c)
+                for c in commits:
+                    self.pending_commits.discard(c)
+                    t, i = c
+                    itm = self.schema[t][i]
+                    _o = str(itm.options[0]).lower() if itm.options else ""
+                    if itm.type_ == "bool" and (_o in ("trigger", "copy") or _o.startswith(("trigger:", "copy:"))):
+                        itm_uid = self._get_item_uid(itm)
+                        for t_idx, items in self.schema.items():
+                            for i_idx, other_item in enumerate(items):
+                                if self._get_item_uid(other_item) == itm_uid:
+                                    other_item.value = itm.default
+                                    self._refresh_single_ui(t_idx, i_idx, other_item)
+                        self._schema_dirty_counter += 1
                 try: self.last_target_mtimes[ekey] = Path(engine.target_path).expanduser().resolve().stat().st_mtime
                 except OSError: pass
             else:
@@ -2497,11 +2678,26 @@ class DuskyTUI(App):
                     
                 engine_success_count = 0
                 for (key, scope, val_str, itype), commit in batch:
-                    ok, item_msg, _ = engine.write_value(key, scope, val_str, item_type=itype)
+                    try:
+                        ok, item_msg, _ = engine.write_value(key, scope, val_str, item_type=itype)
+                    except Exception as e:
+                        ok, item_msg = False, f"Engine Error: {e}"
+                        
                     if ok:
                         success_count += 1
                         engine_success_count += 1
                         self.pending_commits.discard(commit)
+                        t, i = commit
+                        itm = self.schema[t][i]
+                        _o = str(itm.options[0]).lower() if itm.options else ""
+                        if itm.type_ == "bool" and (_o in ("trigger", "copy") or _o.startswith(("trigger:", "copy:"))):
+                            itm_uid = self._get_item_uid(itm)
+                            for t_idx, items in self.schema.items():
+                                for i_idx, other_item in enumerate(items):
+                                    if self._get_item_uid(other_item) == itm_uid:
+                                        other_item.value = itm.default
+                                        self._refresh_single_ui(t_idx, i_idx, other_item)
+                            self._schema_dirty_counter += 1
                         try: self.last_target_mtimes[ekey] = Path(engine.target_path).expanduser().resolve().stat().st_mtime
                         except OSError: pass
                     else:
@@ -2517,43 +2713,53 @@ class DuskyTUI(App):
                     final_success = False
 
         if auth_required_detected:
+            if isinstance(self.screen, PasswordScreen):
+                self.notify_status("Another authorization is already in progress.", level="warning")
+                if on_complete: on_complete(False)
+                return False
+                
             async def on_pwd_batch(pwd: str | None) -> None:
                 if pwd:
                     auth_res = await asyncio.to_thread(
                         subprocess.run, ["sudo", "-S", "-v"], input=(pwd + "\n").encode(), capture_output=True
                     )
                     if auth_res.returncode == 0:
-                        self.notify_status("Sudo authenticated. Retrying batch...")
+                        self.notify_status("Sudo authenticated. Retrying batch...", level="info")
                         if not hasattr(self, "_sudo_keepalive"):
                             self._sudo_keepalive = self.set_interval(60.0, lambda: subprocess.run(["sudo", "-n", "-v"], capture_output=True))
-                        self.action_save_batch()
+                        self.action_save_batch(on_complete=on_complete)
                     else:
-                        self.notify_status("Incorrect sudo password. Batch aborted.")
+                        self.notify_status("Incorrect sudo password. Batch aborted.", level="error")
+                        if on_complete: on_complete(False)
                 else:
-                    self.notify_status("Sudo authentication cancelled.")
+                    self.notify_status("Sudo authentication cancelled.", level="warning")
+                    if on_complete: on_complete(False)
+                    
             self.push_screen(PasswordScreen(), on_pwd_batch)
             return False
 
         if final_success:
-            self.notify_status(f"Batched {success_count} commits successfully.")
+            self.notify_status(f"Batched {success_count} commits successfully.", level="success")
             self.play_reset_sound()
         elif success_count > 0:
             first_err = error_msgs[0] if error_msgs else "Unknown Engine Error"
-            self.notify_status(f"Partial success ({success_count} applied). Error: {first_err}")
+            self.notify_status(f"Partial success ({success_count} applied). Error: {first_err}", level="warning")
             self.play_reset_sound()
         else:
             first_err = error_msgs[0] if error_msgs else "Unknown Engine Error"
-            self.notify_status(f"Batch Error: {first_err}")
+            self.notify_status(f"Batch Error: {first_err}", level="error")
 
         self._refresh_all_ui()
         self._update_footer_legend()
+        if on_complete:
+            on_complete(final_success)
         return final_success
 
     def action_show_diff(self) -> None:
         if isinstance(self.screen, DiffScreen):
             self.screen.dismiss(None)
             return
-        if isinstance(self.screen, ModalScreen): return
+        if self._modal_active(): return
 
         self.toggle_shortcut_active("d", True)
         self.push_screen(DiffScreen(), lambda _: self.toggle_shortcut_active("d", False))
@@ -2562,14 +2768,15 @@ class DuskyTUI(App):
         if isinstance(self.screen, ShortcutsInfoScreen):
             self.screen.dismiss(None)
             return
-        if isinstance(self.screen, ModalScreen): return
+        if self._modal_active(): return
 
         self.toggle_shortcut_active("f1", True)
         self.push_screen(ShortcutsInfoScreen(), lambda _: self.toggle_shortcut_active("f1", False))
 
     def action_undo(self) -> None:
+        if self._modal_active(): return
         if not self.undo_stack:
-            self.notify_status("Nothing to undo.")
+            self.notify_status("Nothing to undo.", level="warning")
             return
         transaction = self.undo_stack.pop()
 
@@ -2581,8 +2788,9 @@ class DuskyTUI(App):
         self._apply_transaction(transaction, action_type="undo", success_msg=msg)
 
     def action_redo(self) -> None:
+        if self._modal_active(): return
         if not self.redo_stack:
-            self.notify_status("Nothing to redo.")
+            self.notify_status("Nothing to redo.", level="warning")
             return
         transaction = self.redo_stack.pop()
 
@@ -2606,6 +2814,7 @@ class DuskyTUI(App):
                     self._update_help_panel(parsed[2])
 
     def action_focus_local_search(self) -> None:
+        if self._modal_active(): return
         inp = self.query_one("#local-search", Input)
         inp.add_class("-active")
         inp.value = ""
@@ -2619,7 +2828,7 @@ class DuskyTUI(App):
             self.toggle_shortcut_active("slash", False)
             if ol := self.current_option_list:
                 self.call_after_refresh(ol.focus)
-        elif isinstance(self.screen, ModalScreen):
+        elif self._modal_active():
             self.screen.dismiss(None)
 
     @on(Input.Changed, "#local-search")
@@ -2676,7 +2885,7 @@ class DuskyTUI(App):
         if isinstance(self.screen, SearchScreen):
             self.screen.dismiss(None)
             return
-        if isinstance(self.screen, ModalScreen): return
+        if self._modal_active(): return
 
         self.toggle_shortcut_active("ctrl-f", True)
 
@@ -2718,9 +2927,16 @@ class DuskyTUI(App):
 
         self.push_screen(SearchScreen(), check_reply)
 
-    def action_next_tab(self) -> None: self.query_one(Tabs).action_next_tab()
-    def action_prev_tab(self) -> None: self.query_one(Tabs).action_previous_tab()
+    def action_next_tab(self) -> None:
+        if self._modal_active(): return
+        self.query_one(Tabs).action_next_tab()
+        
+    def action_prev_tab(self) -> None:
+        if self._modal_active(): return
+        self.query_one(Tabs).action_previous_tab()
+        
     def action_switch_tab(self, index: int) -> None:
+        if self._modal_active(): return
         if 0 <= index < len(self.tabs): self.query_one(Tabs).active = f"tab-id-{index}"
 
     def action_adjust(self, direction: int, bypass_lock: bool = False) -> None:
@@ -2735,7 +2951,7 @@ class DuskyTUI(App):
         # via arrow keys, BUT allow the explicit bypass flag to permit Enter/Clicks to succeed 
         # and correctly route to the confirmation popup.
         if item.confirm_message and not bypass_lock:
-            self.notify_status(f"Protected value: Press Enter to explicitly modify '{item.label}'.")
+            self.notify_status(f"Protected value: Press Enter to explicitly modify '{item.label}'.", level="warning")
             return
 
         new_val = item.value
@@ -2782,6 +2998,7 @@ class DuskyTUI(App):
             self._safe_apply_value(parsed[0], parsed[1], parsed[2], parsed[2].default)
 
     def action_reset_all(self) -> None:
+        if self._modal_active(): return
         self.trigger_shortcut_blink("R")
         try:
             switcher = self.query_one(ContentSwitcher)
@@ -2814,10 +3031,11 @@ class DuskyTUI(App):
                     title="Reset Page", level="danger"
                 ), on_confirm)
             else:
-                self.notify_status(f"No changes to reset in {self.tabs[tab_idx]}")
+                self.notify_status(f"No changes to reset in {self.tabs[tab_idx]}", level="info")
         except Exception: pass
 
     def action_save_preset(self) -> None:
+        if self._modal_active(): return
         def check_reply(name: str | None) -> None:
             if not name: return
             # SECURITY PATCH: Sanitize input to prevent Path Traversal (CWE-22)
@@ -2837,12 +3055,12 @@ class DuskyTUI(App):
             try:
                 with open(file_path, "w", encoding="utf-8") as f:
                     json.dump(payload, f, indent=4)
-                self.notify_status(f"Successfully saved preset: {name}")
+                self.notify_status(f"Successfully saved preset: {name}", level="success")
                 self._load_user_presets()
                 self._rebuild_key_map()
                 self._refresh_all_ui()
             except Exception as e:
-                self.notify_status(f"Error saving preset: {e}")
+                self.notify_status(f"Error saving preset: {e}", level="error")
 
         self.push_screen(HybridInputScreen("Save Current State as Preset (Name):", ""), check_reply)
 
@@ -2860,7 +3078,7 @@ class DuskyTUI(App):
                 # Dump empty JSON to create template and prevent parser crash
                 with open(file_path, "w", encoding="utf-8") as f:
                     json.dump({}, f, indent=4)
-                self.notify_status(f"Created import template: {name}")
+                self.notify_status(f"Created import template: {name}", level="success")
                 self._load_user_presets()
                 self._rebuild_key_map()
                 self._refresh_all_ui()
@@ -2868,11 +3086,12 @@ class DuskyTUI(App):
                 # Launch external editor explicitly forcing button=1 to hit our new mousepad logic
                 self.open_file_externally(file_path, button=1, touch_first=False)
             except Exception as e:
-                self.notify_status(f"Error importing preset: {e}")
+                self.notify_status(f"Error importing preset: {e}", level="error")
 
         self.push_screen(HybridInputScreen("Import Preset (Enter new name):", ""), check_reply)
 
     def action_delete_user_preset(self) -> None:
+        if self._modal_active(): return
         ol = self.current_option_list
         if not ol or not ol.last_highlighted_id: return
         parsed = self._get_item_from_id(ol.last_highlighted_id)
@@ -2887,12 +3106,12 @@ class DuskyTUI(App):
                     if confirmed:
                         try:
                             file_path.unlink()
-                            self.notify_status(f"Deleted preset: {name}")
+                            self.notify_status(f"Deleted preset: {name}", level="success")
                             self._load_user_presets()
                             self._rebuild_key_map()
                             self._refresh_all_ui()
                         except Exception as e:
-                            self.notify_status(f"Error deleting preset: {e}")
+                            self.notify_status(f"Error deleting preset: {e}", level="error")
                 self.push_screen(ConfirmDialog(f"Are you sure you want to permanently delete the preset **{name}**?", title="Delete Preset", level="danger"), do_delete)
 
     def action_submit_current(self) -> None:
@@ -2984,11 +3203,11 @@ class DuskyTUI(App):
 
         command = str(item.default) if item.default else ""
         if not command:
-            self.notify_status(f"No command defined for: {item.label}")
+            self.notify_status(f"No command defined for: {item.label}", level="error")
             return
             
         def do_execute():
-            self.notify_status(f"Executing: {item.label}...")
+            self.notify_status(f"Executing: {item.label}...", level="info")
             
             async def run_task():
                 try:
@@ -3001,7 +3220,7 @@ class DuskyTUI(App):
                         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10.0)
                     except asyncio.TimeoutError:
                         proc.kill()
-                        self.notify_status(f"Action timed out after 10 seconds.")
+                        self.notify_status(f"Action timed out after 10 seconds.", level="error")
                         return
                     
                     if proc.returncode == 0:
@@ -3009,16 +3228,16 @@ class DuskyTUI(App):
                         if out:
                             # Only take first line or truncate to fit neatly in the UI status bar
                             out_single = out.split('\n')[0]
-                            self.notify_status(f"Success: {out_single[:60]}")
+                            self.notify_status(f"Success: {out_single[:60]}", level="success")
                         else:
-                            self.notify_status(f"Action '{item.label}' completed.")
+                            self.notify_status(f"Action '{item.label}' completed.", level="success")
                     else:
                         err = stderr.decode('utf-8').strip().split('\n')[0]
                         if not err:
                             err = "Unknown execution error"
-                        self.notify_status(f"Action failed: {err[:60]}")
+                        self.notify_status(f"Action failed: {err[:60]}", level="error")
                 except Exception as e:
-                    self.notify_status(f"Execution error: {str(e)[:60]}")
+                    self.notify_status(f"Execution error: {str(e)[:60]}", level="error")
                     
             # Fire and forget onto the event loop so the TUI remains perfectly responsive
             asyncio.create_task(run_task())
@@ -3041,7 +3260,7 @@ class DuskyTUI(App):
                     pass
 
         if preset_item.preset_payload is None:
-            self.notify_status("Preset contains no payload.")
+            self.notify_status("Preset contains no payload.", level="error")
             return
             
         def do_apply():
@@ -3075,9 +3294,9 @@ class DuskyTUI(App):
 
             if not transaction:
                 if skipped > 0:
-                    self.notify_status(f"Preset applied, but {skipped} items were missing/invalid.")
+                    self.notify_status(f"Preset applied, but {skipped} items were missing/invalid.", level="warning")
                 else:
-                    self.notify_status("Preset already active (no changes needed).")
+                    self.notify_status("Preset already active (no changes needed).", level="info")
                 return
                 
             verb = "applied" if self.auto_save else "queued"
@@ -3106,7 +3325,7 @@ class DuskyTUI(App):
                         if item.max_val is not None: parsed_val = min(int(item.max_val), parsed_val)
                         new_val = parsed_val
                     except ValueError:
-                        self.notify_status("Error: Value must be an integer.")
+                        self.notify_status("Error: Value must be an integer.", level="error")
                         return
                 elif item.type_ == "float":
                     try:
@@ -3115,7 +3334,7 @@ class DuskyTUI(App):
                         if item.max_val is not None: parsed_val = min(float(item.max_val), parsed_val)
                         new_val = parsed_val
                     except ValueError:
-                        self.notify_status("Error: Value must be a float.")
+                        self.notify_status("Error: Value must be a float.", level="error")
                         return
 
                 self._safe_apply_value(tab_idx, item_idx, item, new_val)
