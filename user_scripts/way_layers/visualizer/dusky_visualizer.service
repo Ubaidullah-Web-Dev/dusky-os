@@ -7,8 +7,8 @@ After=graphical-session.target
 Type=simple
 Environment=PYTHONUNBUFFERED=1 PYTHONOPTIMIZE=2 MALLOC_ARENA_MAX=1
 ExecStart=/usr/bin/python3 %h/user_scripts/way_layers/visualizer/visualizer_daemon.py
-Slice=app.slice
-OOMPolicy=continue
+Slice=app-graphical.slice
+OOMPolicy=kill
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=2s
