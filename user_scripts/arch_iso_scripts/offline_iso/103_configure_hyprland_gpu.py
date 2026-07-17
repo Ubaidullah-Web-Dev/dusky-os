@@ -10,41 +10,128 @@ Adapted for execution during Arch installation phase.
 Generates the configuration payload into the system skeleton directory.
 """
 
-# ── 1. Rich bootstrap ──
-import os, sys, shutil, subprocess
-try:
-    import rich # noqa: F401
-except ImportError:
-    pm = shutil.which("pacman")
-    if not pm:
-        print("pacman not found, install python-rich manually"); sys.exit(1)
-    # Arch ISO requires database sync (-Sy) before installation
-    cmd = [pm, "-Sy", "--needed", "--noconfirm", "python-rich"]
-    print(f"[BOOTSTRAP] Installing python-rich: {' '.join(cmd)}")
-    subprocess.run(cmd, check=True)
-    os.execv(sys.executable, [sys.executable] + sys.argv)
-
-import argparse, glob, pwd, re, tempfile
+# ── 1. Rich bootstrap & fallbacks ──
+import os, sys, shutil, subprocess, argparse, glob, pwd, re, tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from rich.console import Console
-from rich.table import Table
-from rich.prompt import Prompt
-from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
+# Attempt to load rich, attempt to install if missing, but do not crash on failure
+try:
+    import rich
+    HAS_RICH = True
+except Exception:
+    pm = shutil.which("pacman")
+    if pm:
+        cmd = [pm, "-Sy", "--needed", "--noconfirm", "python-rich"]
+        print(f"[BOOTSTRAP] Attempting to install python-rich: {' '.join(cmd)}")
+        try:
+            subprocess.run(cmd, check=True)
+            import rich
+            HAS_RICH = True
+        except Exception as e:
+            print(f"[BOOTSTRAP] Failed to install python-rich: {e}. Falling back to plain text.")
+            HAS_RICH = False
+    else:
+        HAS_RICH = False
 
-console = Console()
+if HAS_RICH:
+    from rich.console import Console
+    from rich.table import Table
+    from rich.prompt import Prompt
+    from rich.panel import Panel
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    console = Console()
+else:
+    def strip_rich(text: str) -> str:
+        return re.sub(r'\[/?[a-zA-Z0-9_=# ,.:;@&-]*\]', '', text)
+
+    class DummyTable:
+        def __init__(self, title=None, **kwargs):
+            self.title = title
+            self.columns = []
+            self.rows = []
+        def add_column(self, name):
+            self.columns.append(name)
+        def add_row(self, *args):
+            self.rows.append(args)
+
+    class DummyPanel:
+        def __init__(self, text, title=None, *args, **kwargs):
+            self.text = text
+            self.title = title
+        @staticmethod
+        def fit(text, title=None, *args, **kwargs):
+            return DummyPanel(text, title)
+
+    class DummyConsole:
+        def print(self, *args, **kwargs):
+            for arg in args:
+                if isinstance(arg, DummyTable):
+                    if arg.title:
+                        print(f"\n=== {strip_rich(arg.title)} ===")
+                    print(" | ".join(strip_rich(col) for col in arg.columns))
+                    for row in arg.rows:
+                        print(" | ".join(strip_rich(str(item)) for item in row))
+                elif isinstance(arg, DummyPanel):
+                    if arg.title:
+                        print(f"\n--- {strip_rich(arg.title)} ---")
+                    print(strip_rich(arg.text))
+                else:
+                    print(strip_rich(str(arg)))
+    console = DummyConsole()
+    Table = DummyTable
+    Panel = DummyPanel
+
+    class DummyPrompt:
+        @staticmethod
+        def ask(prompt, choices=None, default=None):
+            clean_prompt = strip_rich(prompt)
+            choice_str = f" ({'/'.join(choices)})" if choices else ""
+            default_str = f" [{default}]" if default is not None else ""
+            try:
+                val = input(f"{clean_prompt}{choice_str}{default_str}: ").strip()
+                if not val and default is not None:
+                    return default
+                return val
+            except (KeyboardInterrupt, EOFError):
+                print()
+                raise KeyboardInterrupt
+    Prompt = DummyPrompt
+
+    class DummyProgress:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, exc_type, exc_val, exc_tb): pass
+        def add_task(self, description, **kwargs):
+            print(f"Progress: {strip_rich(description)}")
+            return 0
+    Progress = DummyProgress
+    SpinnerColumn = lambda *args: None
+    TextColumn = lambda *args: None
+
+# Attempt to load pyudev, attempt to install if missing, but do not crash on failure
 try:
     import pyudev
     HAS_PYUDEV = True
-except ImportError:
-    HAS_PYUDEV = False
+except Exception:
+    pm = shutil.which("pacman")
+    if pm:
+        cmd = [pm, "-Sy", "--needed", "--noconfirm", "python-pyudev"]
+        print(f"[BOOTSTRAP] Attempting to install python-pyudev: {' '.join(cmd)}")
+        try:
+            subprocess.run(cmd, check=True)
+            import pyudev
+            HAS_PYUDEV = True
+        except Exception as e:
+            print(f"[BOOTSTRAP] Failed to install python-pyudev: {e}. Proceeding without pyudev.")
+            HAS_PYUDEV = False
+    else:
+        HAS_PYUDEV = False
 
 # ── 2. Privilege & package helpers ──
 # Explicit output path for the installation phase skeleton
-OUT_DEFAULT = Path("/etc/skel/.config/gpu.lua")
+OUT_DEFAULT = Path("/etc/skel/.config/hypr/gpu.lua")
 DRI_DIRS = [Path("/usr/lib/dri"), Path("/usr/lib64/dri")]
 
 def pacman_install(pkgs: List[str]) -> bool:
@@ -150,7 +237,7 @@ def detect() -> List[Gpu]:
             raw.append(Gpu(dev,pci,vid,vendor_label(vid),pci_name(pci),boot,drv,by,drv!="simpledrm"))
 
     if not raw:
-        console.print("[red]No DRM nodes - check KMS or host GPU pass-through[/]"); raise SystemExit(1)
+        return []
 
     if HAS_PYUDEV:
         try:
@@ -290,13 +377,16 @@ def main():
     args=ap.parse_args()
 
     ensure_bin("lspci","pciutils")
-    if not HAS_PYUDEV:
-        ensure_py_module("pyudev","python-pyudev")
+    # pyudev is optional and not strictly required since glob fallback is available
 
     out = args.output
     console.print(Panel.fit(f"Arch ISO Hyprland Skeleton Generator\nPython {'.'.join(map(str, sys.version_info[:3]))} | Targeted Output: {out}", style="bold cyan"))
 
     cards=detect()
+    if not cards:
+        console.print("[yellow][WARN] No DRM nodes detected. Writing empty GPU config fallback to avoid boot crash.[/]")
+        atomic_write(out, "-- No DRM nodes detected during installation.\n")
+        return
     primary,mode=select_gpu(cards, args.auto)
     ordered=[primary]+[c for c in cards if c.dev_node!=primary.dev_node]
     
