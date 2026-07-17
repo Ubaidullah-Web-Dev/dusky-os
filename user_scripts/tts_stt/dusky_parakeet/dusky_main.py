@@ -392,49 +392,75 @@ class WorkerManager:
                     pass
             self.proc = None
 
-def get_new_suffix(last_model_text: str, new_text: str) -> str:
+def get_new_suffix(typed_text: str, new_text: str) -> tuple[str, int]:
     """Find the portion of new_text that hasn't been typed yet by comparing
-    it to the last model text for the current active buffer.
+    against what was actually typed on screen. Returns a tuple of:
+    (suffix_to_type, num_backspaces_needed_to_clear_garbage)
+    
+    This is robust against ASR model instability during buffer truncation,
+    and fixes stuttering/garbage retention by backspacing incorrect trailing words.
     """
     def clean(w: str) -> str:
         return w.lower().strip(".,?!:;\"'()-")
+        
+    import re
+    all_words = typed_text.split()
     
-    last_words = last_model_text.strip().split()
+    # We only look at the last 80 words for matching
+    tail_words = all_words[-80:] if len(all_words) > 80 else all_words
     new_words = new_text.strip().split()
     
-    if not last_words:
-        return new_text.strip()
+    if not tail_words:
+        return (new_text.strip(), 0)
     if not new_words:
-        return ""
+        return ("", 0)
         
-    last_clean = [clean(w) for w in last_words]
+    tail_clean = [clean(w) for w in tail_words]
     new_clean = [clean(w) for w in new_words]
     
     best_new_end = 0
-    best_score = (0, 0)  # (closeness_to_end_of_last, match_length)
+    best_score = (0, 0)  # (closeness_to_end_of_tail, match_length)
+    best_tail_end = 0
     
     for j in range(len(new_clean)):
-        for i in range(len(last_clean)):
-            if last_clean[i] != new_clean[j]:
+        for i in range(len(tail_clean)):
+            if tail_clean[i] != new_clean[j]:
                 continue
             k = 0
-            while (i + k < len(last_clean) and 
+            while (i + k < len(tail_clean) and 
                    j + k < len(new_clean) and 
-                   last_clean[i + k] == new_clean[j + k]):
+                   tail_clean[i + k] == new_clean[j + k]):
                 k += 1
-            if k >= 1:
+            if k >= 2:  # require at least 2-word match
                 closeness = i + k
                 score = (closeness, k)
                 if score > best_score:
                     best_score = score
                     best_new_end = j + k
+                    best_tail_end = i + k
                     
-    # If the match is close to the end of last_clean, or is a solid match (length >= 2)
-    if best_score[0] >= len(last_clean) - 2 or best_score[1] >= 2:
-        return " ".join(new_words[best_new_end:])
+    if best_score[1] >= 2:
+        words_to_delete = len(tail_clean) - best_tail_end
+        if words_to_delete > 0:
+            # Calculate exact number of characters to backspace from typed_text
+            matches = list(re.finditer(r'\S+', typed_text))
+            if matches and words_to_delete <= len(matches):
+                first_word_to_delete = matches[-words_to_delete]
+                chars_to_delete = len(typed_text) - first_word_to_delete.start()
+            else:
+                chars_to_delete = len(typed_text)
+        else:
+            chars_to_delete = 0
+            
+        return (" ".join(new_words[best_new_end:]), chars_to_delete)
         
-    # If no overlap is found, they are disjoint, so type the full text
-    return new_text.strip()
+    # No reliable overlap found
+    if len(all_words) < 20:
+        # Early-phase correction: replace everything typed so far
+        return (new_text.strip(), len(typed_text))
+        
+    # No reliable overlap found, and we're too deep to safely rewrite
+    return ("", 0)
 
 class DuskyDaemon:
     def __init__(self, config: dict):
@@ -465,7 +491,6 @@ class DuskyDaemon:
             self.stop_event.clear()
             self.submitted_count = 0
             self.processed_count = 0
-            self.last_model_text = ""
             self.last_chunk_idx = -1
             import queue
             self.audio_q = queue.Queue()
@@ -547,7 +572,6 @@ class DuskyDaemon:
                         # Flush rolling window on explicit long silence boundaries to avoid phrase limits
                         if silence_samples >= max_silence and self.recording:
                             rolling_buffer = np.array([], dtype=np.float32)
-                            self.last_model_text = ""
                             # Clear audio queue to discard any backlog from before the pause
                             try:
                                 while not self.audio_q.empty():
@@ -586,18 +610,43 @@ class DuskyDaemon:
                             res = latest_by_idx[idx]
                             text = res.get("text", "").strip()
                             
-                            # Reset last_model_text when boundary index changes (pause flush)
-                            if idx != getattr(self, "last_chunk_idx", -1):
-                                self.last_model_text = ""
+                            # Detect chunk index transitions (new segment after silence flush)
+                            is_new_segment = (idx != getattr(self, "last_chunk_idx", -1))
+                            if is_new_segment:
                                 self.last_chunk_idx = idx
+                            
+                            if not self.typed_text.strip() or is_new_segment:
+                                # First result of session OR new segment after pause
+                                # Type everything - no overlap to match against
+                                suffix = text
+                                backspaces = 0
+                            else:
+                                suffix, backspaces = get_new_suffix(self.typed_text, text)
                                 
-                            suffix = get_new_suffix(self.last_model_text, text)
+                            if backspaces > 0:
+                                # Ensure we don't try to backspace more than what's recorded
+                                backspaces = min(backspaces, len(self.typed_text))
+                                if shutil.which("wtype"):
+                                    try:
+                                        # Send backspaces in chunks to avoid command line limits
+                                        chunk_size = 50
+                                        remaining = backspaces
+                                        while remaining > 0:
+                                            do_now = min(remaining, chunk_size)
+                                            bs_args = ["wtype"]
+                                            for _ in range(do_now):
+                                                bs_args.extend(["-k", "BackSpace"])
+                                            subprocess.run(bs_args, check=False, timeout=5)
+                                            remaining -= do_now
+                                    except Exception:
+                                        pass
+                                self.typed_text = self.typed_text[:-backspaces]
+                            
                             if suffix:
-                                if self.typed_text and not self.typed_text.endswith(" "):
+                                if self.typed_text and not self.typed_text.endswith(" ") and not self.typed_text.endswith("\n"):
                                     suffix = " " + suffix
                                 type_into_focused(suffix)
                                 self.typed_text += suffix
-                                self.last_model_text = text
                             
                             self.acc_chunks.append({"index": idx, "text": text, "start_sec": res.get("start_sec", 0)})
                     else:
