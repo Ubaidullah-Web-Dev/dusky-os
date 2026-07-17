@@ -81,6 +81,17 @@ def run_with_retry(cmd, max_retries=2, delay=3, **kwargs):
             console.print(f"[dim]{last.stderr[-800:]}[/]")
     return last
 
+def get_total_ram_gb() -> float:
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    kb = int(line.split()[1])
+                    return kb / 1024 / 1024
+    except Exception:
+        pass
+    return 16.0
+
 def check_pacman_deps():
     need={"pipewire":"pipewire","pipewire-pulse":"pipewire-pulse","wl-copy":"wl-clipboard",
           "wtype":"wtype","ffmpeg":"ffmpeg","notify-send":"libnotify","yad":"yad","uv":"uv"}
@@ -132,7 +143,7 @@ if nd.exists():
                     has=True
                 if has:
                     libs.append(str(d))
-for mod in ("torch","torchaudio"):
+for mod in ("torch","torchaudio","torchvision"):
     try:
         import importlib.util
         spec=importlib.util.find_spec(mod)
@@ -156,36 +167,49 @@ print("\\n".join(uniq))
     return []
 
 def install_torch_stack(venv_python: Path, cuda_variant: str):
+    ram_gb = get_total_ram_gb()
     if cuda_variant=="nvidia-cuda13":
-        index="https://download.pytorch.org/whl/cu130"
-        console.print(f"[cyan]Installing PyTorch CUDA13 STABLE from {index}[/]")
-        # Known-good matched versions for Python 3.14 - torch 2.11.0 is latest stable with cu130
-        attempts=[
-            ["uv","pip","install","--python",str(venv_python),"--index-url",index,
-             "torch==2.11.0","torchaudio==2.11.0","torchvision==0.26.0"],
-            ["uv","pip","install","--python",str(venv_python),"--index-url",index,
-             "torch","torchaudio"],
+        candidates = [
+            ("2.11.0", "0.26.0", "2.11.0", "cu130"),
+            ("2.12.1", "0.27.1", "2.12.1", "cu130"),
+            ("2.13.0", "0.28.0", "2.13.0", "cu130"),
+            ("2.13.0", "0.28.0", "2.13.0", "cu132"),
         ]
     elif cuda_variant=="nvidia-cuda12":
-        index="https://download.pytorch.org/whl/cu128"
-        console.print(f"[cyan]Installing PyTorch CUDA12.8 LEGACY from {index}[/]")
-        attempts=[
-            ["uv","pip","install","--python",str(venv_python),"--index-url",index,
-             "torch==2.11.0","torchaudio==2.11.0"],
-            ["uv","pip","install","--python",str(venv_python),"--index-url",index,
-             "torch","torchaudio"],
+        candidates = [
+            ("2.11.0", "0.26.0", "2.11.0", "cu128"),
+            ("2.12.1", "0.27.1", "2.12.1", "cu128"),
+            ("2.13.0", "0.28.0", "2.13.0", "cu128"),
         ]
-    elif cuda_variant=="amd":
-        index="https://download.pytorch.org/whl/rocm6.3"
-        attempts=[["uv","pip","install","--python",str(venv_python),"--index-url",index,"torch","torchaudio"]]
     else:
-        index="https://download.pytorch.org/whl/cpu"
-        attempts=[["uv","pip","install","--python",str(venv_python),"--index-url",index,"torch","torchaudio"]]
+        candidates = []
 
+    attempts = []
+    if candidates:
+        for torch_ver, tv_ver, ta_ver, cu_tag in candidates:
+            idx = f"https://download.pytorch.org/whl/{cu_tag}"
+            attempts.append(["uv","pip","install","--python",str(venv_python),"--index-url",idx,
+                             f"torch=={torch_ver}",f"torchaudio=={ta_ver}",f"torchvision=={tv_ver}"])
+            attempts.append(["uv","pip","install","--python",str(venv_python),"--index-url",idx,
+                             f"torch=={torch_ver}",f"torchaudio=={ta_ver}"])
+
+    if cuda_variant=="nvidia-cuda13":
+        attempts.append(["uv","pip","install","--python",str(venv_python),"--index-url","https://download.pytorch.org/whl/cu130","torch","torchaudio","torchvision"])
+        attempts.append(["uv","pip","install","--python",str(venv_python),"--index-url","https://download.pytorch.org/whl/cu130","torch","torchaudio"])
+    elif cuda_variant=="nvidia-cuda12":
+        attempts.append(["uv","pip","install","--python",str(venv_python),"--index-url","https://download.pytorch.org/whl/cu128","torch","torchaudio","torchvision"])
+        attempts.append(["uv","pip","install","--python",str(venv_python),"--index-url","https://download.pytorch.org/whl/cu128","torch","torchaudio"])
+    elif cuda_variant=="amd":
+        attempts.append(["uv","pip","install","--python",str(venv_python),"--index-url","https://download.pytorch.org/whl/rocm6.3","torch","torchaudio"])
+    else:
+        attempts.append(["uv","pip","install","--python",str(venv_python),"--index-url","https://download.pytorch.org/whl/cpu","torch","torchaudio"])
+
+    console.print(f"[cyan]Installing PyTorch for {cuda_variant} - RAM {ram_gb:.1f}GB[/]")
     for cmd in attempts:
-        res=run_with_retry(cmd,cwd=str(APP_DIR),timeout=None,capture_output=False,max_retries=2)
+        console.print(f"[dim]Trying: {' '.join(cmd)}[/]")
+        res=run_with_retry(cmd,cwd=str(APP_DIR),timeout=None,capture_output=False,max_retries=1)
         if res.returncode==0:
-            console.print(f"[green]Torch OK via {index}[/]")
+            console.print(f"[green]Torch OK via {cmd[-4] if len(cmd)>=4 else cmd[-1]}[/]")
             return True
     console.print("[red]All torch attempts failed[/]")
     return False
@@ -227,15 +251,20 @@ def main():
     ochoice=Prompt.ask("Output [1/2/3/4]",default="4")
     out={"1":"clipboard","2":"file","3":"both","4":"realtime-both"}.get(ochoice,"realtime-both")
 
+    ram_gb = get_total_ram_gb()
+    use_xet_high_perf = ram_gb >= 64
+    if 60 <= ram_gb < 64:
+        console.print(f"[yellow]RAM {ram_gb:.1f}GB borderline, disabling HIGH_PERF for testing.[/]")
     config={"hardware":hardware,"model":model,"quantization":quant,"enable_vad":enable_vad,
             "chunk_seconds":chunk_seconds,"transcript_output":out,"realtime":enable_realtime,
             "realtime_chunk":1.2,"python":"3.14.6","idle_timeout":30,"use_ram":True,
-            "installer_version":"8.1-fixed","driver":hw.get("driver"),"driver_major":hw.get("driver_major")}
+            "installer_version":"8.5-improved","driver":hw.get("driver"),"driver_major":hw.get("driver_major"),
+            "ram_gb":ram_gb,"hf_xet_high_perf":use_xet_high_perf}
     console.print(Panel(json.dumps(config,indent=2),title="Config",border_style="green"))
     if not Confirm.ask("Proceed?",default=True): sys.exit(0)
 
     pyproject=APP_DIR/"pyproject.toml"
-    pyproject.write_text('[project]\nname="dusky-stt"\nversion="8.1"\nrequires-python=">=3.14"\ndependencies=[]\n[tool.uv]\nmanaged=true\n')
+    pyproject.write_text('[project]\nname="dusky-stt"\nversion="8.5"\nrequires-python=">=3.14"\ndependencies=[]\n[tool.uv]\nmanaged=true\n')
     console.print(f"\n[cyan]Creating venv at {APP_DIR} Python 3.14.6[/]")
     res=run(["uv","venv","--python","3.14.6","--clear"],cwd=str(APP_DIR),timeout=120)
     if res.returncode!=0:
@@ -260,7 +289,14 @@ def main():
     res=run_with_retry(["uv","pip","install","--python",str(venv_python)]+base_deps,
                        cwd=str(APP_DIR),timeout=None,capture_output=False,max_retries=2)
     if res.returncode!=0:
-        console.print("[red]Base install failed[/]"); sys.exit(1)
+        console.print("[yellow]0.12.0 failed, trying fallback[/]")
+        base_deps=["onnx-asr>=0.6.1","soundfile","numpy>=2.5.1","sounddevice","rich",
+                   "huggingface_hub>=0.28","hf_xet>=1.1","silero-vad==6.2.1",
+                   "onnxruntime==1.27.0" if hardware=="nvidia-cuda13" else "onnxruntime==1.26.0"]
+        res=run_with_retry(["uv","pip","install","--python",str(venv_python)]+base_deps,
+                           cwd=str(APP_DIR),timeout=None,capture_output=False,max_retries=2)
+        if res.returncode!=0:
+            console.print("[red]Base install failed[/]"); sys.exit(1)
 
     if hardware=="nvidia-cuda12":
         cuda_deps=["nvidia-cuda-runtime-cu12","nvidia-cublas-cu12","nvidia-cudnn-cu12",
@@ -288,7 +324,8 @@ def main():
     env=os.environ.copy()
     if ld_library_path:
         env["LD_LIBRARY_PATH"]=ld_library_path+(":"+env.get("LD_LIBRARY_PATH","") if env.get("LD_LIBRARY_PATH") else "")
-    env["HF_XET_HIGH_PERFORMANCE"]="1"
+    if use_xet_high_perf:
+        env["HF_XET_HIGH_PERFORMANCE"]="1"
     env["PYTHONUNBUFFERED"]="1"
     res=run([str(venv_python),"-c","import onnx_asr,soundfile,numpy,sounddevice,huggingface_hub; print('ALL IMPORTS OK')"],timeout=15,env=env)
     console.print(res.stdout[-2000:] if res.stdout else "")
@@ -312,19 +349,21 @@ def main():
                 dest.chmod(0o755)
             console.print(f"[green]Copied {fname} -> {dest}[/]")
 
-    (APP_DIR/".env").write_text(
-        f"LD_LIBRARY_PATH={ld_library_path}\n"
-        f"HF_XET_HIGH_PERFORMANCE=1\n"
-        f"HF_HUB_CACHE={Path.home()}/.cache/huggingface\n"
-        f"PYTHONUNBUFFERED=1\n"
-        f"PYTORCH_NVML_BASED_CUDA_CHECK=1\n"
-        f"CUDA_MODULE_LOADING=LAZY\n"
-    )
+    env_lines=[
+        f"LD_LIBRARY_PATH={ld_library_path}",
+        f"HF_HUB_CACHE={Path.home()}/.cache/huggingface",
+        f"PYTHONUNBUFFERED=1",
+        f"PYTORCH_NVML_BASED_CUDA_CHECK=1",
+        f"CUDA_MODULE_LOADING=LAZY",
+    ]
+    if use_xet_high_perf:
+        env_lines.append("HF_XET_HIGH_PERFORMANCE=1")
+    (APP_DIR/".env").write_text("\n".join(env_lines)+"\n")
 
     service_content=f"""[Unit]
-Description=Dusky STT v8.1 FIXED - Parakeet Realtime D3-cold safe
-After=pipewire.service pipewire-pulse.service graphical-session.target xdg-desktop-portal.service
-Wants=pipewire.service
+Description=Dusky STT v8.5 Improved
+After=graphical-session.target graphical-session-pre.target pipewire.service pipewire-pulse.service xdg-desktop-portal.service
+Wants=pipewire.service pipewire-pulse.service xdg-desktop-portal.service
 PartOf=graphical-session.target
 StartLimitBurst=5
 StartLimitIntervalSec=90
@@ -334,7 +373,6 @@ Type=exec
 ExecStart={APP_DIR}/.venv/bin/python {APP_DIR}/dusky_main.py --daemon
 WorkingDirectory={APP_DIR}
 Environment=HF_HUB_CACHE=%h/.cache/huggingface
-Environment=HF_XET_HIGH_PERFORMANCE=1
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTORCH_NVML_BASED_CUDA_CHECK=1
 Environment=CUDA_MODULE_LOADING=LAZY
@@ -355,10 +393,15 @@ SyslogIdentifier=dusky-stt
 [Install]
 WantedBy=default.target
 """
+    if use_xet_high_perf:
+        service_content = service_content.replace(
+            "Environment=CUDA_MODULE_LOADING=LAZY",
+            "Environment=CUDA_MODULE_LOADING=LAZY\nEnvironment=HF_XET_HIGH_PERFORMANCE=1"
+        )
     (APP_DIR/"dusky-stt.service").write_text(service_content)
     shutil.copy(APP_DIR/"dusky-stt.service", SYSTEMD_DIR/"dusky-stt.service")
     (APP_DIR/"install_config.json").write_text(json.dumps({**config,"ld_library_path":ld_library_path,"pip_cuda_paths":pip_cuda_paths},indent=2))
-    console.print(Panel(f"[bold green]Setup Complete v8.1 FIXED![/]\nTrigger: {TRIGGER_PATH}\nLD libs: {len(pip_cuda_paths)}\nEnable: systemctl --user daemon-reload && systemctl --user enable --now dusky-stt.service",title="Done",border_style="green"))
+    console.print(Panel(f"[bold green]Setup Complete v8.5 Improved![/]\nTrigger: {TRIGGER_PATH}\nLD libs: {len(pip_cuda_paths)}\nEnable: systemctl --user daemon-reload && systemctl --user enable --now dusky-stt.service",title="Done",border_style="green"))
 
 if __name__=="__main__":
     main()
