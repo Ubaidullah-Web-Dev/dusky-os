@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+# Dusky Trigger v6 - Realtime default, unified #1, auto pacman+uv deps
+
+import argparse
+import os
+import sys
+import sysconfig
+import time
+import subprocess
+import json
+from pathlib import Path
+import shutil
+
+if sys.version_info < (3, 14, 6):
+    print(f"Need 3.14.6+", file=sys.stderr)
+    sys.exit(1)
+if sysconfig.get_config_var("Py_GIL_DISABLED") == 1:
+    print("Need GIL", file=sys.stderr)
+    sys.exit(1)
+
+def get_runtime_dir() -> Path:
+    base = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    if not Path(base).exists():
+        base = "/tmp"
+    p = Path(base) / "dusky_stt"
+    p.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return p
+
+RUNTIME_DIR = get_runtime_dir()
+FIFO_PATH = RUNTIME_DIR / "fifo"
+PID_FILE = RUNTIME_DIR / "pid"
+READY_FILE = RUNTIME_DIR / "ready"
+RECORD_PID_FILE = RUNTIME_DIR / "recording"
+APP_DIR = Path.home() / "contained_apps" / "uv" / "dusky_stt_v2"
+
+def is_running() -> bool:
+    if not PID_FILE.exists():
+        return False
+    try:
+        pid = int(PID_FILE.read_text().strip())
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+def start_daemon() -> bool:
+    if shutil.which("systemctl"):
+        result = subprocess.run(["systemctl", "--user", "is-active", "dusky-stt.service"], capture_output=True, text=True)
+        if result.returncode != 0:
+            subprocess.run(["systemctl", "--user", "start", "dusky-stt.service"], capture_output=True)
+            time.sleep(0.5)
+    if is_running() and READY_FILE.exists():
+        return True
+    env = os.environ.copy()
+    try:
+        cfg_path = APP_DIR / "install_config.json"
+        if cfg_path.exists():
+            cfg = json.loads(cfg_path.read_text())
+            if cfg.get("hardware") == "nvidia-cuda13":
+                env["LD_LIBRARY_PATH"] = "/opt/cuda/lib64:" + env.get("LD_LIBRARY_PATH", "")
+    except Exception:
+        pass
+    env["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = RUNTIME_DIR / "daemon.log"
+    proc = subprocess.Popen(
+        ["uv", "run", "--no-sync", "dusky_main.py", "--daemon"],
+        cwd=str(APP_DIR),
+        env=env,
+        stdout=open(log_path, "a"),
+        stderr=subprocess.STDOUT,
+        start_new_session=True
+    )
+    try:
+        PID_FILE.write_text(str(proc.pid))
+        PID_FILE.chmod(0o600)
+    except Exception:
+        pass
+    for _ in range(50):
+        if READY_FILE.exists():
+            return True
+        time.sleep(0.1)
+    return READY_FILE.exists()
+
+def send_fifo(cmd: str) -> bool:
+    try:
+        with open(FIFO_PATH, "w") as f:
+            f.write(cmd + "\n")
+        return True
+    except FileNotFoundError:
+        return False
+    except Exception as e:
+        print(f"FIFO error {e}", file=sys.stderr)
+        return False
+
+def main():
+    parser = argparse.ArgumentParser(description="Dusky Trigger v6 - Realtime typing default")
+    parser.add_argument("--kill", action="store_true")
+    parser.add_argument("--status", action="store_true")
+    parser.add_argument("--logs", action="store_true")
+    parser.add_argument("--file", type=str, help="Transcribe file")
+    parser.add_argument("--restart", action="store_true")
+    parser.add_argument("--realtime", action="store_true", help="Force realtime typing mode")
+    parser.add_argument("--push", action="store_true", help="Force push-to-talk mode (not realtime)")
+    args = parser.parse_args()
+
+    if args.logs:
+        if shutil.which("journalctl"):
+            os.system("journalctl --user -u dusky-stt -f -n 100")
+        else:
+            os.system(f"tail -f {RUNTIME_DIR / 'daemon.log'}")
+        return
+
+    if args.status:
+        if is_running():
+            print(f"Running PID {PID_FILE.read_text().strip()}")
+            print(f"Runtime {RUNTIME_DIR} 0700")
+            print(f"FIFO {FIFO_PATH.exists()} Ready {READY_FILE.exists()}")
+            td = Path.home() / "Transcripts" / "DuskySTT"
+            if td.exists():
+                recent = sorted(td.glob("*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)[:5]
+                print("Recent:")
+                for p in recent:
+                    print(f"  {p.name} {p.stat().st_size}B")
+        else:
+            print("Not running")
+        return
+
+    if args.kill:
+        if shutil.which("systemctl"):
+            subprocess.run(["systemctl", "--user", "stop", "dusky-stt.service"], capture_output=True)
+        if PID_FILE.exists():
+            try:
+                os.kill(int(PID_FILE.read_text()), 15)
+            except Exception:
+                pass
+        for p in [PID_FILE, FIFO_PATH, READY_FILE, RECORD_PID_FILE]:
+            try:
+                Path(p).unlink(missing_ok=True)
+            except Exception:
+                pass
+        print("Stopped")
+        return
+
+    if args.restart:
+        if shutil.which("systemctl"):
+            subprocess.run(["systemctl", "--user", "restart", "dusky-stt.service"])
+            print("Restarted via systemd")
+        else:
+            if PID_FILE.exists():
+                try:
+                    os.kill(int(PID_FILE.read_text()), 15)
+                except Exception:
+                    pass
+            time.sleep(1)
+            start_daemon()
+            print("Restarted")
+        return
+
+    if args.file:
+        fpath = Path(args.file).expanduser().resolve()
+        if not fpath.exists():
+            print(f"Not found {fpath}", file=sys.stderr)
+            sys.exit(1)
+        if not is_running():
+            print("Starting daemon...")
+            if not start_daemon():
+                sys.exit(1)
+        if send_fifo(f"FILE:{fpath}"):
+            print(f"Sent {fpath.name}")
+            if shutil.which("notify-send"):
+                subprocess.run(["notify-send", "-a", "Dusky STT", "Transcribing file", f"{fpath.name}"])
+        else:
+            sys.exit(1)
+        return
+
+    # Toggle - default realtime if config says realtime
+    is_realtime_mode = True
+    try:
+        cfg_path = APP_DIR / "install_config.json"
+        if cfg_path.exists():
+            cfg = json.loads(cfg_path.read_text())
+            is_realtime_mode = cfg.get("realtime", True)
+    except Exception:
+        pass
+    if args.realtime:
+        is_realtime_mode = True
+    if args.push:
+        is_realtime_mode = False
+
+    if RECORD_PID_FILE.exists():
+        print("Stopping...")
+        if send_fifo("STOP"):
+            RECORD_PID_FILE.unlink(missing_ok=True)
+            if shutil.which("notify-send"):
+                subprocess.run(["notify-send", "-a", "Dusky STT", "-t", "2000", "Processing...", "Transcribing"], check=False)
+    else:
+        if not is_running():
+            print("Starting daemon...")
+            if not start_daemon():
+                print("Failed", file=sys.stderr)
+                sys.exit(1)
+        cmd = "START_REALTIME" if is_realtime_mode else "START"
+        if send_fifo(cmd):
+            RECORD_PID_FILE.write_text("recording")
+            try:
+                RECORD_PID_FILE.chmod(0o600)
+            except Exception:
+                pass
+            mode_str = "REALTIME typing" if is_realtime_mode else "push-to-talk"
+            print(f"Recording started [{mode_str}] - focus neovim/notepad and speak")
+            if shutil.which("notify-send"):
+                subprocess.run(["notify-send", "-a", "Dusky STT", "-t", "2500", f"{mode_str}", "Focus editor and speak. Trigger again to stop."], check=False)
+            if shutil.which("yad"):
+                try:
+                    subprocess.Popen(["yad", "--title=Parakeet STT", f"--text=\n  🎙️ {mode_str}...  \n", "--button=Stop Recording:0", "--on-top", "--skip-taskbar", "--center", "--width=350", "--no-escape", "--fixed"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+        else:
+            print("Failed", file=sys.stderr)
+
+if __name__ == "__main__":
+    main()
