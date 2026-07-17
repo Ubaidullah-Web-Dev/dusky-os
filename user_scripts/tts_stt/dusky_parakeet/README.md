@@ -19,8 +19,8 @@
 dusky_installer.py - Rich installer, auto pacman+uv, pure pip CUDA 13/12 resolution
 dusky_main.py      - CPU-only main, word-level realtime typing, blocking audio thread
 dusky_worker.py    - GPU worker, dynamic LD_LIBRARY_PATH discovery, D3-cold cleanup
-dusky-trigger      - Toggle, secure atomic FIFO trigger, systemd-enforced env tracking
-dusky-stt.service  - systemd user service (Type=exec), exponential backoff, memory clamps
+dusky_trigger      - Toggle, secure atomic FIFO trigger, systemd-enforced env tracking
+dusky_stt.service  - systemd user service (Type=exec), exponential backoff, memory clamps
 README.md          - This file
 
 ```
@@ -31,7 +31,7 @@ Place all 6 files into a single directory (e.g., `~/Downloads/dusky-v8.1`), then
 
 ```bash
 cd ~/Downloads/dusky-v8.1
-chmod +x dusky-trigger
+chmod +x dusky_trigger
 
 uv python install 3.14.6
 uv run --python 3.14.6 dusky_installer.py
@@ -43,15 +43,15 @@ uv run --python 3.14.6 dusky_installer.py
 # - Setup isolated venv at ~/contained_apps/uv/dusky_stt_v2/.venv via `uv pip` (no seed pollution)
 # - Discover pip CUDA paths and generate `.env` for systemd LD_LIBRARY_PATH injection
 # - Prefetch models via `hf_xet` (auto-disabled if RAM < 64GB)
-# - Copy files, install trigger to ~/.local/bin/dusky-trigger, and service to ~/.config/systemd/user/
+# - Copy files, install trigger to ~/.local/bin/dusky_trigger, and service to ~/.config/systemd/user/
 
 # Enable service
 systemctl --user daemon-reload
 loginctl enable-linger $USER
-systemctl --user enable --now dusky-stt.service
-journalctl --user -u dusky-stt -f
+systemctl --user enable --now dusky_stt.service
+journalctl --user -u dusky_stt -f
 
-# Bind hotkey to: ~/.local/bin/dusky-trigger
+# Bind hotkey to: ~/.local/bin/dusky_trigger
 
 ```
 
@@ -61,16 +61,16 @@ journalctl --user -u dusky-stt -f
 
 ```bash
 # Focus neovim / text editor, then press hotkey
-dusky-trigger  # shows "Streaming Suffix Engine - Focus target input element."
+dusky_trigger  # shows "Streaming Suffix Engine - Focus target input element."
 # Speak. It types live into the focused window via wtype.
 # "hello world this is realtime"
-dusky-trigger  # stop
+dusky_trigger  # stop
 
 # Force push-to-talk (paste at end)
-dusky-trigger --push  
+dusky_trigger --push  
 
 # Force realtime (if config defaulted to push)
-dusky-trigger --realtime
+dusky_trigger --realtime
 
 ```
 
@@ -84,7 +84,7 @@ How realtime works:
 **Podcast / Long File (High Quality / No OOM):**
 
 ```bash
-dusky-trigger --file ~/Downloads/podcast.mp3
+dusky_trigger --file ~/Downloads/podcast.mp3
 # Transcodes via ffmpeg using soxr:precision=28 to 16k mono.
 # VAD splits, incremental save to ~/Transcripts/DuskySTT/
 
@@ -93,10 +93,10 @@ dusky-trigger --file ~/Downloads/podcast.mp3
 **Status/logs:**
 
 ```bash
-dusky-trigger --status
-dusky-trigger --logs
-dusky-trigger --restart
-dusky-trigger --kill
+dusky_trigger --status
+dusky_trigger --logs
+dusky_trigger --restart
+dusky_trigger --kill
 
 ```
 
@@ -116,15 +116,15 @@ cat /sys/bus/pci/devices/0000:01:00.0/power_state           # D3cold
 
 * **No wtype / Virtual Keyboard blocked:** `sudo pacman -S wtype` (Wayland). Ensure your Wayland compositor allows virtual keyboard protocols.
 * **Audio failing (xrun/PipeWire):** Ensure `pipewire-pulse` is running. Check `pavucontrol`.
-* **Worker fails to load ONNX / CUDA:** Run `dusky-trigger --logs`. The new installer ensures pure pip isolation via the `.env` file, but if `onnxruntime` crashes, verify that PyTorch `2.11.0` was successfully installed during the setup phase.
-* **Service fails to start:** `systemctl --user status dusky-stt -l`. The service uses `Type=exec` to accurately report crash loops and will exponential-backoff after 5 failures.
+* **Worker fails to load ONNX / CUDA:** Run `dusky_trigger --logs`. The new installer ensures pure pip isolation via the `.env` file, but if `onnxruntime` crashes, verify that PyTorch `2.11.0` was successfully installed during the setup phase.
+* **Service fails to start:** `systemctl --user status dusky_stt -l`. The service uses `Type=exec` to accurately report crash loops and will exponential-backoff after 5 failures.
 
 ### Uninstall
 
 ```bash
-systemctl --user disable --now dusky-stt.service
-rm -rf ~/contained_apps/uv/dusky_stt_v2 ~/.config/systemd/user/dusky-stt.service $XDG_RUNTIME_DIR/dusky_stt ~/Transcripts/DuskySTT
-rm ~/.local/bin/dusky-trigger
+systemctl --user disable --now dusky_stt.service
+rm -rf ~/contained_apps/uv/dusky_stt_v2 ~/.config/systemd/user/dusky_stt.service $XDG_RUNTIME_DIR/dusky_stt ~/Transcripts/DuskySTT
+rm ~/.local/bin/dusky_trigger
 
 ```
 

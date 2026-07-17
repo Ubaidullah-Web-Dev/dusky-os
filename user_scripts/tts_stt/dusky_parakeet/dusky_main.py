@@ -91,7 +91,7 @@ def get_runtime_dir() -> Path:
             return runtime
         except Exception as e:
             logger.warning(f"XDG_RUNTIME_DIR invalid {e}, using secure tmp")
-    secure_dir = Path(tempfile.mkdtemp(prefix=f"dusky-stt-{os.getuid()}-", dir="/tmp"))
+    secure_dir = Path(tempfile.mkdtemp(prefix=f"dusky_stt-{os.getuid()}-", dir="/tmp"))
     try:
         secure_dir.chmod(0o700)
     except Exception:

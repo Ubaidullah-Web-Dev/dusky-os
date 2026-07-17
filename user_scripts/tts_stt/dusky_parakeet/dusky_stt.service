@@ -28,7 +28,7 @@ RestartMaxDelaySec=30
 TimeoutStopSec=5
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=dusky-stt
+SyslogIdentifier=dusky_stt
 
 [Install]
 WantedBy=default.target

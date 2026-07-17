@@ -53,7 +53,7 @@ SYSTEMD_DIR = Path.home() / ".config" / "systemd" / "user"
 TRANSCRIPT_DIR = Path.home() / "Transcripts" / "DuskySTT"
 for p in [APP_DIR, BIN_DIR, SYSTEMD_DIR, TRANSCRIPT_DIR]:
     p.mkdir(parents=True, exist_ok=True)
-TRIGGER_PATH = BIN_DIR / "dusky-trigger"
+TRIGGER_PATH = BIN_DIR / "dusky_trigger"
 
 def run(cmd, timeout=None, capture_output=True, env=None, cwd=None):
     try:
@@ -264,7 +264,7 @@ def main():
     if not Confirm.ask("Proceed?",default=True): sys.exit(0)
 
     pyproject=APP_DIR/"pyproject.toml"
-    pyproject.write_text('[project]\nname="dusky-stt"\nversion="8.5"\nrequires-python=">=3.14"\ndependencies=[]\n[tool.uv]\nmanaged=true\n')
+    pyproject.write_text('[project]\nname="dusky_stt"\nversion="8.5"\nrequires-python=">=3.14"\ndependencies=[]\n[tool.uv]\nmanaged=true\n')
     console.print(f"\n[cyan]Creating venv at {APP_DIR} Python 3.14.6[/]")
     res=run(["uv","venv","--python","3.14.6","--clear"],cwd=str(APP_DIR),timeout=120)
     if res.returncode!=0:
@@ -336,16 +336,16 @@ def main():
         sys.exit(1)
 
     src_dir=Path(__file__).parent
-    for fname in ["dusky_main.py","dusky_worker.py","dusky-trigger.py","README.md"]:
+    for fname in ["dusky_main.py","dusky_worker.py","dusky_trigger.py","README.md"]:
         cand=src_dir/fname
         if cand.exists():
-            if fname=="dusky-trigger.py":
+            if fname=="dusky_trigger.py":
                 dest=TRIGGER_PATH
-                (APP_DIR/"dusky-trigger.py").write_text(cand.read_text())
+                (APP_DIR/"dusky_trigger.py").write_text(cand.read_text())
             else:
                 dest=APP_DIR/fname
             shutil.copy(cand,dest)
-            if fname=="dusky-trigger.py":
+            if fname=="dusky_trigger.py":
                 dest.chmod(0o755)
             console.print(f"[green]Copied {fname} -> {dest}[/]")
 
@@ -388,7 +388,7 @@ RestartMaxDelaySec=30
 TimeoutStopSec=5
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=dusky-stt
+SyslogIdentifier=dusky_stt
 
 [Install]
 WantedBy=default.target
@@ -398,10 +398,10 @@ WantedBy=default.target
             "Environment=CUDA_MODULE_LOADING=LAZY",
             "Environment=CUDA_MODULE_LOADING=LAZY\nEnvironment=HF_XET_HIGH_PERFORMANCE=1"
         )
-    (APP_DIR/"dusky-stt.service").write_text(service_content)
-    shutil.copy(APP_DIR/"dusky-stt.service", SYSTEMD_DIR/"dusky-stt.service")
+    (APP_DIR/"dusky_stt.service").write_text(service_content)
+    shutil.copy(APP_DIR/"dusky_stt.service", SYSTEMD_DIR/"dusky_stt.service")
     (APP_DIR/"install_config.json").write_text(json.dumps({**config,"ld_library_path":ld_library_path,"pip_cuda_paths":pip_cuda_paths},indent=2))
-    console.print(Panel(f"[bold green]Setup Complete v8.5 Improved![/]\nTrigger: {TRIGGER_PATH}\nLD libs: {len(pip_cuda_paths)}\nEnable: systemctl --user daemon-reload && systemctl --user enable --now dusky-stt.service",title="Done",border_style="green"))
+    console.print(Panel(f"[bold green]Setup Complete v8.5 Improved![/]\nTrigger: {TRIGGER_PATH}\nLD libs: {len(pip_cuda_paths)}\nEnable: systemctl --user daemon-reload && systemctl --user enable --now dusky_stt.service",title="Done",border_style="green"))
 
 if __name__=="__main__":
     main()

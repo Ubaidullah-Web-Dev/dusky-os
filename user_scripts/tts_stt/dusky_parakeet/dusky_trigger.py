@@ -53,7 +53,7 @@ def start_daemon() -> bool:
         print("Error: systemd is required to orchestrate the backend environment environment variables.", file=sys.stderr)
         return False
     
-    subprocess.run(["systemctl", "--user", "start", "dusky-stt.service"], capture_output=True)
+    subprocess.run(["systemctl", "--user", "start", "dusky_stt.service"], capture_output=True)
     
     for _ in range(50):
         if READY_FILE.exists() and is_running():
@@ -109,7 +109,7 @@ def main():
 
     if args.logs:
         if shutil.which("journalctl"):
-            os.system("journalctl --user -u dusky-stt -f -n 100")
+            os.system("journalctl --user -u dusky_stt -f -n 100")
         return
 
     if args.status:
@@ -129,7 +129,7 @@ def main():
 
     if args.kill:
         if shutil.which("systemctl"):
-            subprocess.run(["systemctl", "--user", "stop", "dusky-stt.service"], capture_output=True)
+            subprocess.run(["systemctl", "--user", "stop", "dusky_stt.service"], capture_output=True)
         if PID_FILE.exists():
             try:
                 os.kill(int(PID_FILE.read_text()), 15)
@@ -145,7 +145,7 @@ def main():
 
     if args.restart:
         if shutil.which("systemctl"):
-            subprocess.run(["systemctl", "--user", "restart", "dusky-stt.service"])
+            subprocess.run(["systemctl", "--user", "restart", "dusky_stt.service"])
             print("Systemd instance cycled.")
         return
 
