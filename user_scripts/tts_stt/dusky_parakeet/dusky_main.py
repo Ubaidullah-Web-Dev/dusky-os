@@ -392,28 +392,67 @@ class WorkerManager:
                     pass
             self.proc = None
 
-def get_overlap_suffix(typed_text: str, new_text: str) -> str:
-    def clean_word(w: str) -> str:
-        return w.lower().strip(".,?!:;\"'")
+def get_new_suffix(typed_text: str, new_text: str) -> str:
+    """Find the portion of new_text that hasn't been typed yet.
+    
+    Uses a robust approach: find the longest contiguous run of words in
+    new_text that matches a contiguous run ending at or near the end of
+    typed_text. Return everything in new_text after that match point.
+    
+    Tolerates word-level model instability (e.g. "Hello" -> "Hey") by
+    searching for the best match position rather than requiring an
+    exact suffix-prefix alignment.
+    """
+    def clean(w: str) -> str:
+        return w.lower().strip(".,?!:;\"'()-")
     
     typed_words = typed_text.strip().split()
     new_words = new_text.strip().split()
+    
     if not typed_words:
-        return new_text
-        
-    max_overlap = 0
-    for i in range(len(typed_words)):
-        suffix_len = len(typed_words) - i
-        if suffix_len <= len(new_words):
-            match = True
-            for j in range(suffix_len):
-                if clean_word(typed_words[i+j]) != clean_word(new_words[j]):
-                    match = False
-                    break
-            if match:
-                max_overlap = suffix_len
-                break
-    return " ".join(new_words[max_overlap:])
+        return new_text.strip()
+    if not new_words:
+        return ""
+    
+    typed_clean = [clean(w) for w in typed_words]
+    new_clean = [clean(w) for w in new_words]
+    
+    # Find the best alignment: look for the longest contiguous match
+    # between new_words[j..j+k] and typed_words[i..i+k] where i+k is
+    # at or near the end of typed_words. The further i+k reaches toward
+    # the end, the better the match.
+    best_new_end = 0  # index in new_words after the best match
+    best_score = (0, 0)    # (closeness_to_end, match_length)
+    
+    for j in range(len(new_clean)):
+        # Try to match new_words starting at j against typed_words
+        # Find where in typed_words this sequence appears
+        for i in range(len(typed_clean)):
+            if typed_clean[i] != new_clean[j]:
+                continue
+            # Count how many consecutive words match
+            k = 0
+            while (i + k < len(typed_clean) and 
+                   j + k < len(new_clean) and 
+                   typed_clean[i + k] == new_clean[j + k]):
+                k += 1
+            if k < 2:
+                continue  # require at least 2-word match to avoid false positives
+            # Score: prefer matches that reach closer to the end of typed_text
+            # and are longer
+            closeness = i + k  # how far into typed_text this match reaches
+            score = (closeness, k)
+            if score > best_score:
+                best_score = score
+                best_new_end = j + k
+    
+    if best_score[1] >= 2:
+        result = " ".join(new_words[best_new_end:])
+        return result
+    
+    # No reliable overlap found - return empty to avoid duplication
+    # This is safer than returning the full text which causes massive repeats
+    return ""
 
 class DuskyDaemon:
     def __init__(self, config: dict):
@@ -422,7 +461,7 @@ class DuskyDaemon:
         self.recording = False
         self.realtime = config.get("realtime", True)
         self.chunk_seconds = config.get("chunk_seconds", 25)
-        self.realtime_chunk = config.get("realtime_chunk", 1.2)
+        self.realtime_chunk = config.get("realtime_chunk", 2.0)
         self.vad = VADProcessor(sr=16000)
         self.worker = WorkerManager(config)
         self.audio_q = None
@@ -535,31 +574,48 @@ class DuskyDaemon:
                         chunk_idx += 1
 
                 # Evaluate internal queue responses from our worker context
-                for res in self.worker.get_all():
+                all_results = self.worker.get_all()
+                for res in all_results:
                     self.processed_count += 1
-                    text = res.get("text", "").strip()
-                    if not text or is_hallucination(text):
-                        continue
-                        
-                    idx = res.get("index", 0)
+                
+                # In realtime mode, only process the LATEST result to avoid
+                # stale queue backlog causing duplicates
+                valid_results = [r for r in all_results if r.get("text", "").strip() and not is_hallucination(r.get("text", "").strip())]
+                
+                if valid_results:
                     if self.realtime:
-                        suffix = get_overlap_suffix(self.typed_text, text)
+                        # Use only the latest (last) result
+                        res = valid_results[-1]
+                        text = res.get("text", "").strip()
+                        idx = res.get("index", 0)
+                        
+                        suffix = get_new_suffix(self.typed_text, text)
                         if suffix:
                             # Add spacing if appending to existing text
                             if self.typed_text and not self.typed_text.endswith(" "):
                                 suffix = " " + suffix
                             type_into_focused(suffix)
-                            self.typed_text = text
-                            
-                    self.acc_chunks.append({"index": idx, "text": text, "start_sec": res.get("start_sec", 0)})
+                            # Track what's actually on screen, not model output
+                            self.typed_text += suffix
+                        
+                        self.acc_chunks.append({"index": idx, "text": text, "start_sec": res.get("start_sec", 0)})
+                    else:
+                        for res in valid_results:
+                            text = res.get("text", "").strip()
+                            idx = res.get("index", 0)
+                            self.acc_chunks.append({"index": idx, "text": text, "start_sec": res.get("start_sec", 0)})
 
             except Exception as e:
                 logger.error(f"Transcribe thread engine crash: {e}")
                 time.sleep(0.1)
 
     def stop_recording(self) -> str:
+        # Sleep briefly to allow physical modifier keys (like SUPER) to be released
+        # before the final transcript suffix is typed on screen.
+        time.sleep(0.4)
         with self.lock:
             if not self.recording:
+                logger.info(f"stop_recording: already stopped, returning empty")
                 return ""
             self.recording = False
             self.stop_event.set()
@@ -570,24 +626,35 @@ class DuskyDaemon:
             self.transcribe_thread.join(timeout=120)
 
         # Catch trailing fragments
+        trailing = 0
         for res in self.worker.get_all():
             if res.get("text") and not is_hallucination(res["text"]):
                 self.acc_chunks.append({"index": res.get("index", 0), "text": res["text"], "start_sec": res.get("start_sec", 0)})
-
-        self.acc_chunks = sorted(self.acc_chunks, key=lambda x: x["index"])
+                trailing += 1
         
-        # Eliminate structural duplicate rolling records from unified context array
-        seen_texts = set()
-        unique_parts = []
-        for c in self.acc_chunks:
-            txt = c["text"].strip()
-            if txt and txt.lower() not in seen_texts:
-                unique_parts.append(txt)
-                seen_texts.add(txt.lower())
-                
-        full_text = " ".join(unique_parts).strip()
+        logger.info(f"stop_recording: realtime={self.realtime} acc_chunks={len(self.acc_chunks)} trailing={trailing} typed_text_len={len(self.typed_text)} submitted={self.submitted_count} processed={self.processed_count}")
+
+        if self.realtime:
+            # In realtime mode, use the accumulated screen text (what was actually typed)
+            # rather than concatenating all intermediate model outputs which contain 
+            # overlapping growing-buffer transcriptions
+            full_text = self.typed_text.strip()
+        else:
+            self.acc_chunks = sorted(self.acc_chunks, key=lambda x: x["index"])
+            
+            # Eliminate structural duplicate rolling records from unified context array
+            seen_texts = set()
+            unique_parts = []
+            for c in self.acc_chunks:
+                txt = c["text"].strip()
+                if txt and txt.lower() not in seen_texts:
+                    unique_parts.append(txt)
+                    seen_texts.add(txt.lower())
+                    
+            full_text = " ".join(unique_parts).strip()
 
         if not full_text:
+            logger.info(f"stop_recording: no text to save")
             notify("No speech", "No clear text captured")
             return ""
 
