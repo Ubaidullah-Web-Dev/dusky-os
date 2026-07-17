@@ -49,6 +49,9 @@ readonly SERVICES_CONFIG=(
 
     # dusky RAM monitor
     "$HOME/user_scripts/performance/swap_and_ram_monitor_service/dusky_ram_monitor.service | enable"
+
+    # dusky audio visualizer
+    "$HOME/user_scripts/way_layers/visualizer/dusky_visualizer.service | disable"
 )
 
 # XDG Standard: ~/.config/systemd/user
