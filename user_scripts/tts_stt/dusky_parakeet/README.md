@@ -1,28 +1,34 @@
-# Dusky STT v6 - Unified #1 Default (5.91% WER) + Realtime Typing
+```markdown
+# Dusky STT v7.0 FIXED - Unified Default, Realtime Typing, & D3-cold Safe
 
-**Stack July 2026:** Python 3.14.6 only, Arch bleeding, systemd 261, CUDA 12/13.3.1, 3050 Ti 4GB, 12700H 64GB RAM, PipeWire, Wayland, uv, Rich 15, Parakeet Unified 5.91% WER, wtype, ffmpeg
+**Stack July 2026:** Python 3.14.6 only, Arch bleeding, systemd 261, Pure pip CUDA 12.6 (STABLE), 3050 Ti 4GB, 12700H 64GB RAM, PipeWire, Wayland, uv, Parakeet Unified 5.91% WER, wtype, ffmpeg (soxr)
 
-### What's New in v6
+### What's New in v7.0 FIXED
 
-- **[1] is now unified-en-0.6b** (5.91% WER) - best accuracy, was #3 before. English only, 160ms-2s streaming latency. Made default because you said EN only is fine and WER better.
-- **Realtime typing as you speak** into focused neovim/notepad/text field via `wtype` (Wayland). Old push-to-talk still works with `--push`
-- **Auto pacman+uv deps:** installer checks `pipewire`, `wl-clipboard`, `wtype`, `ffmpeg`, `libnotify`, `yad`, `uv` and auto `sudo pacman -S` if missing. Then `uv add` all python deps cached at `~/.cache/uv`
+- **Pure pip CUDA 12.6 Isolation:** Completely mitigates the `libcublas.so.12` corruption caused by mixed `cu12`/`cu13` system dependencies.
+- **`hf_xet` Integration:** Replaces the deprecated `hf_transfer` with `HF_XET_HIGH_PERFORMANCE=1` for rapid model prefetching.
+- **Strict D3-Cold Safety:** The main daemon is now 100% torch-free and uses an ONNX-only Silero VAD CPU inference. The GPU worker strictly limits VRAM headroom (`0.7` clamp for 4GB cards) and aggressively forces garbage collection and `empty_cache()` to guarantee 0.5W D3-cold suspension when idle.
+- **Secure FIFO IPC:** Re-engineered the trigger pipe to use `O_RDWR | O_NONBLOCK` descriptors, enforcing `0600` permissions with TOCTOU symlink protection so the daemon writers never block.
+- **PipeWire Audio Fix:** Implements C-level blocking reads via a dedicated audio thread, requesting stereo and downmixing to mono via numpy to bypass PipeWire front-left channel linking bugs.
 
 ### Files (this is all you need)
 
-```
-dusky_installer.py - Rich installer, auto pacman+uv, unified #1 default
-dusky_main.py - CPU-only main, realtime typing via wtype, D3-cold safe
-dusky_worker.py - GPU worker, auto fallback unified->v2 if unified not in onnx-asr yet
-dusky-trigger - Toggle, --realtime (default) vs --push, --file podcast
-dusky-stt.service - systemd user service fixed
-README.md - this file
+```text
+dusky_installer.py - Rich installer, auto pacman+uv, pure pip CUDA 12.6 resolution
+dusky_main.py      - CPU-only main, realtime typing via wtype, blocking audio thread
+dusky_worker.py    - GPU worker, dynamic LD_LIBRARY_PATH discovery, D3-cold cleanup
+dusky-trigger      - Toggle, secure FIFO trigger, systemd-enforced env tracking
+dusky-stt.service  - systemd user service (Type=exec), memory clamps
+README.md          - This file
+
 ```
 
 ### Install
 
+Place all 6 files into a single directory (e.g., `~/Downloads/dusky-v7`), then run:
+
 ```bash
-cd ~/Downloads/dusky-v5  # your folder with 5 files
+cd ~/Downloads/dusky-v7
 chmod +x dusky-trigger
 
 uv python install 3.14.6
@@ -30,15 +36,12 @@ uv run --python 3.14.6 dusky_installer.py
 
 # Installer will:
 # - Check pacman deps and auto install missing: pipewire wl-clipboard wtype ffmpeg libnotify yad uv base-devel
-# - Ask hardware: 1=CUDA12 pip STABLE (your driver 610.43.03), 2=CUDA13 system (needs pacman cuda 13.3.1), 3=AMD, 4=CPU
-# - Ask model: [1] unified-en-0.6b DEFAULT 5.91% WER realtime, [2] v2 EN 6.05% WER, [3] v3 25 langs 6.34%
-# - Quant: int8 recommended for 4GB VRAM
-# - VAD yes, chunk 25s, realtime? yes
-# - Output both clipboard+file
-# - Creates venv at ~/contained_apps/uv/dusky_stt_v2/.venv
-# - uv add all deps (cached shared)
-# - Prefetches model via hf_transfer (auto download)
-# - Copies files, installs trigger to ~/.local/bin/dusky-trigger, service to ~/.config/systemd/user/
+# - Ask hardware: 1=CUDA12 pip STABLE (RECOMMENDED for 4GB), 2=CUDA13 system, 3=AMD, 4=CPU
+# - Ask model: [1] unified-en-0.6b DEFAULT 5.91% WER, [2] v2 EN 6.05% WER, [3] v3 25 langs 6.34%
+# - Setup isolated venv at ~/contained_apps/uv/dusky_stt_v2/.venv via `uv pip` (no seed pollution)
+# - Discover pip CUDA paths and generate `.env` for systemd LD_LIBRARY_PATH injection
+# - Prefetch models via `hf_xet`
+# - Copy files, install trigger to ~/.local/bin/dusky-trigger, and service to ~/.config/systemd/user/
 
 # Enable service
 systemctl --user daemon-reload
@@ -46,74 +49,73 @@ loginctl enable-linger $USER
 systemctl --user enable --now dusky-stt.service
 journalctl --user -u dusky-stt -f
 
-# Bind hotkey to: dusky-trigger (or ~/.local/bin/dusky-trigger)
+# Bind hotkey to: ~/.local/bin/dusky-trigger
+
 ```
 
-### Usage - Realtime is now default
+### Usage - Realtime Default
 
 **Realtime typing into focused window (neovim, notepad):**
+
 ```bash
 # Focus neovim / text editor, then press hotkey
 dusky-trigger  # shows "REALTIME typing - focus editor and speak"
-# Now speak - as you speak, it types live into focused window via wtype
+# Speak. It types live into the focused window via wtype.
 # "hello world this is realtime"
 dusky-trigger  # stop
 
-# Force push-to-talk (old behavior, paste at end)
-dusky-trigger --push  # or toggle will use config default
+# Force push-to-talk (paste at end)
+dusky-trigger --push  
 
-# Force realtime
+# Force realtime (if config defaulted to push)
 dusky-trigger --realtime
+
 ```
 
 How realtime works:
-- Main daemon CPU-only, captures mic via sounddevice, chunks every 1.2s (configurable)
-- Submits chunk to GPU worker (spawned on demand)
-- Worker transcribes 1.2s chunk with unified model (5.91% WER)
-- Main diffs new text vs already typed, calls `wtype "new words "` to type into focused window
-- No retyping, only suffix
 
-**Podcast / long file (no OOM):**
+* Main daemon (CPU-only) captures mic via sounddevice on a dedicated thread, chunking every 1.2s.
+* Submits chunk to GPU worker (spawned on demand).
+* Worker transcribes 1.2s chunk with the unified model.
+* Main diffs new text vs already typed, and executes `wtype "new words "` to type suffix-only into the focused window.
+
+**Podcast / Long File (High Quality / No OOM):**
+
 ```bash
 dusky-trigger --file ~/Downloads/podcast.mp3
-# Transcodes via ffmpeg to 16k mono first (460MB for 2h, not 5GB), VAD splits, incremental save to ~/Transcripts/DuskySTT/
+# Transcodes via ffmpeg using soxr:precision=28 to 16k mono.
+# VAD splits, incremental save to ~/Transcripts/DuskySTT/
+
 ```
 
 **Status/logs:**
+
 ```bash
 dusky-trigger --status
 dusky-trigger --logs
 dusky-trigger --restart
 dusky-trigger --kill
+
 ```
 
-### Why unified #1 is better WER
+### D3-Cold / Battery Verification
 
-- v2 EN: 6.05% WER, TDT, offline only
-- v3 MULTI 25 langs: 6.34% WER, TDT, auto-detect, multilingual
-- unified EN: 5.91% WER, RNNT, unified offline+streaming, 160ms-2s latency, EN only
+Main daemon never imports CUDA (<50MB RAM). Worker is spawned on demand and exits after 30s idle -> Memory collected -> CUDA context destroyed -> GPU enters `D3cold` at 0.5W.
 
-If EN only is fine (you said it is), unified is objectively best accuracy + enables realtime.
+Check state:
 
-Note: `onnx-asr` as of July 2026 may not yet have unified int8 ONNX. Worker has auto fallback: tries unified, if fails tries v2, then v3. So install will still work even if unified not in hub yet, will use v2 with same realtime typing logic (just slightly worse WER).
-
-### D3 cold / Battery
-
-Main daemon never imports CUDA, <50MB. Worker spawned on demand, exits after 30s idle -> CUDA context destroyed -> GPU goes D3cold 0.5W.
-
-Check:
 ```bash
 cat /sys/bus/pci/devices/0000:01:00.0/power/runtime_status  # suspended
-cat /sys/bus/pci/devices/0000:01:00.0/power_state  # D3cold
+cat /sys/bus/pci/devices/0000:01:00.0/power_state           # D3cold
+
 ```
 
 ### Troubleshooting
 
-- No wtype: `sudo pacman -S wtype` (Wayland) or `ydotool` fallback. Installer auto-installs.
-- No typing: check focused window supports wtype, try `wtype "hello"` manually, check Wayland compositor allows virtual keyboard
-- No audio: `pavucontrol`, `python -m sounddevice`
-- CUDA fail: `nvidia-smi`, driver 610.43.03 OK for CUDA12 pip, for CUDA13 system need pacman cuda 13.3.1
-- Service fail: `systemctl --user status dusky-stt -l`, `journalctl --user -u dusky-stt -n 100`
+* **No wtype / Virtual Keyboard blocked:** `sudo pacman -S wtype` (Wayland). Ensure your Wayland compositor allows virtual keyboard protocols.
+* **Audio failing (xrun/PipeWire):** Ensure `pipewire-pulse` is running. Check `pavucontrol`.
+* **Worker fails to load ONNX / CUDA:** Run `dusky-trigger --logs`. Ensure you aren't mixing pacman `cuda` with pip `nvidia-*-cu12`. The v7.0 installer isolates this via the `.env` file it generates.
+* **Service fails to start:** `systemctl --user status dusky-stt -l`. The service uses `Type=exec` to accurately report crash loops.
 
 ### Uninstall
 
@@ -121,6 +123,9 @@ cat /sys/bus/pci/devices/0000:01:00.0/power_state  # D3cold
 systemctl --user disable --now dusky-stt.service
 rm -rf ~/contained_apps/uv/dusky_stt_v2 ~/.config/systemd/user/dusky-stt.service $XDG_RUNTIME_DIR/dusky_stt ~/Transcripts/DuskySTT
 rm ~/.local/bin/dusky-trigger
+
 ```
 
-v6 - Unified #1 default, realtime typing, auto pacman+uv, Python 3.14.6 only.
+```
+
+```

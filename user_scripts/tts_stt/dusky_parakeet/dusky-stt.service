@@ -1,5 +1,5 @@
 [Unit]
-Description=Dusky STT v6 - Unified #1 (5.91% WER) Realtime typing, D3-cold safe
+Description=Dusky STT v8.1 FIXED - Parakeet Realtime D3-cold safe
 After=pipewire.service pipewire-pulse.service graphical-session.target xdg-desktop-portal.service
 Wants=pipewire.service
 PartOf=graphical-session.target
@@ -7,19 +7,24 @@ StartLimitBurst=5
 StartLimitIntervalSec=90
 
 [Service]
-Type=simple
+Type=exec
 ExecStart=%h/contained_apps/uv/dusky_stt_v2/.venv/bin/python %h/contained_apps/uv/dusky_stt_v2/dusky_main.py --daemon
 WorkingDirectory=%h/contained_apps/uv/dusky_stt_v2
 Environment=HF_HUB_CACHE=%h/.cache/huggingface
-Environment=HF_HUB_ENABLE_HF_TRANSFER=1
+Environment=HF_XET_HIGH_PERFORMANCE=1
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTORCH_NVML_BASED_CUDA_CHECK=1
 Environment=CUDA_MODULE_LOADING=LAZY
-Environment=LD_LIBRARY_PATH=/opt/cuda/lib64
-MemoryHigh=32G
-MemoryMax=48G
-MemorySwapMax=8G
+EnvironmentFile=-%h/contained_apps/uv/dusky_stt_v2/.env
+MemoryHigh=6G
+MemoryMax=8G
+MemorySwapMax=1G
+OOMPolicy=stop
 Restart=on-failure
 RestartSec=2
+# FIXED: Leverage new systemd 260+ native exponential throttling rules to prevent process spinning
+RestartSteps=5
+RestartMaxDelaySec=30
 TimeoutStopSec=5
 StandardOutput=journal
 StandardError=journal

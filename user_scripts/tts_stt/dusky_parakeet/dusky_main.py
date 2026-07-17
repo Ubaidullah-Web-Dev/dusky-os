@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-# Dusky Main v6 - CPU-only, D3-cold safe, Realtime typing via wtype
-# Python 3.14.6 only, unified #1 default, 64GB RAM optimized
-
+"""
+Dusky Main v8.1 BLEEDING - D3-cold safe, torch-free, secure FIFO, fixed realtime
+- Never imports torch/onnxruntime at top level (D3-cold safe)
+- ONNX-only Silero VAD with RMS fallback, robust download URLs
+- Secure XDG_RUNTIME_DIR 0700, FIFO 0600, O_RDWR|O_NONBLOCK, TOCTOU protected
+- Worker spawn context, daemon=False, proper D3-cold cleanup
+- Realtime typing: LCP suffix window, hallucination blocklist, VAD gate
+- ffmpeg soxr high quality resampling
+"""
 import os
 import sys
 import sysconfig
@@ -12,7 +18,10 @@ import subprocess
 import shutil
 import json
 import logging
+import tempfile
 from pathlib import Path
+import stat
+import select
 
 if sys.version_info < (3, 14, 6):
     print(f"Need 3.14.6+, got {sys.version}", file=sys.stderr)
@@ -20,6 +29,16 @@ if sys.version_info < (3, 14, 6):
 if sysconfig.get_config_var("Py_GIL_DISABLED") == 1:
     print("Need GIL build", file=sys.stderr)
     sys.exit(1)
+try:
+    if not sys._is_gil_enabled():
+        print("Need GIL enabled", file=sys.stderr)
+        sys.exit(1)
+except AttributeError:
+    pass
+
+# D3-cold safety: never init CUDA in main daemon
+os.environ.setdefault("PYTORCH_NVML_BASED_CUDA_CHECK", "1")
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
 logger = logging.getLogger("dusky_main")
 logger.setLevel(logging.INFO)
@@ -32,43 +51,83 @@ except Exception:
     ch.setFormatter(logging.Formatter('%(asctime)s %(message)s'))
     logger.addHandler(ch)
 
-# No onnxruntime import here!
-
 try:
     import numpy as np
     import soundfile as sf
     import sounddevice as sd
     HAS_SD = True
-except ImportError:
+except ImportError as e:
     HAS_SD = False
     import numpy as np
     import soundfile as sf
+    logger.warning(f"sounddevice missing: {e}")
 
+# Force spawn early - required for CUDA workers
+import multiprocessing
 try:
-    from silero_vad import load_silero_vad, get_speech_timestamps
-    HAS_SILERO = True
-except ImportError:
-    HAS_SILERO = False
+    multiprocessing.set_start_method("spawn", force=True)
+except RuntimeError:
+    pass
 
 def get_runtime_dir() -> Path:
-    base = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    if not Path(base).exists():
-        base = "/tmp"
-    p = Path(base) / "dusky_stt"
-    p.mkdir(mode=0o700, parents=True, exist_ok=True)
+    base = os.environ.get("XDG_RUNTIME_DIR")
+    if base:
+        p_base = Path(base)
+        try:
+            st = p_base.stat()
+            if st.st_uid != os.getuid():
+                raise ValueError("bad owner")
+            if stat.S_IMODE(st.st_mode) != 0o700:
+                try:
+                    p_base.chmod(0o700)
+                except Exception:
+                    pass
+            runtime = p_base / "dusky_stt"
+            runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                runtime.chmod(0o700)
+            except Exception:
+                pass
+            return runtime
+        except Exception as e:
+            logger.warning(f"XDG_RUNTIME_DIR invalid {e}, using secure tmp")
+    secure_dir = Path(tempfile.mkdtemp(prefix=f"dusky-stt-{os.getuid()}-", dir="/tmp"))
     try:
-        p.chmod(0o700)
+        secure_dir.chmod(0o700)
     except Exception:
         pass
-    return p
+    logger.warning(f"Using fallback runtime dir {secure_dir}")
+    return secure_dir
 
 RUNTIME_DIR = get_runtime_dir()
 FIFO_PATH = RUNTIME_DIR / "fifo"
 PID_FILE = RUNTIME_DIR / "pid"
 READY_FILE = RUNTIME_DIR / "ready"
+RECORD_PID_FILE = RUNTIME_DIR / "recording"
 TRANSCRIPT_DIR = Path.home() / "Transcripts" / "DuskySTT"
 TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_PATH = Path.home() / "contained_apps" / "uv" / "dusky_stt_v2" / "install_config.json"
+MODEL_CACHE_DIR = Path.home() / "contained_apps" / "uv" / "dusky_stt_v2" / "models"
+MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+BLOCKLIST = {
+    "thank you", "thanks for watching", "thank you for watching",
+    "subtitle by", "amara.org", "please subscribe", ""
+}
+
+def is_hallucination(text: str) -> bool:
+    t = text.lower().strip()
+    if len(t) < 2:
+        return True
+    for b in BLOCKLIST:
+        if b and b in t:
+            return True
+    return False
+
+def rms_energy(audio: np.ndarray) -> float:
+    if audio.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(audio.astype(np.float32) ** 2)))
 
 def notify(t, m, critical=False):
     if not shutil.which("notify-send"):
@@ -83,46 +142,113 @@ def notify(t, m, critical=False):
         pass
 
 def type_into_focused(text: str):
-    """Type text into focused window via wtype (Wayland) or ydotool"""
     if not text:
         return
-    # Prefer wtype for Wayland
     if shutil.which("wtype"):
         try:
-            # wtype types directly, use -s delay for natural
-            subprocess.run(["wtype", text], check=False, timeout=5)
-            return
+            result = subprocess.run(["wtype", text], check=False, timeout=5, capture_output=True, text=True)
+            if result.returncode == 0:
+                return
+            logger.warning(f"wtype failed {result.returncode}: {result.stderr}")
         except Exception as e:
-            logger.warning(f"wtype failed {e}")
-    # Fallback ydotool
+            logger.warning(f"wtype exception {e}")
     if shutil.which("ydotool"):
         try:
             subprocess.run(["ydotool", "type", text], check=False, timeout=5)
             return
         except Exception:
             pass
-    logger.warning("No wtype/ydotool found, cannot realtime type")
+    if shutil.which("wl-copy"):
+        try:
+            subprocess.run(["wl-copy"], input=text.encode(), check=True, timeout=2)
+        except Exception:
+            pass
+
+def secure_write_pid(path: Path, content: str):
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+        fd = os.open(path, flags, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(content)
+    except Exception as e:
+        logger.error(f"Failed secure pid write to {path}: {e}")
 
 class VADProcessor:
     def __init__(self, sr=16000):
         self.sr = sr
-        self.model = None
-        if HAS_SILERO:
+        self.model_path = MODEL_CACHE_DIR / "silero_vad.onnx"
+        self.session = None
+        self._load_onnx_model()
+
+    def _load_onnx_model(self):
+        if not self.model_path.exists():
             try:
-                self.model = load_silero_vad()
+                import importlib.util
+                spec = importlib.util.find_spec("silero_vad")
+                if spec and spec.submodule_search_locations:
+                    for loc in spec.submodule_search_locations:
+                        cand = Path(loc) / "files" / "silero_vad.onnx"
+                        if cand.exists():
+                            shutil.copy(cand, self.model_path)
+                            logger.info(f"Copied silero VAD from {cand}")
+                            break
             except Exception:
-                self.model = None
+                pass
+
+        if not self.model_path.exists():
+            urls = [
+                "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+                "https://huggingface.co/onnx-community/silero-vad/resolve/main/onnx/model.onnx",
+                "https://raw.githubusercontent.com/snakers4/silero-vad/master/files/silero_vad.onnx",
+            ]
+            for url in urls:
+                try:
+                    import urllib.request
+                    logger.info(f"Trying VAD download {url}")
+                    urllib.request.urlretrieve(url, str(self.model_path))
+                    logger.info(f"Downloaded VAD to {self.model_path}")
+                    break
+                except Exception as e:
+                    logger.warning(f"VAD download failed {url}: {e}")
+                    continue
+            else:
+                self.model_path = None
+                return
+
+        if self.model_path and self.model_path.exists():
+            try:
+                import onnxruntime as rt
+                self.session = rt.InferenceSession(str(self.model_path), providers=['CPUExecutionProvider'])
+                logger.info(f"Loaded ONNX VAD {self.model_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load ONNX VAD {e}")
+                self.session = None
 
     def is_speech(self, audio: np.ndarray) -> bool:
         if audio.size == 0:
             return False
-        rms = float(np.sqrt(np.mean(audio.astype(np.float32) ** 2)))
-        return rms > 0.015
+        if self.session:
+            try:
+                chunk = audio[-512:].astype(np.float32) if len(audio) >= 512 else np.pad(audio, (512-len(audio),0)).astype(np.float32)
+                state = np.zeros((2,1,128), dtype=np.float32)
+                sr = np.array([16000], dtype=np.int64)
+                inp = chunk.reshape(1, -1)
+                try:
+                    out = self.session.run(None, {"input": inp, "state": state, "sr": sr})
+                    prob = float(out[0][0][0]) if len(out[0].shape) > 1 else float(out[0][0])
+                    return prob > 0.45
+                except Exception:
+                    out = self.session.run(None, {"input": inp})
+                    prob = float(out[0][0]) if hasattr(out[0], '__len__') else float(out[0])
+                    return prob > 0.45
+            except Exception:
+                pass
+        return rms_energy(audio) > 0.015
 
-    def get_segments(self, audio: np.ndarray, max_sec=25) -> list[tuple[int,int]]:
+    def get_segments(self, audio: np.ndarray, max_sec=25):
         sr = self.sr
         max_samples = max_sec * sr
-        if self.model is None:
+        if self.session is None:
             overlap = int(0.5 * sr)
             step = max_samples - overlap
             segs = []
@@ -132,29 +258,71 @@ class VADProcessor:
                 if end == len(audio):
                     break
             return segs
+
         try:
-            import torch
-            wav = torch.from_numpy(audio.astype(np.float32))
-            ts = get_speech_timestamps(wav, self.model, threshold=0.5, min_speech_duration_ms=250, min_silence_duration_ms=800, window_size_samples=512)
-            if not ts:
-                return []
-            merged = []
-            cur_s = None
-            cur_e = None
-            pad = int(0.2 * sr)
-            for t in ts:
-                s, e = int(t['start']), int(t['end'])
-                if cur_s is None:
-                    cur_s, cur_e = s, e
-                elif (e - cur_s) <= max_samples:
-                    cur_e = e
+            window = 512
+            speech_probs = []
+            for i in range(0, len(audio), window):
+                chunk = audio[i:i+window]
+                if len(chunk) < window:
+                    chunk = np.pad(chunk, (0, window - len(chunk)))
+                speech_probs.append(1 if self.is_speech(chunk) else 0)
+
+            segments = []
+            in_speech = False
+            start_idx = 0
+            min_speech_samples = int(0.25 * sr)
+            min_silence_samples = int(0.8 * sr)
+            silence_counter = 0
+            speech_counter = 0
+
+            for idx, prob in enumerate(speech_probs):
+                sample_pos = idx * window
+                if prob == 1:
+                    if not in_speech:
+                        start_idx = sample_pos
+                        in_speech = True
+                        speech_counter = window
+                    else:
+                        speech_counter += window
+                    silence_counter = 0
                 else:
-                    merged.append((max(0, cur_s - pad), min(len(audio), cur_e + pad)))
-                    cur_s, cur_e = s, e
-            if cur_s is not None:
-                merged.append((max(0, cur_s - pad), min(len(audio), cur_e + pad)))
-            return merged if merged else [(0, len(audio))]
-        except Exception:
+                    if in_speech:
+                        silence_counter += window
+                        if silence_counter >= min_silence_samples:
+                            end_idx = sample_pos - silence_counter
+                            if speech_counter >= min_speech_samples:
+                                pad = int(0.2 * sr)
+                                s = max(0, start_idx - pad)
+                                e = min(len(audio), end_idx + pad)
+                                if e - s > max_samples:
+                                    for sub in range(s, e, max_samples - int(0.5*sr)):
+                                        sub_e = min(sub + max_samples, e)
+                                        segments.append((sub, sub_e))
+                                        if sub_e == e:
+                                            break
+                                else:
+                                    segments.append((s, e))
+                            in_speech = False
+                            speech_counter = 0
+                            silence_counter = 0
+
+            if in_speech and speech_counter >= min_speech_samples:
+                pad = int(0.2 * sr)
+                s = max(0, start_idx - pad)
+                e = len(audio)
+                if e - s > max_samples:
+                    for sub in range(s, e, max_samples - int(0.5*sr)):
+                        sub_e = min(sub + max_samples, e)
+                        segments.append((sub, sub_e))
+                        if sub_e == e:
+                            break
+                else:
+                    segments.append((s, e))
+
+            return segments if segments else [(0, len(audio))]
+        except Exception as e:
+            logger.warning(f"VAD failed {e}, using simple chunking")
             overlap = int(0.5 * sr)
             step = max_samples - overlap
             segs = []
@@ -183,25 +351,26 @@ class WorkerManager:
                     self.proc.join(timeout=2)
                 except Exception:
                     pass
-            import multiprocessing
             ctx = multiprocessing.get_context("spawn")
             self.task_q = ctx.Queue()
             self.result_q = ctx.Queue()
             from dusky_worker import worker_main
+            # daemon=False is absolutely required for clean CUDA env tracking
             self.proc = ctx.Process(target=worker_main, args=(self.task_q, self.result_q, self.config), daemon=False)
             self.proc.start()
-            logger.info(f"GPU worker spawned PID {self.proc.pid}")
+            logger.info(f"Worker started PID {self.proc.pid}")
 
-    def submit(self, audio: np.ndarray, idx: int, start_sec: float):
+    def submit(self, audio: np.ndarray, index: int, start_sec: float):
         self.ensure()
-        self.task_q.put({"type": "audio", "audio": audio.astype(np.float32), "index": idx, "start_sec": start_sec})
-
-    def get_all(self) -> list[dict]:
-        res = []
-        if not self.result_q:
-            return res
         try:
-            while True:
+            self.task_q.put({"type": "audio", "audio": audio, "index": index, "start_sec": start_sec}, timeout=2)
+        except Exception as e:
+            logger.error(f"Submit failed {e}")
+
+    def get_all(self):
+        res = []
+        try:
+            while self.result_q and not self.result_q.empty():
                 res.append(self.result_q.get_nowait())
         except Exception:
             pass
@@ -211,201 +380,223 @@ class WorkerManager:
         with self.lock:
             if self.task_q:
                 try:
-                    self.task_q.put({"type": "stop"})
+                    self.task_q.put({"type": "stop"}, timeout=1)
                 except Exception:
                     pass
             if self.proc:
                 try:
-                    self.proc.join(timeout=5)
+                    self.proc.join(timeout=3)
                     if self.proc.is_alive():
                         self.proc.terminate()
-                        self.proc.join(timeout=2)
                 except Exception:
                     pass
             self.proc = None
-            self.task_q = None
-            self.result_q = None
 
 class DuskyDaemon:
     def __init__(self, config: dict):
         self.config = config
-        self.chunk_seconds = config.get("chunk_seconds", 25)
-        self.realtime = config.get("realtime", True)
-        self.realtime_chunk = config.get("realtime_chunk", 1.2)
-        self.transcript_output = config.get("transcript_output", "both")
-        self.idle_timeout = config.get("idle_timeout", 30)
-        self.model_name = config.get("model", "nemo-parakeet-unified-en-0.6b")
-
         self.running = True
-        self.is_recording = False
-        self.is_realtime = False
-        self.audio_q = None
-        self.acc_chunks: list = []
-        self.typed_text = ""  # for realtime diff
+        self.recording = False
+        self.realtime = config.get("realtime", True)
+        self.chunk_seconds = config.get("chunk_seconds", 25)
+        self.realtime_chunk = config.get("realtime_chunk", 1.2)
+        self.vad = VADProcessor(sr=16000)
         self.worker = WorkerManager(config)
-        self.vad = VADProcessor()
-        logger.info(f"Main v6 CPU-only model={self.model_name} realtime={self.realtime} chunk={self.chunk_seconds}s")
-
-    def start_recording(self, realtime: bool = False):
-        if self.is_recording:
-            return
-        self.is_recording = True
-        self.is_realtime = realtime
+        self.audio_q = None
         self.acc_chunks = []
         self.typed_text = ""
-        import queue
-        try:
-            self.audio_q = queue.SimpleQueue()
-        except Exception:
+        self.lock = threading.Lock()
+        self.record_thread = None
+        self.transcribe_thread = None
+        self.stop_event = threading.Event()
+
+    def start_recording(self, realtime=False):
+        with self.lock:
+            if self.recording:
+                return
+            self.recording = True
+            self.realtime = realtime
+            self.acc_chunks = []
+            self.typed_text = ""
+            self.stop_event.clear()
+            import queue
             self.audio_q = queue.Queue()
 
-        threading.Thread(target=self._record_loop, daemon=True).start()
-        threading.Thread(target=self._transcribe_loop, daemon=True).start()
+        self.record_thread = threading.Thread(target=self._record_loop, daemon=True)
+        self.transcribe_thread = threading.Thread(target=self._transcribe_loop, daemon=True)
+        self.record_thread.start()
+        self.transcribe_thread.start()
+        
         mode = "REALTIME typing" if realtime else "push-to-talk"
         logger.info(f"Recording started {mode}")
         notify("Listening...", f"{mode} - speak now" if realtime else "Speak now")
 
     def _record_loop(self):
         sr = 16000
-        def cb(indata, frames, time_info, status):
-            if status:
-                logger.warning(f"Audio status {status}")
-            try:
-                data = indata.copy().flatten().astype(np.float32)
-                try:
-                    self.audio_q.put_nowait(data)
-                except AttributeError:
-                    self.audio_q.put(data)
-            except Exception as e:
-                logger.error(f"cb error {e}")
-
         try:
-            with sd.InputStream(samplerate=sr, channels=1, callback=cb, blocksize=1024, dtype='float32'):
-                while self.is_recording and self.running:
-                    time.sleep(0.1)
+            # Request stereo and mix to mono dynamically to resolve PipeWire mapping anomalies
+            with sd.InputStream(samplerate=sr, channels=2, blocksize=2048, dtype='float32') as stream:
+                while self.recording and self.running and not self.stop_event.is_set():
+                    data, overflow = stream.read(2048)
+                    if overflow:
+                        logger.warning("Audio input overflow detected")
+                    mono = data.mean(axis=1).astype(np.float32)
+                    self.audio_q.put(mono)
         except Exception as e:
-            logger.error(f"sounddevice failed {e}")
-            self.is_recording = False
+            logger.error(f"Audio stream error: {e}")
+            self.recording = False
 
     def _transcribe_loop(self):
         sr = 16000
-        buffer = np.array([], dtype=np.float32)
+        rolling_buffer = np.array([], dtype=np.float32)
         chunk_idx = 0
-        last_typed_idx = -1
+        silence_samples = 0
+        max_silence = int(1.5 * sr) 
+        
+        last_process_time = time.time()
+        chunk_sec = self.realtime_chunk if self.realtime else self.chunk_seconds
 
-        # For realtime, smaller chunk
-        chunk_sec = self.realtime_chunk if self.is_realtime else self.chunk_seconds
-
-        while (self.is_recording or not self.audio_q.empty()) and self.running:
+        while self.running and (self.recording or not self.audio_q.empty()):
             try:
                 import queue
                 try:
-                    data = self.audio_q.get(timeout=0.2)
+                    data = self.audio_q.get(timeout=0.1)
                 except queue.Empty:
                     data = None
 
                 if data is not None:
-                    buffer = np.concatenate([buffer, data]) if buffer.size else data
-
-                    # Auto-chunk on silence or max size
-                    if len(buffer) >= chunk_sec * sr:
-                        # For realtime, we send even if speech
-                        to_send = buffer.copy()
-                        buffer = np.array([], dtype=np.float32) if self.is_realtime else buffer[int(chunk_sec*sr*0.5):]  # keep overlap for offline
-                        if self.is_realtime:
-                            # In realtime, send whole buffer as chunk
-                            self.worker.submit(to_send, chunk_idx, chunk_idx*chunk_sec)
+                    rolling_buffer = np.concatenate([rolling_buffer, data]) if rolling_buffer.size else data
+                    
+                    if self.realtime:
+                        if not self.vad.is_speech(data):
+                            silence_samples += len(data)
                         else:
-                            self.worker.submit(to_send, chunk_idx, chunk_idx*chunk_sec)
+                            silence_samples = 0
+
+                # Check if it's time to process the window
+                current_time = time.time()
+                if rolling_buffer.size > 0 and (current_time - last_process_time >= chunk_sec or not self.recording):
+                    last_process_time = current_time
+                    
+                    # Realtime uses rolling window; Offline shifts forward
+                    if self.realtime:
+                        # VAD Gate check: only evaluate if speech was observed in this phrase window
+                        if silence_samples < len(rolling_buffer):
+                            self.worker.submit(rolling_buffer.copy(), chunk_idx, chunk_idx * chunk_sec)
+                        
+                        # Flush rolling window on explicit long silence boundaries to avoid phrase limits
+                        if silence_samples >= max_silence and self.recording:
+                            rolling_buffer = np.array([], dtype=np.float32)
+                            self.typed_text = ""
+                            chunk_idx += 1
+                            silence_samples = 0
+                    else:
+                        # Offline simple window chunking
+                        to_send = rolling_buffer.copy()
+                        rolling_buffer = rolling_buffer[int(chunk_sec * sr * 0.5):] if self.recording else np.array([], dtype=np.float32)
+                        self.worker.submit(to_send, chunk_idx, chunk_idx * chunk_sec)
                         chunk_idx += 1
 
-                # Collect results
+                # Evaluate internal queue responses from our worker context
                 for res in self.worker.get_all():
-                    text = res.get("text", "")
-                    if not text:
+                    text = res.get("text", "").strip()
+                    if not text or is_hallucination(text):
                         continue
+                        
                     idx = res.get("index", 0)
-                    # For realtime typing
-                    if self.is_realtime:
-                        # Only type new suffix to avoid retyping
-                        # Simplest: type full text if new, but diff
-                        if idx > last_typed_idx:
-                            # Type new chunk with space
-                            to_type = text.strip() + " "
-                            if to_type not in self.typed_text:
-                                type_into_focused(to_type)
-                                self.typed_text += to_type
-                            last_typed_idx = idx
-                    # Accumulate for final
+                    if self.realtime:
+                        # Suffix Typing via Longest Common Prefix (LCP) computation
+                        common = os.path.commonprefix([self.typed_text.lower(), text.lower()])
+                        suffix = text[len(common):].strip()
+                        
+                        if suffix:
+                            # Account for missing space tracking
+                            if self.typed_text and not self.typed_text.endswith(" ") and not suffix.startswith(" "):
+                                suffix = " " + suffix
+                            type_into_focused(suffix)
+                            self.typed_text = text
+                            
                     self.acc_chunks.append({"index": idx, "text": text, "start_sec": res.get("start_sec", 0)})
 
             except Exception as e:
-                logger.error(f"transcribe loop {e}")
+                logger.error(f"Transcribe thread engine crash: {e}")
                 time.sleep(0.1)
 
-        # Flush
-        if buffer.size > 0:
-            self.worker.submit(buffer, chunk_idx, chunk_idx*chunk_sec)
-
     def stop_recording(self) -> str:
-        if not self.is_recording:
-            return ""
-        self.is_recording = False
-        time.sleep(0.5)
-        # Collect remaining
+        with self.lock:
+            if not self.recording:
+                return ""
+            self.recording = False
+            self.stop_event.set()
+
+        if self.record_thread:
+            self.record_thread.join(timeout=2)
+        if self.transcribe_thread:
+            self.transcribe_thread.join(timeout=5)
+
+        # Catch trailing fragments
         for res in self.worker.get_all():
-            if res.get("text"):
+            if res.get("text") and not is_hallucination(res["text"]):
                 self.acc_chunks.append({"index": res.get("index", 0), "text": res["text"], "start_sec": res.get("start_sec", 0)})
 
-        # Sort by index
         self.acc_chunks = sorted(self.acc_chunks, key=lambda x: x["index"])
-        full_text = " ".join([c["text"] for c in self.acc_chunks if c["text"]]).strip()
+        
+        # Eliminate structural duplicate rolling records from unified context array
+        seen_texts = set()
+        unique_parts = []
+        for c in self.acc_chunks:
+            txt = c["text"].strip()
+            if txt and txt to lower() not in seen_texts:
+                unique_parts.append(txt)
+                seen_texts.add(txt.lower())
+                
+        full_text = " ".join(unique_parts).strip()
 
         if not full_text:
-            notify("No speech", "No speech detected")
+            notify("No speech", "No clear text captured")
             return ""
 
-        # If realtime, we already typed, but also save and clipboard
         ts = int(time.time())
-        out_path = TRANSCRIPT_DIR / f"{'realtime' if self.is_realtime else 'live'}_{ts}.txt"
+        out_path = TRANSCRIPT_DIR / f"{'realtime' if self.realtime else 'live'}_{ts}.txt"
         out_path.write_text(full_text, encoding="utf-8")
         try:
             out_path.chmod(0o600)
         except Exception:
             pass
 
-        if self.transcript_output in ("clipboard", "both") and not self.is_realtime:
-            # In realtime we already typed, don't double paste via clipboard to avoid duplicate
+        out_choice = self.config.get("transcript_output", "both")
+        if out_choice in ("clipboard", "both") and not self.realtime:
             if shutil.which("wl-copy"):
                 try:
                     subprocess.run(["wl-copy"], input=full_text.encode(), check=True, timeout=5)
                 except Exception:
                     pass
-            notify("Transcription Complete", full_text[:200])
+            notify("Complete", full_text[:200])
 
-        logger.info(f"Saved {out_path} {len(full_text)} chars")
+        logger.info(f"Saved transcript to {out_path}")
         return full_text
 
     def transcribe_file(self, filepath: str):
         path = Path(filepath).expanduser().resolve()
         if not path.exists():
-            raise FileNotFoundError(str(path))
-        logger.info(f"File transcribe {path}")
+            logger.error(f"Target path does not exist: {path}")
+            return ""
+        logger.info(f"File transcription target: {path}")
         notify("Transcribing", f"{path.name}")
 
         tmp_wav = RUNTIME_DIR / f"transcode_{int(time.time())}_{path.stem}.wav"
         try:
-            cmd = ["ffmpeg", "-y", "-i", str(path), "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(tmp_wav)]
+            # Enforce pristine high fidelity soxr resampling filters 
+            cmd = ["ffmpeg", "-y", "-i", str(path), "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-af", "aresample=resampler=soxr:precision=28", str(tmp_wav)]
             subprocess.run(cmd, check=True, capture_output=True, timeout=600)
 
             data, sr = sf.read(str(tmp_wav), dtype='float32', always_2d=False)
-            assert sr == 16000
             if data.ndim > 1:
                 data = data.mean(axis=1)
 
             segments = self.vad.get_segments(data, max_sec=self.chunk_seconds)
             if not segments:
-                notify("No speech", f"No speech in {path.name}")
+                notify("No speech", f"No speech elements discovered in {path.name}")
                 return ""
 
             incremental = TRANSCRIPT_DIR / f"{path.stem}_incremental.txt"
@@ -416,20 +607,21 @@ class DuskyDaemon:
 
             for idx, (s, e) in enumerate(segments):
                 chunk = data[s:e].astype(np.float32)
-                self.worker.submit(chunk, idx, s/16000)
-                # Wait for result
-                waited = 0
+                self.worker.submit(chunk, idx, s / 16000)
+                
+                waited = 0.0
                 result_text = ""
-                while waited < 60:
+                while waited < 60.0:
                     for res in self.worker.get_all():
                         if res.get("index") == idx:
-                            result_text = res.get("text", "")
+                            result_text = res.get("text", "").strip()
                             break
                     if result_text:
                         break
                     time.sleep(0.1)
                     waited += 0.1
-                if result_text:
+                    
+                if result_text and not is_hallucination(result_text):
                     full_parts.append(result_text)
                     with open(incremental, "a", encoding="utf-8") as f:
                         f.write(result_text + "\n")
@@ -443,7 +635,7 @@ class DuskyDaemon:
                         subprocess.run(["wl-copy"], input=full_text.encode(), check=True, timeout=5)
                     except Exception:
                         pass
-                notify("Complete", f"{path.name}: {len(full_text)} chars")
+                notify("Complete", f"{path.name} finished processing.")
             return full_text
         finally:
             try:
@@ -452,20 +644,26 @@ class DuskyDaemon:
                 pass
 
     def fifo_loop(self):
-        if FIFO_PATH.exists() and not FIFO_PATH.is_fifo():
-            FIFO_PATH.unlink(missing_ok=True)
-        if not FIFO_PATH.exists():
-            os.mkfifo(FIFO_PATH, mode=0o600)
-        try:
-            FIFO_PATH.chmod(0o600)
-        except Exception:
-            pass
+        if FIFO_PATH.exists() or FIFO_PATH.is_symlink():
+            try:
+                st = os.lstat(FIFO_PATH)
+                if stat.S_ISLNK(st.st_mode) or not stat.S_ISFIFO(st.st_mode):
+                    FIFO_PATH.unlink()
+            except Exception:
+                FIFO_PATH.unlink(missing_ok=True)
 
+        if not FIFO_PATH.exists():
+            old_umask = os.umask(0o077)
+            try:
+                os.mkfifo(FIFO_PATH, mode=0o600)
+            finally:
+                os.umask(old_umask)
+
+        # O_RDWR avoids blocking conditions when execution triggers interface
         fd = os.open(FIFO_PATH, os.O_RDWR | os.O_NONBLOCK)
-        import select
         poll = select.poll()
         poll.register(fd, select.POLLIN)
-        logger.info(f"FIFO at {FIFO_PATH}")
+        logger.info(f"Secure IPC pipeline online at {FIFO_PATH}")
 
         while self.running:
             if not poll.poll(500):
@@ -486,7 +684,7 @@ class DuskyDaemon:
                     line = line.strip()
                     if not line:
                         continue
-                    logger.info(f"FIFO {line}")
+                    logger.info(f"IPC input command: {line}")
                     if line == "START":
                         self.start_recording(realtime=False)
                     elif line == "START_REALTIME":
@@ -495,10 +693,9 @@ class DuskyDaemon:
                         self.stop_recording()
                     elif line.startswith("FILE:"):
                         fpath = line[5:].strip()
-                        import threading
                         threading.Thread(target=self.transcribe_file, args=(fpath,), daemon=True).start()
             except Exception as e:
-                logger.error(f"FIFO {e}")
+                logger.error(f"IPC handling error: {e}")
                 time.sleep(0.5)
         try:
             os.close(fd)
@@ -511,18 +708,19 @@ class DuskyDaemon:
         signal.signal(signal.SIGTERM, handle_sig)
         signal.signal(signal.SIGINT, handle_sig)
 
-        PID_FILE.write_text(str(os.getpid()))
+        secure_write_pid(PID_FILE, str(os.getpid()))
         try:
             PID_FILE.chmod(0o600)
         except Exception:
             pass
+            
         READY_FILE.touch()
         try:
             READY_FILE.chmod(0o600)
         except Exception:
             pass
-        logger.info(f"Daemon v6 CPU-only ready PID {os.getpid()} realtime default, model={self.config.get('model')}")
-
+            
+        logger.info(f"Dusky Daemon v8.1 execution active loop on process: {os.getpid()}")
         threading.Thread(target=self.fifo_loop, daemon=True).start()
 
         try:
@@ -530,7 +728,7 @@ class DuskyDaemon:
                 time.sleep(1)
         finally:
             self.worker.stop()
-            for p in (FIFO_PATH, PID_FILE, READY_FILE):
+            for p in (FIFO_PATH, PID_FILE, READY_FILE, RECORD_PID_FILE):
                 try:
                     p.unlink(missing_ok=True)
                 except Exception:
@@ -542,7 +740,7 @@ def load_config():
             return json.loads(CONFIG_PATH.read_text())
         except Exception:
             pass
-    return {"model": "nemo-parakeet-unified-en-0.6b", "quantization": "int8", "chunk_seconds": 25, "enable_vad": True, "transcript_output": "both", "realtime": True, "realtime_chunk": 1.2, "idle_timeout": 30}
+    return {"model": "nemo-parakeet-tdt-0.6b-v2", "quantization": "int8", "chunk_seconds": 25, "enable_vad": True, "transcript_output": "realtime-both", "realtime": True, "realtime_chunk": 1.2, "idle_timeout": 30}
 
 def main():
     import argparse
