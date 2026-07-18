@@ -106,6 +106,13 @@ READY_FILE = RUNTIME_DIR / "ready"
 RECORD_PID_FILE = RUNTIME_DIR / "recording"
 TRANSCRIPT_DIR = Path.home() / "Transcripts" / "DuskySTT"
 TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+ZRAM_MOUNT = Path("/mnt/zram1")
+def get_backup_dir() -> Path:
+    if ZRAM_MOUNT.is_dir() and os.access(ZRAM_MOUNT, os.W_OK):
+        return ZRAM_MOUNT / "dusky_stt"
+    return Path("/tmp/dusky_stt_audio") / "dusky_stt"
+AUDIO_BACKUP_DIR = get_backup_dir()
+AUDIO_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_PATH = Path.home() / "contained_apps" / "uv" / "dusky_stt_v2" / "install_config.json"
 MODEL_CACHE_DIR = Path.home() / "contained_apps" / "uv" / "dusky_stt_v2" / "models"
 MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -492,6 +499,7 @@ class DuskyDaemon:
             self.submitted_count = 0
             self.processed_count = 0
             self.last_chunk_idx = -1
+            self.full_audio = []
             import queue
             self.audio_q = queue.Queue()
 
@@ -515,6 +523,8 @@ class DuskyDaemon:
                         logger.warning("Audio input overflow detected")
                     mono = data.mean(axis=1).astype(np.float32)
                     self.audio_q.put(mono)
+                    if hasattr(self, "full_audio"):
+                        self.full_audio.append(mono)
         except Exception as e:
             logger.error(f"Audio stream error: {e}")
             self.recording = False
@@ -672,6 +682,26 @@ class DuskyDaemon:
 
         if self.record_thread:
             self.record_thread.join(timeout=2)
+            
+        # Save raw audio backup to zram/temp directory (sequential naming e.g., 001.wav, 002.wav)
+        if hasattr(self, "full_audio") and self.full_audio:
+            try:
+                full_data = np.concatenate(self.full_audio)
+                
+                # Determine next index
+                existing_indices = []
+                for f in AUDIO_BACKUP_DIR.glob("*.wav"):
+                    stem = f.stem
+                    if stem.isdigit():
+                        existing_indices.append(int(stem))
+                next_idx = max(existing_indices) + 1 if existing_indices else 1
+                
+                backup_path = AUDIO_BACKUP_DIR / f"{next_idx:03d}.wav"
+                sf.write(str(backup_path), full_data, 16000)
+                logger.info(f"Saved raw audio backup to {backup_path}")
+            except Exception as e:
+                logger.error(f"Failed to save raw audio backup: {e}")
+                
         if self.transcribe_thread:
             self.transcribe_thread.join(timeout=120)
 
