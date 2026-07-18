@@ -5,9 +5,8 @@ CTL_FILE="$HOME/.config/dusky/settings/way_layers/visualizer/visualizer.ctl"
 
 mkdir -p "$(dirname "$CTL_FILE")"
 
-if ! pgrep -f "visualizer_daemon.py" > /dev/null; then
-    python "$DAEMON_SCRIPT" &
-    disown
+if ! systemctl --user is-active --quiet dusky_visualizer.service; then
+    systemctl --user start dusky_visualizer.service
 else
     echo "toggle" > "$CTL_FILE"
 fi
