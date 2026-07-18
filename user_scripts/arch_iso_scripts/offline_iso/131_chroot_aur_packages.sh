@@ -199,19 +199,11 @@ run_pacman() {
     tee -- "$stderr_file" <"$stderr_pipe" >&2 &
     tee_pid=$!
 
-    # FIXED: Use 'script' to emulate a TTY so pacman shows progress bars even when piped
-    if ! [[ -t 1 ]] && command -v script >/dev/null 2>&1; then
-      if script -q -c "env LC_ALL=C pacman $*" /dev/null 2>"$stderr_pipe"; then
-        rc=0
-      else
-        rc=$?
-      fi
+    # Run pacman directly without 'script' to avoid block-buffering issues in pipes.
+    if command env LC_ALL=C pacman "$@" 2>"$stderr_pipe"; then
+      rc=0
     else
-      if command env LC_ALL=C pacman "$@" 2>"$stderr_pipe"; then
-        rc=0
-      else
-        rc=$?
-      fi
+      rc=$?
     fi
 
     rm -f -- "$stderr_pipe"

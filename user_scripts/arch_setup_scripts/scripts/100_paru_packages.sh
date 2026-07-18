@@ -176,13 +176,8 @@ preflight_checks() {
 
 # Progress bar fix: Enforce a TTY using `script` so AUR helpers render properly
 run_aur_cmd() {
-  if ! [[ -t 1 ]] && command -v script >/dev/null 2>&1 && script -q -e -c "sudo -n -v" /dev/null &>/dev/null; then
-    local cmd_str
-    printf -v cmd_str "%q " "$@"
-    script -q -e -c "${cmd_str}" /dev/null
-  else
-    "$@"
-  fi
+  # Run helper command directly without 'script' to avoid block-buffering in pipes
+  "$@"
 }
 
 aur_full_update() {

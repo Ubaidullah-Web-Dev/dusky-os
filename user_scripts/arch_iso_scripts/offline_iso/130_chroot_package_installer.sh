@@ -337,22 +337,11 @@ run_pacman() {
     tee -- "$stderr_file" <"$stderr_pipe" >&2 &
     tee_pid=$!
 
-    # Utilizes highly strict dynamic array quoting for impenetrable argument passing.
-    # CRITICAL: Added -e flag to script to ensure exact exit codes are passed correctly in headless pipelines.
-    if ! [[ -t 1 ]] && command -v script >/dev/null 2>&1; then
-      local cmd_str
-      printf -v cmd_str '%q ' env LC_ALL=C pacman "$@"
-      if script -q -e -c "$cmd_str" /dev/null 2>"$stderr_pipe"; then
-        rc=0
-      else
-        rc=$?
-      fi
+    # Run pacman directly without 'script' to avoid block-buffering issues in pipes.
+    if command env LC_ALL=C pacman "$@" 2>"$stderr_pipe"; then
+      rc=0
     else
-      if command env LC_ALL=C pacman "$@" 2>"$stderr_pipe"; then
-        rc=0
-      else
-        rc=$?
-      fi
+      rc=$?
     fi
 
     rm -f -- "$stderr_pipe"
