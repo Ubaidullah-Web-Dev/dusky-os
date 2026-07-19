@@ -1315,26 +1315,15 @@ class DuskyOrchestratorApp(App):
                 close_fds=True,
                 start_new_session=True,
             )
-            # If a sudo password needs piping, disable terminal echo on the
-            # slave side BEFORE writing so the password never appears in output,
-            # then re-enable echo for normal command I/O.
+            # If a sudo password needs piping, write it to the PTY master.
+            # sudo -S reads the password from stdin (the slave side) and does
+            # NOT echo it back. Combined with -p "" (no prompt), nothing leaks
+            # into the output stream.
             if sudo_password is not None:
-                try:
-                    saved_attrs = termios.tcgetattr(slave_fd)
-                    noecho = list(saved_attrs)
-                    noecho[3] &= ~termios.ECHO  # lflags
-                    termios.tcsetattr(slave_fd, termios.TCSANOW, noecho)
-                except termios.error:
-                    saved_attrs = None
-
                 os.write(master_fd, (sudo_password + "\n").encode())
-
-                # Re-enable echo for the rest of the session
-                if saved_attrs is not None:
-                    try:
-                        termios.tcsetattr(slave_fd, termios.TCSANOW, saved_attrs)
-                    except termios.error:
-                        pass
+                # Brief yield so sudo can consume the password before we start
+                # reading output from the same PTY.
+                await asyncio.sleep(0.05)
 
             try: os.close(slave_fd)
             except OSError: pass
