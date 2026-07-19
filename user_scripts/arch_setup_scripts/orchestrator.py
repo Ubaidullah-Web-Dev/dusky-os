@@ -1305,25 +1305,35 @@ class DuskyOrchestratorApp(App):
 
         transport: asyncio.Transport | None = None
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        pw_write_fd = -1
 
         try:
+            # For sudo tasks, deliver the password via a dedicated pipe rather
+            # than through the PTY (which would echo it into the log output).
+            # stdout/stderr still use the PTY so the child gets full terminal
+            # capabilities for coloured output, progress bars, etc.
+            if sudo_password is not None:
+                pw_read_fd, pw_write_fd = os.pipe()
+                child_stdin = pw_read_fd
+            else:
+                child_stdin = slave_fd
+
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
-                stdin=slave_fd,
+                stdin=child_stdin,
                 stdout=slave_fd,
                 stderr=slave_fd,
                 close_fds=True,
                 start_new_session=True,
             )
-            # If a sudo password needs piping, write it to the PTY master.
-            # sudo -S reads the password from stdin (the slave side) and does
-            # NOT echo it back. Combined with -p "" (no prompt), nothing leaks
-            # into the output stream.
+
             if sudo_password is not None:
-                os.write(master_fd, (sudo_password + "\n").encode())
-                # Brief yield so sudo can consume the password before we start
-                # reading output from the same PTY.
-                await asyncio.sleep(0.05)
+                # Close the read end in the parent (child inherited it)
+                os.close(pw_read_fd)
+                # Write password + newline, then close so sudo sees EOF after
+                os.write(pw_write_fd, (sudo_password + "\n").encode())
+                os.close(pw_write_fd)
+                pw_write_fd = -1
 
             try: os.close(slave_fd)
             except OSError: pass
@@ -1394,6 +1404,9 @@ class DuskyOrchestratorApp(App):
                 except OSError: pass
             if slave_fd != -1:
                 try: os.close(slave_fd)
+                except OSError: pass
+            if pw_write_fd != -1:
+                try: os.close(pw_write_fd)
                 except OSError: pass
 
     async def _execute_task_cmd(self, task: OrchestratorTask, cmd: list[str]) -> bool:
