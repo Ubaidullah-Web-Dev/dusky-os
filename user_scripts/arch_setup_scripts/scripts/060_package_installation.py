@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # dusky_interactive=true
 # ==============================================================================
-# DUSKY PACKAGE INSTALLER (v10.8 - Enterprise PTY & Telemetry Engine)
+# DUSKY PACKAGE INSTALLER (v10.9 - Pristine Logs & Empty Profiles)
 # ==============================================================================
 # Architecture: Asynchronous Buffered PTY Streams | Textual Split-Screen TUI
 # Compatibility: Python 3.14+ | Pacman v7.1.0+ | Paru / Yay | ISO & Chroot Root
@@ -196,18 +196,21 @@ class ProfileParser:
     
     @staticmethod
     def ensure_default_profiles() -> None:
-        if not PROFILES_DIR.exists():
-            PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-            AUR_PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-            
-            sample_official = PROFILES_DIR / "01_all"
+        """Creates profile directories and empty skeleton files without populating dummy packages."""
+        PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+        AUR_PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+        
+        sample_official = PROFILES_DIR / "01_all"
+        if not sample_official.exists():
             sample_official.write_text(
-                "# Default Official Arch Packages\nfastfetch\nbtop\ngit\nneovim\nripgrep\n",
+                "# Add official Arch repository packages here (one per line or space-separated)\n",
                 encoding="utf-8"
             )
-            sample_aur = AUR_PROFILES_DIR / "01_all"
+            
+        sample_aur = AUR_PROFILES_DIR / "01_all"
+        if not sample_aur.exists():
             sample_aur.write_text(
-                "# Default AUR Packages\nwlogout\nhyprshade\npeaclock\ntray-tui\n",
+                "# Add AUR packages here (one per line or space-separated)\n",
                 encoding="utf-8"
             )
 
@@ -714,7 +717,6 @@ class EliteInstallerApp(App):
                                 print(f"\n--- MANUAL INTERVENTION TTY: {p.name} ---")
                                 os.system(self.build_manual_command(p.name, is_aur))
                                 print("\n--- Returning to Textual UI in 2 seconds ---")
-                                # FIXED: Using synchronous time.sleep inside suspend block
                                 time.sleep(2)
                                 
                                 if old_attr:
@@ -782,7 +784,6 @@ class EliteInstallerApp(App):
                 
                 if text := decoder.decode(chunk):
                     line_buffer += text
-                    # Process lines whenever carriage returns or newlines arrive
                     while True:
                         match = re.search(r'[\r\n]', line_buffer)
                         if not match:
