@@ -1,4 +1,4 @@
-# Default AUR Packages (Extracted from 100_paru_packages.sh)
+# Default AUR Packages
 # installing manually with script because this is a massive package that includes every cursor theme
 # bibata-cursor-theme-bin
 wlogout
