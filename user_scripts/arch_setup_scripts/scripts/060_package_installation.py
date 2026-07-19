@@ -42,7 +42,7 @@ from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import (
-    Static, Log, ProgressBar, Button, Label, Tree, Input, OptionList
+    Static, RichLog, ProgressBar, Button, Label, Tree, Input, OptionList
 )
 from textual.widgets.option_list import Option
 from textual.widgets.tree import TreeNode
@@ -65,7 +65,7 @@ USERNAME_REGEX = re.compile(r'^[a-z_][a-z0-9_-]{0,31}$')
 PCT_REGEX = re.compile(r'(\d{1,3})%')
 SPEED_ETA_REGEX = re.compile(r'Total\s+\(\d+/\d+\).*?(\d+(?:\.\d+)?\s+[KMG]?i?B/s)\s+([\d:]+)', re.IGNORECASE)
 ALT_SPEED_ETA_REGEX = re.compile(r'(\d+(?:\.\d+)?\s+[KMG]?i?B/s)\s+([\d:]+)', re.IGNORECASE)
-PROGRESS_BAR_REGEX = re.compile(r'\[[#=\- ]{3,}\]|^\s*\[.*\]\s*\d+%')
+PROGRESS_BAR_REGEX = re.compile(r'\[[#=\- ]{3,}\]|^\s*\[.*\]\s*\d+%|]\s+\d{1,3}%\s*$')
 
 class PackageStatus(Enum):
     PENDING = auto()
@@ -309,7 +309,7 @@ def load_dusky_theme(aur_user: str | None = None) -> str:
     #status_label { text-style: bold; color: #00e0b8; }
     #speed_label { color: #a0d0cb; text-style: italic; }
     #progress_bar { width: 100%; margin-top: 1; height: 1; }
-    Log { height: 1fr; border: none; background: #0a1612; color: #d8e6df; scrollbar-gutter: stable; text-wrap: wrap; }
+    RichLog { height: 1fr; border: none; background: #0a1612; color: #d8e6df; scrollbar-gutter: stable; }
     Tree { background: #0a1612; border: none; padding: 0; color: #d8e6df; }
     #footer { height: 1; dock: bottom; background: #1a2e28; layout: horizontal; padding: 0 1; }
     .footer-shortcut { padding: 0 1; color: #d8e6df; }
@@ -354,7 +354,7 @@ def load_dusky_theme(aur_user: str | None = None) -> str:
         #status_label {{ text-style: bold; color: {accent}; }}
         #speed_label {{ color: {warning}; text-style: italic; }}
         #progress_bar {{ width: 100%; margin-top: 1; height: 1; }}
-        Log {{ height: 1fr; border: none; background: {bg}; color: {fg}; scrollbar-gutter: stable; text-wrap: wrap; }}
+        RichLog {{ height: 1fr; border: none; background: {bg}; color: {fg}; scrollbar-gutter: stable; }}
         Tree {{ background: {bg}; color: {fg}; }}
         #footer {{ height: 1; dock: bottom; background: {muted}; layout: horizontal; padding: 0 1; }}
         .footer-shortcut {{ padding: 0 1; color: {fg}; }}
@@ -771,7 +771,7 @@ class EliteInstallerApp(App):
 
         self.tree_widget = Tree("◈ Target Profiles & Packages")
         # Log initialized cleanly without the removed 'wrap' parameter
-        self.log_widget = Log(id="pty_log", highlight=True)
+        self.log_widget = RichLog(id="pty_log", highlight=True, markup=True, wrap=True)
         self.progress_bar = ProgressBar(show_eta=False, show_percentage=False, id="progress_bar")
         self.status_label = Label("Initializing installation sequence...", id="status_label")
         self.speed_label = Label("Bandwidth: -- MiB/s | ETA: --:--", id="speed_label")
@@ -893,7 +893,7 @@ class EliteInstallerApp(App):
     def log_system(self, msg: str, is_err: bool = False) -> None:
         """Use Rich markup for Textual Log widget."""
         prefix = "[bold red][SYSTEM][/]" if is_err else "[bold cyan][SYSTEM][/]"
-        self.log_widget.write_line(f"{prefix} {msg}")
+        self.log_widget.write(f"{prefix} {msg}")
 
     def handle_pty_line(self, line: str) -> None:
         clean = line.strip()
@@ -929,19 +929,25 @@ class EliteInstallerApp(App):
             self.speed_label.update(f"Bandwidth: {extracted_speed} | ETA: {extracted_eta}")
 
         lower = stripped.lower()
-        if any(k in lower for k in ("error", "failed", "warning", "conflict", "exists in filesystem")):
-            self.log_widget.write_line(clean)
-            return
 
+        # ── Filter progress-bar noise FIRST (before error-keyword check) ──
         has_speed = bool(ALT_SPEED_ETA_REGEX.search(stripped))
         has_bar = bool(PROGRESS_BAR_REGEX.search(stripped))
-        is_fragment = len(stripped) < 20 and all(c in "[]-#= oO@%:.0123456789" for c in stripped)
         is_pacman_prompt = stripped.startswith(":: Proceed with installation?") or "checking keyring" in lower
+        # Catch short fragments made of progress-bar glyphs (including Unicode
+        # block-element residue that survives ANSI stripping).
+        _frag_chars = set("[]-#= oO@%:.0123456789━─░▒▓█▏▎▍▌▋▊▉●○◉◌")
+        is_fragment = len(stripped) < 40 and all(c in _frag_chars for c in stripped)
 
         if has_speed or has_bar or is_fragment or is_pacman_prompt:
             return
 
-        self.log_widget.write_line(clean)
+        # ── Then log error / warning lines ──
+        if any(k in lower for k in ("error", "failed", "warning", "conflict", "exists in filesystem")):
+            self.log_widget.write(stripped)
+            return
+
+        self.log_widget.write(stripped)
 
     @staticmethod
     def _is_package_manager_active() -> bool:
