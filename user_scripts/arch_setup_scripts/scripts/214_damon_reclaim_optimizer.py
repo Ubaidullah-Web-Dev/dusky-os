@@ -167,7 +167,7 @@ def apply_live_params(cfg):
         info("DAMON_RECLAIM running - using online tuning via commit_inputs")
         write_all(); sysfs_write(commit_path,"Y")
         info("Waiting for commit_inputs to return to N...")
-        if not wait_for(lambda: sysfs_read(commit_path)=="N", timeout=5.0, desc="commit_inputs==N"): die("commit_inputs did not return to N - check dmesg")
+        if not wait_for(lambda: sysfs_read(commit_path)=="N", timeout=15.0, desc="commit_inputs==N"): die("commit_inputs did not return to N - check dmesg")
         ok("Online commit completed")
     else:
         if has_enabled:
