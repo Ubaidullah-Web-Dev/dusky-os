@@ -16,6 +16,45 @@
 # Exit early if not interactive (prevents breaking SCP/SFTP/rsync)
 [[ -o interactive ]] || return
 
+# --- Autocomplete & Vi Mode (Must precede plugins and compdef) ---
+setopt EXTENDED_GLOB
+bindkey -v
+KEYTIMEOUT=5
+
+if [[ -f /usr/share/zsh/plugins/zsh-autocomplete/zsh-autocomplete.plugin.zsh ]]; then
+    source /usr/share/zsh/plugins/zsh-autocomplete/zsh-autocomplete.plugin.zsh
+fi
+
+# Fallback/Safety: Ensure compdef is available for external modules
+# If zsh-autocomplete is not installed, we still need compdef for your modular scripts.
+if ! type compdef >/dev/null 2>&1; then
+    autoload -Uz compinit
+    local zcompdump="${ZDOTDIR:-$HOME}/.zcompdump"
+    local dump_cache=($zcompdump(#qN.mh-24))
+    if (( ${#dump_cache} )); then
+        compinit -C
+    else
+        compinit
+        touch "$zcompdump"
+    fi
+    unset zcompdump dump_cache
+fi
+
+# Populate LS_COLORS before any completion styling references it
+if [[ -z "$LS_COLORS" ]] && command -v dircolors >/dev/null; then
+  eval "$(dircolors -b)"
+fi
+
+# Restore user's preferred completion styling (cache, colors, fuzzy matching)
+local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/zsh"
+[[ -d "$cache_dir" ]] || mkdir -p "$cache_dir"
+zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
+zstyle ':completion:*:descriptions' format '%B%F{yellow}%d%f%b'
+zstyle ':completion:*' use-cache on
+zstyle ':completion:*' cache-path "$cache_dir/zcompcache"
+zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}' 'r:|=*' 'l:|=* r:|=*'
+unset cache_dir
+
 # -----------------------------------------------------------------------------
 # [1] ENVIRONMENT VARIABLES & PATH
 # -----------------------------------------------------------------------------
@@ -23,8 +62,7 @@ export TERMINAL='kitty'
 export EDITOR='nvim'
 export VISUAL='nvim'
 
-# Compilation Optimization: Use ALL available processing units
-export MAKEFLAGS="-j$(nproc)"
+# Compilation Optimization: Moved to ~/.config/pacman/makepkg.conf
 
 # Clipboard DB path - dynamic, set by 390_clipboard_persistance.sh toggle
 [ -f "$HOME/.config/dusky/settings/cliphist_db_env" ] && source "$HOME/.config/dusky/settings/cliphist_db_env"
@@ -37,7 +75,8 @@ __clip_db_env_mtime=0
 __reload_clip_env() {
   [[ -f "$__clip_db_env_file" ]] || return 0
   local mtime
-  mtime=$(stat -c %Y "$__clip_db_env_file" 2>/dev/null || echo 0)
+  zmodload zsh/stat 2>/dev/null
+  mtime=$(zstat +mtime "$__clip_db_env_file" 2>/dev/null || stat -c %Y "$__clip_db_env_file" 2>/dev/null || echo 0)
   if (( mtime != __clip_db_env_mtime )); then
     # shellcheck source=/dev/null
     source "$__clip_db_env_file" 2>/dev/null && __clip_db_env_mtime=$mtime
@@ -55,53 +94,17 @@ HISTSIZE=50000
 SAVEHIST=25000
 HISTFILE="$HOME/.zsh_history"
 
-setopt APPEND_HISTORY          # Append new history entries instead of overwriting.
-setopt INC_APPEND_HISTORY      # Write history to file immediately after command execution.
 setopt SHARE_HISTORY           # Share history between all concurrent shell sessions.
 setopt HIST_EXPIRE_DUPS_FIRST  # When trimming history, delete duplicates first.
-setopt HIST_IGNORE_DUPS        # Don't record an entry that was just recorded again.
+setopt HIST_IGNORE_ALL_DUPS    # Delete old recorded entry if new entry is a duplicate.
 setopt HIST_IGNORE_SPACE       # Ignore commands starting with space.
 setopt HIST_VERIFY             # Expand history (!!) into the buffer, don't run immediately.
+setopt HIST_FCNTL_LOCK         # Better locking for concurrent shells sharing history
 
 # -----------------------------------------------------------------------------
-# [3] THE AUTOCOMPLETE ENGINE
+# [3] KEYBINDINGS & SHELL OPTIONS
 # -----------------------------------------------------------------------------
-setopt EXTENDED_GLOB # Enable extended globbing features (e.g., `^` for negation)
 
-# 1. zstyle configurations MUST be declared before compinit
-if [[ -z "$LS_COLORS" ]] && command -v dircolors >/dev/null; then
-  eval "$(dircolors -b)"
-fi
-
-zstyle ':completion:*' menu select                 # Enable visual menu selection
-zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}" # Match LS_COLORS
-zstyle ':completion:*:descriptions' format '%B%F{yellow}%d%f%b' # Colored category headers
-zstyle ':completion:*' group-name ''               # Group completions by type
-# Fuzzy matching: Case-insensitive, partial-word, and substring completion
-zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}' 'r:|=*' 'l:|=* r:|=*'
-
-# Cache heavy completions (like pacman/yay) for instant loading
-local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/zsh"
-[[ -d "$cache_dir" ]] || mkdir -p "$cache_dir"
-zstyle ':completion:*' use-cache on
-zstyle ':completion:*' cache-path "$cache_dir/zcompcache"
-
-# 2. Optimized initialization: Only regenerate compdump cache once every 24 hours.
-autoload -Uz compinit
-local zcompdump="${ZDOTDIR:-$HOME}/.zcompdump"
-local dump_cache=($zcompdump(#qN.mh-24)) # Array expansion forces glob evaluation without subshells
-
-if (( ${#dump_cache} )); then
-  compinit -C  # Trust the fresh cache, skip checks (Ultra Fast)
-else
-  compinit     # Cache is old or missing, regenerate it (Slow, happens once a day)
-  touch "$zcompdump"
-fi
-unset cache_dir zcompdump dump_cache
-
-# -----------------------------------------------------------------------------
-# [4] KEYBINDINGS & SHELL OPTIONS
-# -----------------------------------------------------------------------------
 # --- General Options ---
 setopt INTERACTIVE_COMMENTS # Allow comments (#) in an interactive shell.
 setopt GLOB_DOTS            # Include dotfiles (e.g., .config) in globbing results.
@@ -109,29 +112,11 @@ setopt NO_CASE_GLOB         # Perform case-insensitive globbing.
 setopt AUTO_PUSHD           # Automatically push directories onto the directory stack.
 setopt PUSHD_IGNORE_DUPS    # Don't push duplicate directories onto the stack.
 
-# --- Vi Mode Keybindings ---
-bindkey -v
-KEYTIMEOUT=1 # 10ms transition delay (instant mode switching)
-
 # --- Neovim Integration ---
 # Press 'v' in normal mode to edit the current command string in Neovim
-autoload -U edit-command-line
+autoload -Uz edit-command-line
 zle -N edit-command-line
 bindkey -M vicmd v edit-command-line
-
-# --- History Search with Up/Down Arrows ---
-autoload -U history-search-end
-zle -N history-beginning-search-backward-end history-search-end
-zle -N history-beginning-search-forward-end history-search-end
-
-# Bind Arrow Keys for history search across both vi insert (viins) and normal/command (vicmd) modes.
-# We explicitly bind both application mode (terminfo) and normal mode (standard ESC) sequences.
-for keymap in viins vicmd; do
-  bindkey -M "$keymap" "${terminfo[kcuu1]:-^[[A}" history-beginning-search-backward-end
-  bindkey -M "$keymap" "^[[A" history-beginning-search-backward-end
-  bindkey -M "$keymap" "${terminfo[kcud1]:-^[[B}" history-beginning-search-forward-end
-  bindkey -M "$keymap" "^[[B" history-beginning-search-forward-end
-done
 
 # -----------------------------------------------------------------------------
 # [5] ALIASES & FUNCTIONS (Main Core)
@@ -153,8 +138,6 @@ alias io_drives='~/user_scripts/drives/dusky_disk_monitor_io.py'
 # Searching & Differencing
 alias diff='delta --side-by-side'
 alias grep='grep --color=auto'
-alias egrep='egrep --color=auto'
-alias fgrep='fgrep --color=auto'
 alias dusky_replace='python3 ~/user_scripts/tools/sed/dusky_replace.py'
 
 # System & Development Scripts
@@ -189,7 +172,7 @@ fi
 function y() {
     local tmp="$(mktemp -t "yazi-cwd.XXXXXX")" cwd
     yazi "$@" --cwd-file="$tmp"
-    if cwd="$(cat -- "$tmp")" && [ -n "$cwd" ] && [ "$cwd" != "$PWD" ]; then
+    if cwd="$(cat -- "$tmp")" && [ -n "$cwd" ] && [ "$cwd" != "$PWD" ] && [ -d "$cwd" ]; then
         builtin cd -- "$cwd"
     fi
     rm -f -- "$tmp"
@@ -211,7 +194,7 @@ sudo() {
 
 # Utility Function: Make directory and immediately CD into it
 mkcd() {
-  mkdir -p "$1" && cd "$1"
+  mkdir -p -- "$1" && cd -- "$1"
 }
 
 # -----------------------------------------------------------------------------
@@ -241,7 +224,7 @@ unset conf_dir my_modules mod
 _starship_cache="$HOME/.starship-init.zsh"
 _starship_bin="$(command -v starship)"
 if [[ -n "$_starship_bin" ]]; then
-  if [[ ! -f "$_starship_cache" || "$_starship_bin" -nt "$_starship_cache" ]]; then
+  if [[ ! -f "$_starship_cache" || "$_starship_bin" -nt "$_starship_cache" || "$HOME/.config/starship.toml" -nt "$_starship_cache" ]]; then
     "$_starship_bin" init zsh --print-full-init >! "$_starship_cache"
   fi
   source "$_starship_cache"
@@ -256,8 +239,6 @@ if [[ -n "$_fzf_bin" ]]; then
       "$_fzf_bin" --zsh >! "$_fzf_cache"
     fi
     source "$_fzf_cache"
-  elif [[ -f "$HOME/.fzf.zsh" ]]; then
-    source "$HOME/.fzf.zsh" # Fallback for older versions
   fi
 fi
 
@@ -266,14 +247,9 @@ _zoxide_cache="$HOME/.zoxide-init.zsh"
 _zoxide_bin="$(command -v zoxide)"
 if [[ -n "$_zoxide_bin" ]]; then
   if [[ ! -f "$_zoxide_cache" || "$_zoxide_bin" -nt "$_zoxide_cache" ]]; then
-    "$_zoxide_bin" init zsh >! "$_zoxide_cache"
+    "$_zoxide_bin" init zsh --cmd cd >! "$_zoxide_cache"
   fi
   source "$_zoxide_cache"
-fi
-
-# --- Setup zoxide to replace cd ---
-if command -v zoxide >/dev/null; then
-	alias cd='z'
 fi
 
 # Cleanup
@@ -307,9 +283,3 @@ fi
 # =============================================================================
 # End of ~/.zshrc
 # =============================================================================
-
-# >>> grok installer >>>
-export PATH="$HOME/.grok/bin:$PATH"
-fpath=(~/.grok/completions/zsh $fpath)
-autoload -Uz compinit && compinit -C
-# <<< grok installer <<<
