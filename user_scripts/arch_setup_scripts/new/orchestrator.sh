@@ -37,7 +37,20 @@ log() {
     printf "%s[%s]%s %s\n" "${color}" "${level}" "${RESET}" "${msg}"
 }
 
-trap 'rc=$?; log ERROR "Wrapper failed at line ${LINENO} (exit ${rc})."; exit "${rc}"' ERR
+trap 'rc=$?; log ERROR "Wrapper failed at line ${LINENO} (command: ${BASH_COMMAND:-unknown}, exit ${rc})."; exit "${rc}"' ERR
+
+bootstrap_packages() {
+    local line
+    if [[ -f "$ORCHESTRATOR_PY" ]] && line="$(grep -m1 '^# DUSKY_BOOTSTRAP_PACKAGES:' "$ORCHESTRATOR_PY" 2>/dev/null)"; then
+        local -a pkgs=()
+        read -r -a pkgs <<< "${line#*:}"
+        if (( ${#pkgs[@]} > 0 )); then
+            printf '%s\n' "${pkgs[@]}"
+            return 0
+        fi
+    fi
+    printf '%s\n' python python-textual python-rich git
+}
 
 check_internet() {
     local url
@@ -102,7 +115,6 @@ python_ok() {
 
 choose_python() {
     local candidate
-
     if [[ -x /usr/bin/python ]] && python_ok /usr/bin/python; then
         printf "/usr/bin/python"
         return 0
@@ -128,20 +140,23 @@ main() {
         exit 1
     fi
 
-    local SUDO=""
+    local -a sudo_cmd=()
     if (( EUID != 0 )); then
-        SUDO="sudo"
         if ! command -v sudo >/dev/null 2>&1; then
             log ERROR "sudo is required to bootstrap dependencies."
             exit 1
         fi
+        sudo_cmd=(sudo)
     fi
 
+    local -a bootstrap_pkgs=()
+    mapfile -t bootstrap_pkgs < <(bootstrap_packages)
+
     local -a missing_pkgs=()
-    pkg_installed python || missing_pkgs+=("python")
-    pkg_installed python-textual || missing_pkgs+=("python-textual")
-    pkg_installed python-rich || missing_pkgs+=("python-rich")
-    pkg_installed git || missing_pkgs+=("git")
+    local pkg
+    for pkg in "${bootstrap_pkgs[@]}"; do
+        pkg_installed "$pkg" || missing_pkgs+=("$pkg")
+    done
 
     if (( EUID == 0 )) && ! pkg_installed sudo; then
         missing_pkgs+=("sudo")
@@ -150,7 +165,7 @@ main() {
     if (( ${#missing_pkgs[@]} > 0 )); then
         require_internet
 
-        if [[ -n "$SUDO" ]]; then
+        if (( ${#sudo_cmd[@]} > 0 )); then
             log INFO "Administrative privileges required to install missing dependencies."
             if ! sudo -v; then
                 log ERROR "Sudo authentication failed. Cannot install dependencies."
@@ -164,14 +179,16 @@ main() {
                 exit 1
             fi
             log WARN "Removing stale pacman lock file: /var/lib/pacman/db.lck"
-            $SUDO rm -f /var/lib/pacman/db.lck
+            "${sudo_cmd[@]}" rm -f /var/lib/pacman/db.lck
         fi
 
         log RUN "Installing missing packages: ${missing_pkgs[*]}"
-        if ! $SUDO pacman -Syu --needed --noconfirm "${missing_pkgs[@]}"; then
-            log WARN "Initial pacman transaction failed. Attempting keyring refresh and retry..."
-            $SUDO pacman -Sy --needed --noconfirm archlinux-keyring || true
-            $SUDO pacman -Syu --needed --noconfirm "${missing_pkgs[@]}"
+        if ! "${sudo_cmd[@]}" pacman -Syu --needed --noconfirm "${missing_pkgs[@]}"; then
+            log WARN "Initial pacman transaction failed. Attempting keyring recovery and retry..."
+            "${sudo_cmd[@]}" pacman -Sy --needed --noconfirm archlinux-keyring || true
+            "${sudo_cmd[@]}" pacman-key --init || true
+            "${sudo_cmd[@]}" pacman-key --populate archlinux || true
+            "${sudo_cmd[@]}" pacman -Syu --needed --noconfirm "${missing_pkgs[@]}"
         fi
 
         log SUCCESS "All dependencies satisfied."
@@ -187,11 +204,11 @@ main() {
 
     if ! "$PYTHON_BIN" -c 'import textual, rich, tomllib' >/dev/null 2>&1; then
         log WARN "Python runtime imports failed. Attempting package refresh..."
-        if [[ -n "$SUDO" ]]; then
+        if (( ${#sudo_cmd[@]} > 0 )); then
             sudo -v || true
         fi
         require_internet
-        $SUDO pacman -Syu --needed --noconfirm python-textual python-rich || true
+        "${sudo_cmd[@]}" pacman -Syu --needed --noconfirm python-textual python-rich || true
         if ! "$PYTHON_BIN" -c 'import textual, rich, tomllib' >/dev/null 2>&1; then
             log ERROR "Python dependencies are still unusable."
             exit 1
@@ -205,7 +222,19 @@ main() {
 
     if (( EUID == 0 )) && [[ -n "${SUDO_USER:-}" ]] && [[ " $* " != *" --allow-root "* ]]; then
         log INFO "Dropping privileges to ${SUDO_USER}..."
+
+        local target_home target_shell
+        target_home="$(getent passwd "$SUDO_USER" | cut -d: -f6 || true)"
+        target_shell="$(getent passwd "$SUDO_USER" | cut -d: -f7 || true)"
+        [[ -n "$target_home" ]] || target_home="/home/${SUDO_USER}"
+        [[ -n "$target_shell" ]] || target_shell="/bin/bash"
+
+        cd "$SCRIPT_DIR"
         exec sudo -u "$SUDO_USER" -- env \
+            HOME="$target_home" \
+            USER="$SUDO_USER" \
+            LOGNAME="$SUDO_USER" \
+            SHELL="$target_shell" \
             PYTHONUNBUFFERED=1 \
             PYTHONUTF8=1 \
             PYTHONDONTWRITEBYTECODE=1 \

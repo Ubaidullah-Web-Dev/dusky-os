@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# DUSKY_BOOTSTRAP_PACKAGES: python python-textual python-rich git
 # dusky_interactive=true
 # ==============================================================================
 # DUSKY ARCH LINUX MASTER ORCHESTRATOR
@@ -38,7 +39,7 @@ import time
 import tomllib
 import uuid
 from collections import deque
-from contextlib import suppress, nullcontext
+from contextlib import suppress, nullcontext, contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from importlib import metadata as importlib_metadata
@@ -70,11 +71,12 @@ except ImportError as exc:
     sys.stderr.write("Install: python-textual python-rich\n")
     sys.exit(8)
 
-VERSION = "18.0.0"
+VERSION = "19.0.0"
 SCRIPT_DIR: Path = Path(__file__).resolve().parent
 PROFILES_DIR: Path = SCRIPT_DIR / "profiles"
-
 ASCII_MODE = False
+MAX_DEFER_PASSES = 3
+
 UNICODE_SYMBOLS = {
     "logo": "◈",
     "completed": "✔",
@@ -84,6 +86,7 @@ UNICODE_SYMBOLS = {
     "pending": "·",
     "sep": "│",
 }
+
 ASCII_SYMBOLS = {
     "logo": "DUSKY",
     "completed": "OK",
@@ -124,7 +127,6 @@ def check_runtime_versions() -> None:
             )
             sys.exit(1)
     except Exception:
-        # If metadata is unavailable but import worked, continue.
         pass
 
 
@@ -133,6 +135,7 @@ def ensure_not_root(allow_root: bool) -> None:
         return
     if allow_root:
         return
+
     if os.environ.get("SUDO_USER"):
         sys.stderr.write(
             "[FATAL] Run this orchestrator as your normal user, not via sudo.\n"
@@ -279,7 +282,7 @@ _INTERACTIVE_RE = re.compile(
 )
 _HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 ANSI_STRIP_REGEX = re.compile(
-    r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1B\\))"
+    r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x1b]*(?:\x07|\x1B\\))"
 )
 PCT_REGEX = re.compile(r"(?<!\d)(?:100(?:\.0+)?|\d{1,2}(?:\.\d+)?)%")
 SPEED_ETA_REGEX = re.compile(
@@ -292,6 +295,56 @@ ALT_SPEED_ETA_REGEX = re.compile(
 )
 BRACKET_NEWLINE_RE = re.compile(r"[\r\n]+")
 SINGLE_NEWLINE_RE = re.compile(r"[\r\n]")
+
+PROMPT_RULES: list[tuple[str, re.Pattern[str], str]] = [
+    (
+        "sudo_password",
+        re.compile(
+            r"(?i)(\[sudo\] password for [^:]+:|^\s*Password:\s*$|sudo: a password is required|Password:\s*$)",
+            re.MULTILINE,
+        ),
+        "password",
+    ),
+    (
+        "pgp_import",
+        re.compile(
+            r"(?i)(::\s*Import PGP key.*\?\s*\[Y/n\]|::\s*Append key\?.*\[Y/n\]|Import PGP key.*\?\s*\[Y/n\])",
+            re.MULTILINE,
+        ),
+        "yes",
+    ),
+    (
+        "pacman_proceed",
+        re.compile(
+            r"(?i)::\s*(Proceed with (?:installation|download|upgrade)|Continue (?:installation|download|upgrade)).*\?\s*\[Y/n\]",
+            re.MULTILINE,
+        ),
+        "yes",
+    ),
+    (
+        "pacman_replace",
+        re.compile(r"(?i)::\s*Replace\s+.*\?\s*\[Y/n\]", re.MULTILINE),
+        "yes",
+    ),
+    (
+        "pacman_remove_conflict",
+        re.compile(r"(?i)::\s*Remove conflicting file.*\?\s*\[Y/n\]", re.MULTILINE),
+        "yes",
+    ),
+    (
+        "aur_proceed",
+        re.compile(
+            r"(?i)(Proceed with installation\?|Continue building\?|Continue installing\?|::\s*Proceed with (?:installation|download|build).*\?\s*\[Y/n\])",
+            re.MULTILINE,
+        ),
+        "yes",
+    ),
+    (
+        "generic_yes",
+        re.compile(r"(?i)\[Y/n\]|\(Y/n\)|\[y/N\]|\(y/N\)", re.MULTILINE),
+        "yes",
+    ),
+]
 
 
 # ==============================================================================
@@ -324,6 +377,11 @@ class OrchestratorTask:
     status: TaskStatus = TaskStatus.PENDING
     error_msg: str | None = None
     duration: float = 0.0
+
+    always: bool = False
+    retry: int = 0
+    retry_delay: float = 1.0
+    on_failure: str = "ask"
 
 
 @dataclass(slots=True, kw_only=True)
@@ -376,6 +434,27 @@ def file_checksum(path: Path) -> str:
         return ""
 
 
+def make_state_key(task: OrchestratorTask, occurrence: int) -> str:
+    args_key = shlex.join(task.args)
+    timeout_repr = "" if task.timeout is None else str(task.timeout)
+    material = "|".join(
+        [
+            task.mode,
+            task.script_name,
+            args_key,
+            str(occurrence),
+            task.checksum,
+            task.condition or "",
+            str(int(task.interactive)),
+            str(int(task.ignore_fail)),
+            str(int(task.force_flag)),
+            timeout_repr,
+            str(int(task.always)),
+        ]
+    ).encode("utf-8")
+    return hashlib.blake2b(material, digest_size=16).hexdigest()
+
+
 # ==============================================================================
 # STATE STORE
 # ==============================================================================
@@ -383,7 +462,6 @@ class StateStore:
     DONE = {
         "completed",
         "skipped",
-        "skipped_condition",
         "ignored",
         "manual",
     }
@@ -391,6 +469,9 @@ class StateStore:
     def __init__(self, profile: ProfileConfig):
         self.path = state_dir() / f"{safe_filename(profile.name)}.db"
         self.conn = sqlite3.connect(self.path)
+        self.conn.execute("PRAGMA journal_mode=WAL;")
+        self.conn.execute("PRAGMA synchronous=NORMAL;")
+        self.conn.execute("PRAGMA busy_timeout=5000;")
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS state (
@@ -495,6 +576,7 @@ class RunLogger:
     def open_task(self, task: OrchestratorTask, cmd: list[str]) -> None:
         if not self.enabled:
             return
+
         if task.state_key in self._task_files:
             self.write_task(task, f"[{now_ts()}] RETRY")
             return
@@ -508,6 +590,9 @@ class RunLogger:
             f.write(f"[{now_ts()}] ARGS: {shlex.join(task.args)}\n")
             f.write(f"[{now_ts()}] COMMAND: {shlex.join(cmd)}\n")
             f.write(f"[{now_ts()}] CONDITION: {task.condition or 'always'}\n")
+            f.write(f"[{now_ts()}] ALWAYS: {task.always}\n")
+            f.write(f"[{now_ts()}] RETRY: {task.retry}\n")
+            f.write(f"[{now_ts()}] ON_FAILURE: {task.on_failure}\n")
             f.flush()
             self._task_files[task.state_key] = f
             self._task_counts[task.state_key] = 0
@@ -577,9 +662,14 @@ class RunLogger:
             f"- Profile: `{profile.name}`",
             f"- Version: `{VERSION}`",
             "",
-            "## Tasks",
+            "## Counters",
             "",
         ]
+
+        for k, v in sorted(counters.items()):
+            lines.append(f"- {k}: {v}")
+
+        lines.extend(["", "## Tasks", ""])
 
         for task in tasks:
             status = statuses.get(task.state_key, "pending")
@@ -593,6 +683,9 @@ class RunLogger:
                 "condition": task.condition,
                 "duration": task.duration,
                 "checksum": task.checksum,
+                "always": task.always,
+                "retry": task.retry,
+                "on_failure": task.on_failure,
             }
             report["tasks"].append(item)
             lines.append(
@@ -665,6 +758,7 @@ class AudioNotifier:
             if player.endswith("pw-play")
             else [player, str(target)]
         )
+
         with suppress(OSError):
             subprocess.Popen(
                 cmd,
@@ -686,7 +780,13 @@ class DesktopNotifier:
             return
         with suppress(OSError):
             subprocess.Popen(
-                ["notify-send", "--app-name=Dusky Orchestrator", f"--urgency={urgency}", title, body],
+                [
+                    "notify-send",
+                    "--app-name=Dusky Orchestrator",
+                    f"--urgency={urgency}",
+                    title,
+                    body,
+                ],
                 start_new_session=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -701,6 +801,7 @@ class SleepInhibitor:
             return
         if not shutil.which("systemd-inhibit") or not shutil.which("sleep"):
             return
+
         with suppress(OSError):
             self.proc = subprocess.Popen(
                 [
@@ -756,6 +857,7 @@ def get_lock_holders() -> str:
         return ""
 
     my_pid = str(os.getpid())
+
     for pid_dir in pids:
         if pid_dir.name == my_pid:
             continue
@@ -793,15 +895,15 @@ def _cleanup_lock() -> None:
             with suppress(OSError):
                 os.close(_LOCK_FD)
             _LOCK_FD = None
-            lock_path().unlink(missing_ok=True)
+        lock_path().unlink(missing_ok=True)
     except OSError:
         pass
 
 
 def acquire_lock() -> bool:
     global _LOCK_FD
-
     lp = lock_path()
+
     with suppress(OSError):
         ensure_dir(lp.parent, 0o700)
 
@@ -933,7 +1035,6 @@ class SudoEngine:
         ensure_dir(askpass_dir(), 0o700)
         encoded = base64.b64encode(password.encode("utf-8")).decode("ascii")
         interpreter = sys.executable or shutil.which("python3") or "/usr/bin/env python3"
-
         script = (
             f"#!{interpreter}\n"
             "import base64, sys\n"
@@ -976,7 +1077,6 @@ done
         safe_user = re.sub(r"[^A-Za-z0-9._-]", "_", username)
         path = Path(f"/etc/sudoers.d/99_dusky_{safe_user}_{os.getpid()}")
         env_vars = " ".join(cls.ENV_KEEP)
-
         content = (
             f"# pid={os.getpid()} ts={int(time.time())}\n"
             f"Defaults:{username} timestamp_type=global\n"
@@ -1010,6 +1110,7 @@ done
                 stderr=subprocess.DEVNULL,
                 timeout=10,
             )
+
             if check.returncode == 0:
                 cls._sudoers_path = path
             else:
@@ -1062,7 +1163,6 @@ done
             cls._askpass_path = askpass
             cls._mode = "password"
             atexit.register(cls.cleanup)
-
             cls._remove_stale_sudoers_files(env)
             cls._write_sudoers_dropin(env)
             return True, ""
@@ -1200,7 +1300,7 @@ done
         try:
             while True:
                 await asyncio.sleep(45)
-                ok = await asyncio.to_thread(SudoEngine.refresh_sync)
+                ok = SudoEngine.refresh_sync()
                 if ok:
                     fail_count = 0
                 else:
@@ -1270,7 +1370,7 @@ def load_palette() -> dict[str, str]:
     candidates: list[dict] = []
     if isinstance(raw, dict):
         candidates.append(raw)
-        for key in ("dark", "light", "colors", "palette", "tones", "theme"):
+        for key in ("dark", "colors", "palette", "tones", "theme"):
             value = raw.get(key)
             if isinstance(value, dict):
                 candidates.append(value)
@@ -1336,6 +1436,13 @@ Screen {{
     layout: vertical;
 }}
 
+#details_box {{
+    height: auto;
+    max-height: 8;
+    border-bottom: solid {p['muted']};
+    padding: 0 1;
+}}
+
 #status_label {{
     text-style: bold;
     color: {p['accent']};
@@ -1387,28 +1494,28 @@ Tree {{
     text-style: italic;
 }}
 
-TaskSearchScreen, ConflictModalScreen, ManualModalScreen, SudoPasswordScreen, ConfirmQuitScreen, HelpScreen {{
+TaskSearchScreen, ConflictModalScreen, ManualModalScreen, SudoPasswordScreen, ConfirmQuitScreen, HelpScreen, LogSearchScreen, FailureSummaryScreen {{
     align: center middle;
     background: rgba(0,0,0,0.72);
 }}
 
-#search_dialog {{
-    width: 78;
+#search_dialog, #log_search_dialog {{
+    width: 86;
     height: 75%;
     background: {p['bg']};
     border: solid {p['accent']};
     padding: 1 2;
 }}
 
-#search_list {{
+#search_list, #log_search_list {{
     height: 1fr;
     border: none;
     background: {p['bg']};
     color: {p['fg']};
 }}
 
-#modal_dialog, #manual_dialog, #sudo_dialog, #confirm_dialog, #help_dialog {{
-    width: 82;
+#modal_dialog, #manual_dialog, #sudo_dialog, #confirm_dialog, #help_dialog, #summary_dialog {{
+    width: 90;
     height: auto;
     background: {p['bg']};
     padding: 1 2;
@@ -1435,45 +1542,33 @@ TaskSearchScreen, ConflictModalScreen, ManualModalScreen, SudoPasswordScreen, Co
     height: 70%;
 }}
 
+#summary_dialog {{
+    border: heavy {p['warning']};
+    height: 75%;
+}}
+
+#modal_title, #manual_title, #sudo_title, #confirm_title, #help_title, #summary_title {{
+    text-align: center;
+    text-style: bold;
+    margin-bottom: 1;
+}}
+
 #modal_title {{
-    text-align: center;
-    text-style: bold;
     color: {p['error']};
-    margin-bottom: 1;
 }}
 
-#manual_title {{
-    text-align: center;
-    text-style: bold;
+#manual_title, #help_title {{
     color: {p['accent']};
-    margin-bottom: 1;
 }}
 
-#sudo_title {{
-    text-align: center;
-    text-style: bold;
+#sudo_title, #confirm_title, #summary_title {{
+    color: {p['warning']};
+}}
+
+#error_details, #summary_details {{
     color: {p['warning']};
     margin-bottom: 1;
-}}
-
-#confirm_title {{
-    text-align: center;
-    text-style: bold;
-    color: {p['warning']};
-    margin-bottom: 1;
-}}
-
-#help_title {{
-    text-align: center;
-    text-style: bold;
-    color: {p['accent']};
-    margin-bottom: 1;
-}}
-
-#error_details {{
-    color: {p['warning']};
-    margin-bottom: 1;
-    max-height: 16;
+    max-height: 18;
     overflow-y: auto;
 }}
 
@@ -1508,7 +1603,7 @@ Screen {{
 }}
 
 #selector_container {{
-    width: 92;
+    width: 100;
     height: auto;
     border: heavy {p['accent']};
     background: {p['bg']};
@@ -1524,6 +1619,7 @@ Screen {{
 
 OptionList {{
     height: auto;
+    max-height: 70%;
     border: none;
     background: {p['bg']};
     color: {p['fg']};
@@ -1558,8 +1654,12 @@ def parse_task_entry(raw_entry: str, index: int) -> OrchestratorTask:
     ignore_fail = False
     interactive = False
     force_flag = False
+    always = False
     condition: str | None = None
     timeout: float | None = None
+    retry = 0
+    retry_delay = 1.0
+    on_failure = "ask"
 
     for flag in flags.split(","):
         f = flag.strip().lower()
@@ -1572,11 +1672,23 @@ def parse_task_entry(raw_entry: str, index: int) -> OrchestratorTask:
             interactive = True
         elif f in ("force", "--force"):
             force_flag = True
+        elif f in ("always", "always_run"):
+            always = True
         elif f.startswith("if:"):
             condition = flag.strip()[3:]
         elif f.startswith("timeout:"):
             with suppress(ValueError):
                 timeout = float(flag.strip()[8:])
+        elif f.startswith("retry:"):
+            with suppress(ValueError):
+                retry = max(0, int(flag.strip()[6:]))
+        elif f.startswith("retry_delay:"):
+            with suppress(ValueError):
+                retry_delay = max(0.0, float(flag.strip()[12:]))
+        elif f.startswith("on_failure:"):
+            val = flag.strip()[11:].lower()
+            if val in ("ask", "abort", "continue", "skip", "manual"):
+                on_failure = val
 
     cmd_tokens = shlex.split(cmd.strip())
     if not cmd_tokens:
@@ -1600,6 +1712,10 @@ def parse_task_entry(raw_entry: str, index: int) -> OrchestratorTask:
         condition=condition,
         timeout=timeout,
         index=index,
+        always=always,
+        retry=retry,
+        retry_delay=retry_delay,
+        on_failure=on_failure,
     )
 
 
@@ -1620,24 +1736,52 @@ def parse_task_table(table: dict, index: int) -> OrchestratorTask:
     ignore_fail = bool(table.get("ignore_fail", False))
     interactive = bool(table.get("interactive", False))
     force_flag = bool(table.get("force", False))
+    always = bool(table.get("always", False))
     condition = table.get("condition")
     timeout = table.get("timeout")
+
+    try:
+        retry = max(0, int(table.get("retry", 0)))
+    except Exception:
+        retry = 0
+
+    try:
+        retry_delay = max(0.0, float(table.get("retry_delay", 1.0)))
+    except Exception:
+        retry_delay = 1.0
+
+    on_failure = str(table.get("on_failure", "ask")).lower()
+    if on_failure not in ("ask", "abort", "continue", "skip", "manual"):
+        on_failure = "ask"
 
     for flag in flags.split(","):
         f = flag.strip().lower()
         if not f:
             continue
+
         if f in ("true", "ignore", "ignore-fail"):
             ignore_fail = True
         elif f in ("interactive", "tui", "prompt"):
             interactive = True
         elif f in ("force", "--force"):
             force_flag = True
+        elif f in ("always", "always_run"):
+            always = True
         elif f.startswith("if:"):
             condition = flag.strip()[3:]
         elif f.startswith("timeout:"):
             with suppress(ValueError):
                 timeout = float(flag.strip()[8:])
+        elif f.startswith("retry:"):
+            with suppress(ValueError):
+                retry = max(0, int(flag.strip()[6:]))
+        elif f.startswith("retry_delay:"):
+            with suppress(ValueError):
+                retry_delay = max(0.0, float(flag.strip()[12:]))
+        elif f.startswith("on_failure:"):
+            val = flag.strip()[11:].lower()
+            if val in ("ask", "abort", "continue", "skip", "manual"):
+                on_failure = val
 
     if "--force" in args:
         force_flag = True
@@ -1658,6 +1802,10 @@ def parse_task_table(table: dict, index: int) -> OrchestratorTask:
         condition=str(condition).strip() if condition else None,
         timeout=timeout_value,
         index=index,
+        always=always,
+        retry=retry,
+        retry_delay=retry_delay,
+        on_failure=on_failure,
     )
 
 
@@ -1692,11 +1840,14 @@ def load_profile(filepath: Path) -> ProfileConfig:
 
     search_dirs: list[str] = []
     seen: set[str] = set()
+
     for d in s_data.get("dirs", []):
         resolved = str(resolve_home(str(d)))
         if resolved not in seen:
             seen.add(resolved)
             search_dirs.append(resolved)
+            if not Path(resolved).exists():
+                sys.stderr.write(f"[WARN] Search directory does not exist: {resolved}\n")
 
     policy = policy_data if isinstance(policy_data, dict) else {}
 
@@ -1772,9 +1923,8 @@ def _interpreter_from_shebang(first_line: str) -> str | None:
 
     if parts[0].endswith("/env") and len(parts) > 1:
         parts = parts[1:]
-
-    while parts and parts[0].startswith("-"):
-        parts = parts[1:]
+        while parts and parts[0].startswith("-"):
+            parts = parts[1:]
 
     if not parts:
         return None
@@ -1782,10 +1932,8 @@ def _interpreter_from_shebang(first_line: str) -> str | None:
     prog = Path(parts[0]).name
     if "python" in prog:
         return "python"
-
     if prog in ("bash", "sh", "zsh", "dash", "fish"):
         return prog
-
     return prog
 
 
@@ -1841,14 +1989,10 @@ def resolve_and_validate_manifest(profile: ProfileConfig) -> bool:
             sys.stderr.write(f"[MISSING] Could not find {task.script_name} in search dirs.\n")
             success = False
             task.checksum = ""
-        else:
-            task.checksum = file_checksum(task.resolved_path)
-
-        key_material = f"{task.mode}|{task.script_name}|{args_key}|{occ}|{task.checksum}".encode("utf-8")
-        task.state_key = hashlib.blake2b(key_material, digest_size=16).hexdigest()
-
-        if task.resolved_path is None:
+            task.state_key = make_state_key(task, occ)
             continue
+
+        task.checksum = file_checksum(task.resolved_path)
 
         is_elf, first_line, full_head = _script_metadata(task.resolved_path)
 
@@ -1885,6 +2029,20 @@ def resolve_and_validate_manifest(profile: ProfileConfig) -> bool:
             else:
                 task.interpreter = shutil.which("bash") or "bash"
 
+        if task.interpreter:
+            interp = task.interpreter
+            if interp.lower() in ("python", "python3"):
+                if not sys.executable:
+                    sys.stderr.write(f"[INTERPRETER] No Python interpreter available for {task.script_name}\n")
+                    success = False
+            else:
+                found = shutil.which(interp)
+                if not found:
+                    sys.stderr.write(f"[INTERPRETER] Missing interpreter '{interp}' for {task.script_name}\n")
+                    success = False
+
+        task.state_key = make_state_key(task, occ)
+
     return success
 
 
@@ -1892,8 +2050,38 @@ def resolve_and_validate_manifest(profile: ProfileConfig) -> bool:
 # CONDITIONS
 # ==============================================================================
 class ConditionEvaluator:
+    IMMUTABLE = {
+        "wayland",
+        "x11",
+        "graphical",
+        "ssh",
+        "desktop",
+        "battery",
+        "btrfs",
+        "vm",
+        "baremetal",
+        "gpu",
+        "group",
+        "env",
+    }
+
     def __init__(self):
         self.cache: dict[str, bool] = {}
+
+    def _volatile(self, condition: str | None) -> bool:
+        if not condition:
+            return False
+        cond = condition.strip()
+        if cond.lower() in ("always", "true", "yes", "never", "false", "no"):
+            return False
+
+        kind, _, value = cond.partition(":")
+        kind = kind.strip().lower()
+        value = value.strip()
+
+        if kind == "not":
+            return self._volatile(value)
+        return kind not in self.IMMUTABLE
 
     def check(self, condition: str | None) -> bool:
         if not condition:
@@ -1904,6 +2092,9 @@ class ConditionEvaluator:
             return True
         if cond.lower() in ("never", "false", "no"):
             return False
+
+        if self._volatile(cond):
+            return self._eval(cond)
 
         if cond in self.cache:
             return self.cache[cond]
@@ -1922,16 +2113,12 @@ class ConditionEvaluator:
 
         if kind == "wayland":
             return bool(os.environ.get("WAYLAND_DISPLAY"))
-
         if kind == "x11":
             return bool(os.environ.get("DISPLAY"))
-
         if kind == "graphical":
             return bool(os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"))
-
         if kind == "ssh":
             return bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"))
-
         if kind == "desktop":
             session = os.environ.get("XDG_SESSION_TYPE", "").lower()
             if session in ("wayland", "x11", "mir"):
@@ -1940,43 +2127,33 @@ class ConditionEvaluator:
 
         if kind == "battery":
             return self._has_battery()
-
         if kind == "btrfs":
             return self._root_is_btrfs()
-
         if kind == "vm":
             return self._is_vm()
-
         if kind == "baremetal":
             return not self._is_vm()
 
         if kind == "command":
             return bool(shutil.which(value))
-
         if kind == "path":
             return Path(value).expanduser().exists()
-
         if kind == "missing":
             return not Path(value).expanduser().exists()
-
         if kind == "file":
             return Path(value).expanduser().is_file()
-
         if kind == "dir":
             return Path(value).expanduser().is_dir()
 
         if kind == "package":
             return self._package_installed(value)
-
         if kind == "group":
             return self._user_in_group(value)
-
         if kind == "gpu":
             return self._gpu(value.lower())
 
         if kind == "service_active":
             return self._run(["systemctl", "is-active", "--quiet", value])
-
         if kind == "user_service_active":
             return self._run(["systemctl", "--user", "is-active", "--quiet", value])
 
@@ -2124,11 +2301,9 @@ def _proc_holds_file(path: Path) -> bool:
     for pid_dir in proc_dir.iterdir():
         if not pid_dir.name.isdigit():
             continue
-
         fd_dir = pid_dir / "fd"
         if not fd_dir.exists():
             continue
-
         with suppress(OSError):
             for fd_link in fd_dir.iterdir():
                 with suppress(OSError):
@@ -2195,6 +2370,7 @@ def _clean_old_backups(base: Path, keep: int = 10) -> None:
         [p for p in base.iterdir() if p.is_dir() and p.name.startswith("dusky_backup_")],
         reverse=True,
     )
+
     for old in entries[keep:]:
         with suppress(OSError):
             shutil.rmtree(old, ignore_errors=True)
@@ -2225,14 +2401,6 @@ def validate_updated_sources(my_path: Path, wrapper_path: Path) -> None:
         for profile_file in PROFILES_DIR.glob("*.toml"):
             with open(profile_file, "rb") as f:
                 tomllib.load(f)
-
-    subprocess.run(
-        [sys.executable, str(my_path), "--version"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=45,
-        check=True,
-    )
 
 
 def run_git_self_update(
@@ -2280,6 +2448,12 @@ def run_git_self_update(
     wrapper_path = my_path.with_name("orchestrator.sh")
 
     try:
+        if not my_path.is_relative_to(work_tree):
+            sys.stderr.write(
+                f"[ERROR] Running orchestrator is outside git work tree ({work_tree}). Skipping self-update.\n"
+            )
+            return False
+
         local_head = _git_check(base_cmd + ["rev-parse", "HEAD"])
         remote_ref = _remote_ref(base_cmd, profile.git_remote)
         remote_head = _git_check(base_cmd + ["rev-parse", remote_ref])
@@ -2337,10 +2511,8 @@ def run_git_self_update(
                     meta = parts[i]
                     path = parts[i + 1]
                     i += 2
-
                     if not meta:
                         continue
-
                     meta_tokens = meta.split()
                     if len(meta_tokens) >= 5:
                         old_oid = meta_tokens[2]
@@ -2371,6 +2543,9 @@ def run_git_self_update(
         backup_root = backups_dir() / f"dusky_backup_{timestamp}_{remote_head[:7]}"
         ensure_dir(backup_root, 0o700)
         _clean_old_backups(backups_dir(), keep=10)
+
+        with suppress(Exception):
+            _git_check(base_cmd + ["branch", f"dusky/backup/{timestamp}", local_head], timeout=30)
 
         collision_dir = backup_root / "untracked_collisions"
         user_mods_dir = backup_root / "user_mods"
@@ -2486,14 +2661,21 @@ def run_git_self_update(
             return False
 
         sys.stdout.write("[GIT] Update applied. Restarting orchestrator...\n")
+        sys.stdout.flush()
+        sys.stderr.flush()
+
         SudoEngine.cleanup()
+
+        args = [a for a in sys.argv[1:] if a != "--git-update-only"]
+        if "--no-git-update" not in args:
+            args.append("--no-git-update")
 
         if wrapper_path.exists():
             with suppress(OSError):
                 os.chmod(wrapper_path, 0o755)
-            os.execv(str(wrapper_path), [str(wrapper_path)] + sys.argv[1:])
+            os.execv(str(wrapper_path), [str(wrapper_path)] + args)
 
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        os.execv(sys.executable, [sys.executable] + args)
         return True
 
     except subprocess.CalledProcessError as e:
@@ -2531,6 +2713,8 @@ def _task_label(task: OrchestratorTask) -> Text:
     txt.append(f"{task.index:03d} ")
     txt.append_text(_status_badge(task.status))
     txt.append(f" [{task.mode}] {task.script_name}")
+    if task.always:
+        txt.append(" ⟳", style="bold magenta")
     return txt
 
 
@@ -2651,6 +2835,57 @@ class TaskSearchScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class LogSearchScreen(ModalScreen[None]):
+    BINDINGS = [
+        Binding("escape", "dismiss_modal", "Dismiss"),
+    ]
+
+    def __init__(self, title: str, lines: list[str]):
+        super().__init__()
+        self.title = title
+        self.lines = lines
+
+    def compose(self) -> ComposeResult:
+        with Container(id="log_search_dialog"):
+            yield Static(f"{S('logo')} Log Search: {self.title}", id="log_search_title")
+            yield Input(placeholder="Search log...", id="log_search_input")
+            yield OptionList(id="log_search_list")
+
+    def on_mount(self) -> None:
+        self.query_one("#log_search_input", Input).focus()
+        self._update("")
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self._update(event.value)
+
+    def _update(self, query: str) -> None:
+        ol = self.query_one("#log_search_list", OptionList)
+        ol.clear_options()
+
+        q = query.strip().lower()
+        if not q:
+            return
+
+        options: list[Option] = []
+        for i, line in enumerate(self.lines, start=1):
+            if q in line.lower():
+                txt = Text()
+                txt.append(f"{i:05d} ", style="dim")
+                txt.append(line[:300])
+                options.append(Option(txt))
+                if len(options) >= 200:
+                    break
+
+        ol.add_options(options)
+
+    @on(Input.Submitted)
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+
+    def action_dismiss_modal(self) -> None:
+        self.dismiss(None)
+
+
 class ConflictModalScreen(ModalScreen[str]):
     def __init__(self, script_name: str, command: str, exit_code: int | None, error_msg: str):
         super().__init__()
@@ -2733,6 +2968,7 @@ class ManualModalScreen(ModalScreen[str]):
             details = Text()
             details.append("Command:\n", style="bold")
             details.append(self.command, style="dim")
+
             yield Static(details)
 
             with Horizontal(id="button_bar"):
@@ -2783,7 +3019,7 @@ class SudoPasswordScreen(ModalScreen[bool]):
 
     async def _submit(self) -> None:
         pw = self.query_one("#sudo_password", Input).value
-        ok, err = await asyncio.to_thread(SudoEngine.set_password, pw)
+        ok, err = SudoEngine.set_password(pw)
         if ok:
             self.dismiss(True)
         else:
@@ -2838,19 +3074,27 @@ class HelpScreen(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Container(id="help_dialog"):
             yield Static(f"{S('logo')} Dusky Orchestrator Help", id="help_title")
+
             text = Text()
             text.append("Global Keys\n", style="bold")
             text.append("  Ctrl+F   Search tasks\n")
+            text.append("  Ctrl+L   Search current log\n")
             text.append("  Ctrl+Q   Quit / abort\n")
+            text.append("  F        Cycle task filter\n")
             text.append("  ?        Help\n\n")
+
             text.append("During Task Execution\n", style="bold")
             text.append("  Keys are forwarded to the running task.\n")
             text.append("  Ctrl+F opens search without stopping the task.\n")
+            text.append("  Ctrl+L searches logs without stopping the task.\n")
             text.append("  Ctrl+Q aborts immediately.\n\n")
+
             text.append("Interactive Tasks\n", style="bold")
             text.append("  The TUI suspends and gives the task full control.\n")
             text.append("  When the task exits, the TUI returns.\n")
+
             yield Static(text)
+
             with Horizontal(id="button_bar"):
                 yield Button("Close", variant="primary", id="btn_close")
 
@@ -2861,9 +3105,63 @@ class HelpScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
+class FailureSummaryScreen(ModalScreen[str]):
+    BINDINGS = [Binding("escape", "close", "Close")]
+
+    def __init__(
+        self,
+        counters: dict[str, int],
+        failed_tasks: list[OrchestratorTask],
+        log_root: str,
+    ):
+        super().__init__()
+        self.counters = counters
+        self.failed_tasks = failed_tasks
+        self.log_root = log_root
+
+    def compose(self) -> ComposeResult:
+        with Container(id="summary_dialog"):
+            yield Static(f"{S('failed')} Execution Summary", id="summary_title")
+
+            details = Text()
+            details.append("Counters:\n", style="bold")
+            for k, v in sorted(self.counters.items()):
+                details.append(f"  {k}: {v}\n")
+
+            details.append("\nFailed tasks:\n", style="bold red")
+            if self.failed_tasks:
+                for t in self.failed_tasks:
+                    details.append(f"  {t.index:03d}. [{t.mode}] {t.script_name}\n", style="yellow")
+            else:
+                details.append("  none\n", style="green")
+
+            details.append(f"\nLogs: {self.log_root}\n", style="dim")
+
+            yield Static(details, id="summary_details")
+
+            with Horizontal(id="button_bar"):
+                yield Button("Retry Failed [R]", variant="primary", id="btn_retry")
+                yield Button("Close [C]", variant="default", id="btn_close")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss("retry" if event.button.id == "btn_retry" else "close")
+
+    def on_key(self, event: events.Key) -> None:
+        key = event.key.lower()
+        if key == "r":
+            self.dismiss("retry")
+        elif key in ("c", "escape", "q"):
+            self.dismiss("close")
+
+    def action_close(self) -> None:
+        self.dismiss("close")
+
+
 class AppFooter(Horizontal):
     def compose(self) -> ComposeResult:
         yield Label("[Ctrl+F] Search", classes="footer-shortcut")
+        yield Label("[Ctrl+L] Log", classes="footer-shortcut")
+        yield Label("[F] Filter", classes="footer-shortcut")
         yield Label("[Ctrl+Q] Quit", classes="footer-shortcut")
         yield Label("[?] Help", classes="footer-shortcut")
         yield Label(f" {S('sep')} ", classes="footer-sep")
@@ -2885,9 +3183,8 @@ class ProfileSelectorApp(App):
 
             options = []
             for i, p in enumerate(self.profiles):
-                prefix = "> " if i == 0 else "  "
                 options.append(
-                    Option(f"{prefix}{i + 1}. {p.name:<25} {p.description}", id=str(i))
+                    Option(f"{i + 1:2d}. {p.name:<25} {p.description}", id=str(i))
                 )
 
             yield OptionList(*options, id="profiles_list")
@@ -2920,13 +3217,18 @@ class ProfileSelectorApp(App):
 # ==============================================================================
 # MAIN APP
 # ==============================================================================
+FILTERS = ["all", "pending", "running", "completed", "failed", "skipped"]
+
+
 class DuskyOrchestratorApp(App):
     ENABLE_COMMAND_PALETTE = False
     CSS = ""
 
     BINDINGS = [
         Binding("ctrl+f", "open_search", "Search Tasks", priority=True),
+        Binding("ctrl+l", "search_log", "Search Log", priority=True),
         Binding("ctrl+q", "quit_app", "Quit", priority=True),
+        Binding("f", "cycle_filter", "Filter"),
         Binding("question_mark", "help", "Help"),
     ]
 
@@ -2940,6 +3242,7 @@ class DuskyOrchestratorApp(App):
         task_timeout: float,
     ):
         super().__init__()
+
         self.profile = profile
         self.tasks = profile.tasks
         self.has_sudo = has_sudo
@@ -2949,6 +3252,7 @@ class DuskyOrchestratorApp(App):
         self.task_timeout = task_timeout
 
         self.active_child_pid: int | None = None
+        self.active_child_group: bool = False
         self.current_pty_master: int | None = None
         self.active_task: OrchestratorTask | None = None
         self.sudo_task: asyncio.Task | None = None
@@ -2957,7 +3261,6 @@ class DuskyOrchestratorApp(App):
         self.state = StateStore(profile)
         self.statuses = self.state.statuses()
         self.progressed: set[str] = set()
-        self.counters: dict[str, int] = {}
         self.conditions = ConditionEvaluator()
 
         self.tree_widget = Tree(f"{S('logo')} Execution Sequence")
@@ -2971,14 +3274,27 @@ class DuskyOrchestratorApp(App):
         self.progress_bar = ProgressBar(show_eta=False, show_percentage=False, id="progress_bar")
         self.status_label = Label("Initializing orchestrator sequence...", id="status_label")
         self.speed_label = Label("Status: pre-flight | ETA: --:--", id="speed_label")
+        self.details_label = Static("No task selected.", id="details_label")
 
         self.tree_nodes_map: dict[str, TreeNode] = {}
         self.logger = RunLogger(profile, self.run_id)
+
         self._log_widgets: dict[str | None, RichLog] = {}
         self._ui_buffer: list[tuple[str | None, Text]] = []
         self._ui_flush_timer = None
+
         self._telemetry: dict[str, str] = {}
         self._telemetry_timer = None
+
+        self._log_lines: dict[str | None, deque[str]] = {}
+        self.current_log_key: str | None = None
+        self.filter_mode = "all"
+
+        self._prompt_counts: dict[str, int] = {}
+        self._prompt_last: dict[str, float] = {}
+
+        self._durations: list[float] = []
+        self._always_handled: set[str] = set()
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="top_header"):
@@ -2993,6 +3309,9 @@ class DuskyOrchestratorApp(App):
                     yield self.status_label
                     yield self.speed_label
                     yield self.progress_bar
+
+                with Container(id="details_box"):
+                    yield self.details_label
 
                 with ContentSwitcher(id="log_switcher"):
                     yield self.log_widget
@@ -3012,14 +3331,14 @@ class DuskyOrchestratorApp(App):
             self.query_one("#log_switcher", ContentSwitcher).current = "pty_log"
 
         self.progress_bar.total = max(1, len(self.tasks))
-        self.build_task_tree()
+        self._rebuild_tree()
 
         sudo_mode = SudoEngine.mode_name() if self.has_sudo else "none"
         log_root = str(self.logger.root) if self.logger.root else "disabled"
 
         with suppress(Exception):
             self.query_one("#footer_status", Label).update(
-                f"Engine: active | sudo: {sudo_mode} | logs: {log_root}"
+                f"Engine: active | sudo: {sudo_mode} | logs: {log_root} | filter: {self.filter_mode}"
             )
 
         self.log_system("Environment pre-flight validated. PTY engine online.")
@@ -3027,12 +3346,15 @@ class DuskyOrchestratorApp(App):
         for t in self.tasks:
             status = self.statuses.get(t.state_key)
             if StateStore.is_done(status):
-                if status in ("skipped", "skipped_condition"):
+                if status == "skipped":
                     self.update_task_node_by_key(t.state_key, TaskStatus.SKIPPED)
                 else:
                     self.update_task_node_by_key(t.state_key, TaskStatus.COMPLETED)
                 self._mark_progress(t)
+            elif status == "skipped_condition":
+                self.update_task_node_by_key(t.state_key, TaskStatus.SKIPPED)
 
+        self._update_overall_status()
         self.run_execution_pipeline()
 
     def on_unmount(self) -> None:
@@ -3052,8 +3374,12 @@ class DuskyOrchestratorApp(App):
 
         if node == self.tree_widget.root:
             switcher.current = "pty_log"
+            self.current_log_key = None
+            self._update_details(None)
         elif node.data and isinstance(node.data, OrchestratorTask):
             switcher.current = f"log_{node.data.state_key}"
+            self.current_log_key = node.data.state_key
+            self._update_details(node.data)
 
     def action_open_search(self) -> None:
         if isinstance(self.screen, ModalScreen):
@@ -3066,21 +3392,52 @@ class DuskyOrchestratorApp(App):
                 with suppress(Exception):
                     self.tree_widget.select_node(node)
                     self.tree_widget.scroll_to_node(node)
-                for t in self.tasks:
-                    if t.state_key == state_key:
-                        self.log_system(f"Fuzzy finder navigated to: {t.script_name}")
-                        break
+            for t in self.tasks:
+                if t.state_key == state_key:
+                    self.log_system(f"Fuzzy finder navigated to: {t.script_name}")
+                    break
 
         self.push_screen(TaskSearchScreen(self.tasks), on_search_selected)
+
+    def action_search_log(self) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+
+        key = self.current_log_key
+        title = "global"
+        if key is not None:
+            for t in self.tasks:
+                if t.state_key == key:
+                    title = t.script_name
+                    break
+
+        lines = list(self._log_lines.get(key, deque()))
+        self.push_screen(LogSearchScreen(title, lines))
+
+    def action_cycle_filter(self) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+
+        idx = FILTERS.index(self.filter_mode)
+        self.filter_mode = FILTERS[(idx + 1) % len(FILTERS)]
+        self._rebuild_tree()
+        self.log_system(f"Task filter: {self.filter_mode}")
+
+        with suppress(Exception):
+            self.query_one("#footer_status", Label).update(
+                f"Engine: active | filter: {self.filter_mode}"
+            )
 
     async def action_quit_app(self) -> None:
         if self.active_task:
             resp = await self.push_screen_wait(ConfirmQuitScreen())
             if resp != "abort":
                 return
+            self.log_system("Quit requested. Terminating pipeline...", is_err=True)
+            self.exit(1)
+            return
 
-        self.log_system("Quit requested. Terminating pipeline...", is_err=True)
-        self.exit(1 if self.active_task else 0)
+        self.exit(0)
 
     def action_help(self) -> None:
         if isinstance(self.screen, ModalScreen):
@@ -3094,6 +3451,11 @@ class DuskyOrchestratorApp(App):
         if self.current_pty_master is not None:
             if event.key == "ctrl+f":
                 self.action_open_search()
+                event.stop()
+                return
+
+            if event.key == "ctrl+l":
+                self.action_search_log()
                 event.stop()
                 return
 
@@ -3167,12 +3529,30 @@ class DuskyOrchestratorApp(App):
 
         return b""
 
-    def build_task_tree(self) -> None:
+    def _task_visible(self, task: OrchestratorTask) -> bool:
+        if self.filter_mode == "all":
+            return True
+        return task.status.name.lower() == self.filter_mode
+
+    def _rebuild_tree(self) -> None:
+        with suppress(Exception):
+            self.tree_widget.root.remove_children()
+        with suppress(Exception):
+            self.tree_widget.clear()
+
+        self.tree_nodes_map.clear()
+        self.tree_widget.root.label = f"{S('logo')} Sequence [{self.filter_mode}]"
         self.tree_widget.root.expand()
+
         for task in self.tasks:
+            if not self._task_visible(task):
+                continue
             node = self.tree_widget.root.add_leaf(_task_label(task))
             node.data = task
             self.tree_nodes_map[task.state_key] = node
+
+    def build_task_tree(self) -> None:
+        self._rebuild_tree()
 
     def _mark_progress(self, task: OrchestratorTask) -> None:
         if task.state_key in self.progressed:
@@ -3181,21 +3561,34 @@ class DuskyOrchestratorApp(App):
         self.progress_bar.advance(1)
 
     def update_task_node_by_key(self, state_key: str, status: TaskStatus) -> None:
-        node = self.tree_nodes_map.get(state_key)
-        if node is None:
-            return
+        target: OrchestratorTask | None = None
 
         for t in self.tasks:
             if t.state_key == state_key:
+                target = t
                 t.status = status
-                node.label = _task_label(t)
-
-                if status == TaskStatus.RUNNING:
-                    with suppress(Exception):
-                        self.tree_widget.select_node(node)
-                        self.tree_widget.scroll_to_node(node)
-                        self.query_one("#log_switcher", ContentSwitcher).current = f"log_{state_key}"
                 break
+
+        if target is None:
+            return
+
+        node = self.tree_nodes_map.get(state_key)
+        if node is None and self._task_visible(target):
+            self._rebuild_tree()
+            node = self.tree_nodes_map.get(state_key)
+
+        if node is not None:
+            node.label = _task_label(target)
+
+        if status == TaskStatus.RUNNING:
+            if node is not None:
+                with suppress(Exception):
+                    self.tree_widget.select_node(node)
+                    self.tree_widget.scroll_to_node(node)
+            with suppress(Exception):
+                self.query_one("#log_switcher", ContentSwitcher).current = f"log_{state_key}"
+            self.current_log_key = state_key
+            self._update_details(target)
 
     def _get_log_widget(self, key: str | None) -> RichLog | None:
         if key in self._log_widgets:
@@ -3211,8 +3604,11 @@ class DuskyOrchestratorApp(App):
 
     def _queue_ui(self, text: Text, task_key: str | None = None) -> None:
         self._ui_buffer.append((None, text))
+        self._append_log_line(None, text.plain)
+
         if task_key is not None:
             self._ui_buffer.append((task_key, text))
+            self._append_log_line(task_key, text.plain)
 
         if len(self._ui_buffer) > 1200:
             self._flush_ui()
@@ -3220,6 +3616,13 @@ class DuskyOrchestratorApp(App):
 
         if self._ui_flush_timer is None:
             self._ui_flush_timer = self.set_timer(0.03, self._flush_ui)
+
+    def _append_log_line(self, key: str | None, line: str) -> None:
+        dq = self._log_lines.get(key)
+        if dq is None:
+            dq = deque(maxlen=5000)
+            self._log_lines[key] = dq
+        dq.append(line.rstrip())
 
     def _flush_ui(self) -> None:
         if self._ui_flush_timer is not None:
@@ -3267,11 +3670,113 @@ class DuskyOrchestratorApp(App):
         if speed and eta:
             self.speed_label.update(f"Throughput: {speed} | ETA: {eta}")
 
+    def _update_overall_status(self) -> None:
+        total = max(1, len(self.tasks))
+        done = len(self.progressed)
+        pct = int(done * 100 / total)
+
+        remaining = max(0, total - done)
+        eta = "--:--"
+
+        if self._durations and remaining:
+            avg = sum(self._durations) / len(self._durations)
+            secs = int(avg * remaining)
+            eta = str(datetime.timedelta(seconds=secs))
+
+        self.speed_label.update(f"Completed {done}/{total} ({pct}%) | ETA: {eta}")
+
+    def _task_details(self, task: OrchestratorTask | None) -> Text:
+        if task is None:
+            txt = Text()
+            txt.append("Profile: ", style="bold")
+            txt.append(self.profile.name + "\n")
+            txt.append("Run ID: ", style="bold")
+            txt.append(self.run_id + "\n")
+            txt.append("Log root: ", style="bold")
+            txt.append(str(self.logger.root or "disabled"))
+            return txt
+
+        txt = Text()
+        txt.append(f"{task.index:03d}. {task.script_name}\n", style="bold")
+        txt.append("Mode: ", style="bold")
+        txt.append(task.mode + "  ")
+        txt.append("Status: ", style="bold")
+        txt.append(task.status.value + "\n")
+        txt.append("Path: ", style="bold")
+        txt.append(str(task.resolved_path or "unresolved") + "\n")
+        txt.append("Interpreter: ", style="bold")
+        txt.append((task.interpreter or "direct") + "\n")
+        txt.append("Args: ", style="bold")
+        txt.append(shlex.join(task.args) + "\n")
+        txt.append("Condition: ", style="bold")
+        txt.append(task.condition or "always")
+        txt.append("  Timeout: ", style="bold")
+        txt.append(str(task.timeout if task.timeout is not None else self.task_timeout))
+        txt.append("  Always: ", style="bold")
+        txt.append(str(task.always).lower() + "\n")
+        txt.append("Retry: ", style="bold")
+        txt.append(str(task.retry))
+        txt.append("  On failure: ", style="bold")
+        txt.append(task.on_failure + "\n")
+        txt.append("Log: ", style="bold")
+        txt.append(str(self.logger.task_log_path(task)))
+        return txt
+
+    def _update_details(self, task: OrchestratorTask | None) -> None:
+        with suppress(Exception):
+            self.details_label.update(self._task_details(task))
+
     def log_system(self, msg: str, is_err: bool = False) -> None:
         prefix_style = "bold red" if is_err else "bold cyan"
         text = Text.assemble(("[SYSTEM] ", prefix_style), (msg, ""))
         self.logger.system(msg)
         self._queue_ui(text, self.active_task.state_key if self.active_task else None)
+
+    def _maybe_respond_prompt(self, text: str) -> None:
+        if self.current_pty_master is None:
+            return
+        if self.active_task is None or self.active_task.interactive:
+            return
+
+        tail = text[-1024:]
+
+        for name, pattern, kind in PROMPT_RULES:
+            if not pattern.search(tail):
+                continue
+
+            count = self._prompt_counts.get(name, 0)
+            max_count = 5 if name == "sudo_password" else 500
+            if count >= max_count:
+                continue
+
+            now = time.monotonic()
+            last = self._prompt_last.get(name, 0.0)
+            if now - last < 0.35:
+                continue
+
+            response: bytes | None = None
+
+            if kind == "password":
+                if SudoEngine._password:
+                    response = SudoEngine._password.encode("utf-8") + b"\r"
+                else:
+                    self.log_system("Sudo password prompt detected, but no cached password is available.", is_err=True)
+                    continue
+            elif kind == "yes":
+                response = b"y\r"
+            else:
+                response = b"\r"
+
+            with suppress(OSError):
+                os.write(self.current_pty_master, response)
+
+            self._prompt_counts[name] = count + 1
+            self._prompt_last[name] = now
+
+            if name != "sudo_password" and count < 5:
+                self.log_system(f"Auto-responded to prompt: {name}")
+
+            break
 
     def handle_pty_line(self, line: str, last_lines: deque | None = None) -> None:
         clean = line.strip("\r\n")
@@ -3338,7 +3843,6 @@ class DuskyOrchestratorApp(App):
         if proc.returncode is None:
             with suppress(ProcessLookupError, PermissionError, OSError):
                 os.killpg(proc.pid, signal.SIGKILL)
-
             with suppress(Exception):
                 await asyncio.wait_for(proc.wait(), timeout=1.0)
 
@@ -3347,13 +3851,18 @@ class DuskyOrchestratorApp(App):
         if pid is None:
             return
 
-        with suppress(ProcessLookupError, PermissionError, OSError):
-            os.killpg(pid, signal.SIGTERM)
-
-        time.sleep(0.2)
-
-        with suppress(ProcessLookupError, PermissionError, OSError):
-            os.killpg(pid, signal.SIGKILL)
+        if self.active_child_group:
+            with suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(pid, signal.SIGTERM)
+            time.sleep(0.2)
+            with suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(pid, signal.SIGKILL)
+        else:
+            with suppress(ProcessLookupError, PermissionError, OSError):
+                os.kill(pid, signal.SIGTERM)
+            time.sleep(0.2)
+            with suppress(ProcessLookupError, PermissionError, OSError):
+                os.kill(pid, signal.SIGKILL)
 
     def _task_env(self, task: OrchestratorTask) -> dict[str, str]:
         env = os.environ.copy()
@@ -3412,6 +3921,7 @@ class DuskyOrchestratorApp(App):
                 "DUSKY_BACKUP_DIR": str(backups_dir()),
                 "DUSKY_FORCE": "1" if (self.force_flag or task.force_flag) else "0",
                 "DUSKY_INTERACTIVE": "1" if task.interactive else "0",
+                "DUSKY_ALWAYS": "1" if task.always else "0",
             }
         )
 
@@ -3464,6 +3974,7 @@ class DuskyOrchestratorApp(App):
             "LC_ALL",
             "DISPLAY",
             "WAYLAND_DISPLAY",
+            "XAUTHORITY",
             "XDG_RUNTIME_DIR",
             "XDG_CONFIG_HOME",
             "XDG_CACHE_HOME",
@@ -3482,9 +3993,18 @@ class DuskyOrchestratorApp(App):
             "GIT_PAGER",
             "EDITOR",
             "VISUAL",
+            "QT_QPA_PLATFORMTHEME",
+            "GTK_THEME",
+            "XCURSOR_THEME",
+            "XCURSOR_SIZE",
+            "MOZ_ENABLE_WAYLAND",
+            "LIBVA_DRIVER_NAME",
+            "VDPAU_DRIVER",
+            "SDL_VIDEODRIVER",
         ]
 
         env_pairs = [f"{k}={full_env[k]}" for k in critical_keys if k in full_env]
+
         for k, v in full_env.items():
             if k.startswith("DUSKY_"):
                 env_pairs.append(f"{k}={v}")
@@ -3534,12 +4054,15 @@ class DuskyOrchestratorApp(App):
             slave_fd = -1
 
             self.active_child_pid = proc.pid
+            self.active_child_group = True
+
             loop = asyncio.get_running_loop()
             reader = asyncio.StreamReader(limit=1024 * 1024)
             protocol = asyncio.StreamReaderProtocol(reader)
 
             file_obj = os.fdopen(master_fd, "rb", buffering=0)
             master_fd = -1
+
             transport, _ = await loop.connect_read_pipe(lambda: protocol, file_obj)
 
             async def read_loop() -> None:
@@ -3565,6 +4088,9 @@ class DuskyOrchestratorApp(App):
                     except Exception:
                         text = chunk.decode("utf-8", errors="replace")
 
+                    if text:
+                        self._maybe_respond_prompt(text)
+
                     line_buffer += text
 
                     if len(line_buffer) > 1_000_000:
@@ -3576,11 +4102,9 @@ class DuskyOrchestratorApp(App):
                         m = SINGLE_NEWLINE_RE.search(line_buffer)
                         if not m:
                             break
-
                         idx = m.start()
                         line = line_buffer[:idx]
                         line_buffer = line_buffer[idx + 1:]
-
                         if line:
                             with suppress(Exception):
                                 self.handle_pty_line(line, last_lines)
@@ -3590,18 +4114,17 @@ class DuskyOrchestratorApp(App):
             try:
                 async with asyncio.timeout(timeout if timeout > 0 else None):
                     code = await proc.wait()
+                    try:
+                        await asyncio.wait_for(asyncio.shield(read_task), timeout=2.0)
+                    except (TimeoutError, asyncio.TimeoutError):
+                        read_task.cancel()
+                        with suppress(asyncio.CancelledError, Exception):
+                            await read_task
+                    except Exception:
+                        pass
 
-                try:
-                    await asyncio.wait_for(asyncio.shield(read_task), timeout=2.0)
-                except (TimeoutError, asyncio.TimeoutError):
-                    read_task.cancel()
-                    with suppress(asyncio.CancelledError, Exception):
-                        await read_task
-                except Exception:
-                    pass
-
-                self._flush_ui()
-                return code == 0, code, "\n".join(last_lines)
+                    self._flush_ui()
+                    return code == 0, code, "\n".join(last_lines)
 
             except (TimeoutError, asyncio.TimeoutError):
                 await self._kill_proc(proc)
@@ -3627,12 +4150,15 @@ class DuskyOrchestratorApp(App):
         except asyncio.CancelledError:
             await self._kill_proc(proc)
             raise
+
         except Exception as e:
             self.log_system(f"PTY execution exception: {e}", is_err=True)
             return False, None, "\n".join(last_lines)
+
         finally:
             self.current_pty_master = None
             self.active_child_pid = None
+            self.active_child_group = False
 
             if transport is not None:
                 with suppress(Exception):
@@ -3648,6 +4174,26 @@ class DuskyOrchestratorApp(App):
                 with suppress(OSError):
                     os.close(slave_fd)
 
+    @contextmanager
+    def _suspend_ui(self):
+        suspend = getattr(self, "suspend", None)
+        if callable(suspend):
+            with suspend():
+                yield
+            return
+
+        driver = getattr(self, "driver", None)
+        if driver is not None and hasattr(driver, "stop_application_mode"):
+            with suppress(Exception):
+                driver.stop_application_mode()
+
+        try:
+            yield
+        finally:
+            if driver is not None and hasattr(driver, "start_application_mode"):
+                with suppress(Exception):
+                    driver.start_application_mode()
+
     async def _execute_suspended(
         self,
         task: OrchestratorTask,
@@ -3656,15 +4202,21 @@ class DuskyOrchestratorApp(App):
     ) -> tuple[bool, int | None, str]:
         self.log_system(f"Suspending TUI for interactive workflow: {task.script_name}...")
 
-        cm = self.suspend() if hasattr(self, "suspend") else nullcontext()
-
-        with cm:
+        with self._suspend_ui():
             sys.stdout.flush()
             sys.stderr.flush()
 
             old_attr = None
-            with suppress(termios.error, OSError):
-                old_attr = termios.tcgetattr(sys.stdin.fileno())
+            old_pgrp = None
+            stdin_fd = None
+            new_group = False
+
+            if sys.stdin.isatty():
+                stdin_fd = sys.stdin.fileno()
+                with suppress(termios.error, OSError):
+                    old_attr = termios.tcgetattr(stdin_fd)
+                with suppress(OSError):
+                    old_pgrp = os.tcgetpgrp(stdin_fd)
 
             try:
                 sys.stdout.write("\x1b[2J\x1b[H")
@@ -3673,12 +4225,38 @@ class DuskyOrchestratorApp(App):
                 print(f"\n--- INTERACTIVE WORKFLOW: {task.script_name} ---")
                 print(f"Executing: {shlex.join(cmd)}\n")
 
-                proc = await asyncio.create_subprocess_exec(*cmd, env=env)
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        env=env,
+                        process_group=0,
+                    )
+                    new_group = True
+                except TypeError:
+                    proc = await asyncio.create_subprocess_exec(*cmd, env=env)
+                    new_group = False
+
+                self.active_child_pid = proc.pid
+                self.active_child_group = new_group
+
+                if new_group and stdin_fd is not None and proc.pid:
+                    with suppress(OSError):
+                        os.tcsetpgrp(stdin_fd, proc.pid)
 
                 try:
                     code = await proc.wait()
                 except asyncio.CancelledError:
-                    await self._kill_proc(proc)
+                    if new_group:
+                        with suppress(ProcessLookupError, PermissionError, OSError):
+                            os.killpg(proc.pid, signal.SIGTERM)
+                        with suppress(Exception):
+                            await asyncio.wait_for(proc.wait(), timeout=2.0)
+                        if proc.returncode is None:
+                            with suppress(ProcessLookupError, PermissionError, OSError):
+                                os.killpg(proc.pid, signal.SIGKILL)
+                    else:
+                        with suppress(ProcessLookupError, PermissionError, OSError):
+                            proc.kill()
                     raise
 
                 return code == 0, code, "interactive session"
@@ -3687,16 +4265,24 @@ class DuskyOrchestratorApp(App):
                 return False, None, str(e)
 
             finally:
-                if old_attr:
+                if stdin_fd is not None and old_pgrp is not None:
+                    with suppress(OSError):
+                        os.tcsetpgrp(stdin_fd, old_pgrp)
+
+                if old_attr is not None and stdin_fd is not None:
                     with suppress(termios.error, OSError):
-                        termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_attr)
+                        termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_attr)
+
+                self.active_child_pid = None
+                self.active_child_group = False
+
                 await asyncio.sleep(0.4)
 
     async def _ensure_sudo(self) -> bool:
         if not self.has_sudo:
             return True
 
-        ok = await asyncio.to_thread(SudoEngine.refresh_sync)
+        ok = SudoEngine.refresh_sync()
         if ok:
             return True
 
@@ -3733,8 +4319,247 @@ class DuskyOrchestratorApp(App):
             self.update_task_node_by_key(task.state_key, TaskStatus.FAILED)
 
         self._mark_progress(task)
-        self.counters[status] = self.counters.get(status, 0) + 1
         self.logger.close_task(task, status, exit_code, task.duration)
+
+        if task.duration > 0 and status in ("completed", "ignored", "manual"):
+            self._durations.append(task.duration)
+
+        self._update_overall_status()
+
+    def _compute_counters(self) -> dict[str, int]:
+        counters: dict[str, int] = {}
+        for t in self.tasks:
+            status = self.statuses.get(t.state_key, "pending")
+            counters[status] = counters.get(status, 0) + 1
+        return counters
+
+    async def _run_task_with_policy(self, task: OrchestratorTask) -> str:
+        if task.always and task.state_key in self._always_handled:
+            return "skipped"
+
+        if task.resolved_path is None:
+            self.update_task_node_by_key(task.state_key, TaskStatus.FAILED)
+            self.log_system(f"Missing file: {task.script_name}", is_err=True)
+
+            if self.stop_on_fail or task.on_failure == "abort":
+                self.log_system("stop-on-fail/abort active. Aborting pipeline.", is_err=True)
+                self.exit(1)
+                return "abort"
+
+            if task.on_failure == "skip":
+                self.finish_task(task, "skipped", None, "missing file")
+                return "skipped"
+
+            if task.on_failure == "continue":
+                self.finish_task(task, "failed", None, "missing file")
+                return "failed"
+
+            action = await self.push_screen_wait(
+                ConflictModalScreen(
+                    task.script_name,
+                    "unresolved",
+                    None,
+                    "File missing from disk. Target could not be resolved.",
+                )
+            )
+
+            if action == "skip":
+                self.finish_task(task, "skipped", None, "missing file")
+                return "skipped"
+
+            self.log_system("User aborted execution sequence.", is_err=True)
+            self.exit(1)
+            return "abort"
+
+        if self.manual:
+            self.status_label.update(f"{S('running')} Pending manual approval: {task.script_name}")
+            cmd_preview = shlex.join(self._task_command(task))
+            action = await self.push_screen_wait(ManualModalScreen(task.script_name, cmd_preview))
+
+            if action == "skip":
+                self.finish_task(task, "skipped", None, "manual skip")
+                return "skipped"
+
+            if action == "quit":
+                self.log_system("Manual override: aborting pipeline.", is_err=True)
+                self.exit(1)
+                return "abort"
+
+        if task.mode == "S" and not await self._ensure_sudo():
+            self.update_task_node_by_key(task.state_key, TaskStatus.FAILED)
+            self.log_system("Sudo authentication unavailable.", is_err=True)
+
+            if self.stop_on_fail or task.on_failure == "abort":
+                self.exit(1)
+                return "abort"
+
+            if task.on_failure == "skip":
+                self.finish_task(task, "skipped", None, "sudo unavailable")
+                return "skipped"
+
+            if task.on_failure == "continue":
+                self.finish_task(task, "failed", None, "sudo unavailable")
+                return "failed"
+
+            action = await self.push_screen_wait(
+                ConflictModalScreen(
+                    task.script_name,
+                    "sudo authentication",
+                    None,
+                    "Sudo authentication unavailable. Cannot run root task.",
+                )
+            )
+
+            if action == "skip":
+                self.finish_task(task, "skipped", None, "sudo unavailable")
+                return "skipped"
+
+            self.exit(1)
+            return "abort"
+
+        self.active_task = task
+        self.update_task_node_by_key(task.state_key, TaskStatus.RUNNING)
+        self.status_label.update(f"Executing: {task.script_name} [{task.mode}]")
+        self._update_details(task)
+
+        self.log_system(f">>> PROCESS INITIATED: {task.script_name}")
+
+        cmd = self._task_command(task)
+        env = self._task_env(task)
+        self.logger.open_task(task, cmd)
+
+        self._prompt_counts.clear()
+        self._prompt_last.clear()
+
+        retries_left = max(0, task.retry)
+
+        while True:
+            start = time.monotonic()
+            success, code, last = await self._execute_task_cmd(task, cmd, env)
+            task.duration = time.monotonic() - start
+
+            if success:
+                self.finish_task(task, "completed", code, "")
+                self.log_system(f"Successfully completed: {task.script_name}")
+                self.active_task = None
+                if task.always:
+                    self._always_handled.add(task.state_key)
+                return "completed"
+
+            if task.ignore_fail:
+                self.log_system(f"Task failed but marked ignore-fail. Continuing: {task.script_name}")
+                self.finish_task(task, "ignored", code, last)
+                self.active_task = None
+                if task.always:
+                    self._always_handled.add(task.state_key)
+                return "ignored"
+
+            if retries_left > 0:
+                retries_left -= 1
+                self.log_system(
+                    f"Automatic retry for {task.script_name} ({retries_left} left) in {task.retry_delay:.1f}s..."
+                )
+                await asyncio.sleep(task.retry_delay)
+                continue
+
+            policy = task.on_failure
+            if self.stop_on_fail and policy == "ask":
+                policy = "abort"
+
+            if policy == "abort":
+                self.finish_task(task, "failed", code, last)
+                self.log_system("Failure policy: abort.", is_err=True)
+                self.exit(1)
+                self.active_task = None
+                return "abort"
+
+            if policy == "continue":
+                self.finish_task(task, "failed", code, last)
+                self.log_system("Failure policy: continue.", is_err=True)
+                self.active_task = None
+                return "failed"
+
+            if policy == "skip":
+                self.finish_task(task, "skipped", code, last)
+                self.log_system("Failure policy: skip.")
+                self.active_task = None
+                return "skipped"
+
+            if policy == "manual":
+                self.log_system(f"Manual intervention TTY: {task.script_name}...")
+                m_success, m_code, m_last = await self._execute_suspended(task, cmd, env)
+                if m_success:
+                    self.finish_task(task, "manual", m_code, "manual override")
+                    self.active_task = None
+                    if task.always:
+                        self._always_handled.add(task.state_key)
+                    return "manual"
+
+                code = m_code
+                last = m_last
+                self.log_system("Manual intervention failed.", is_err=True)
+
+            # Default: ask
+            while True:
+                self.state.mark(task, "failed", code, last)
+                self.update_task_node_by_key(task.state_key, TaskStatus.FAILED)
+
+                error_msg = f"Last output:\n{last}" if last else "No captured output."
+                action = await self.push_screen_wait(
+                    ConflictModalScreen(task.script_name, shlex.join(cmd), code, error_msg)
+                )
+
+                match action:
+                    case "retry":
+                        self.log_system(f"Retrying task: {task.script_name}...")
+                        self.update_task_node_by_key(task.state_key, TaskStatus.RUNNING)
+                        start = time.monotonic()
+                        success, code, last = await self._execute_task_cmd(task, cmd, env)
+                        task.duration = time.monotonic() - start
+
+                        if success:
+                            self.finish_task(task, "completed", code, "")
+                            self.log_system(f"Successfully completed: {task.script_name}")
+                            self.active_task = None
+                            if task.always:
+                                self._always_handled.add(task.state_key)
+                            return "completed"
+
+                        if task.ignore_fail:
+                            self.finish_task(task, "ignored", code, last)
+                            self.active_task = None
+                            if task.always:
+                                self._always_handled.add(task.state_key)
+                            return "ignored"
+
+                        # loop back to modal
+
+                    case "manual":
+                        self.log_system(f"Manual intervention TTY: {task.script_name}...")
+                        m_success, m_code, m_last = await self._execute_suspended(task, cmd, env)
+
+                        if m_success:
+                            self.finish_task(task, "manual", m_code, "manual override")
+                            self.active_task = None
+                            if task.always:
+                                self._always_handled.add(task.state_key)
+                            return "manual"
+
+                        code = m_code
+                        last = m_last
+                        self.log_system("Manual intervention failed.", is_err=True)
+                        # loop back to modal
+
+                    case "skip":
+                        self.finish_task(task, "skipped", code, last)
+                        self.active_task = None
+                        return "skipped"
+
+                    case _:
+                        self.log_system("User aborted execution sequence.", is_err=True)
+                        self.exit(1)
+                        self.active_task = None
+                        return "abort"
 
     @work(name="execution_pipeline", exclusive=True)
     async def run_execution_pipeline(self) -> None:
@@ -3746,164 +4571,115 @@ class DuskyOrchestratorApp(App):
             )
 
         try:
-            for task in self.tasks:
-                if StateStore.is_done(self.statuses.get(task.state_key)):
-                    continue
+            while True:
+                handled: set[str] = set()
+                ran_any = False
 
-                if task.condition and not self.conditions.check(task.condition):
-                    self.log_system(f"Condition not met, skipping: {task.script_name} ({task.condition})")
-                    self.finish_task(task, "skipped_condition", None, f"condition:{task.condition}")
-                    continue
+                for pass_idx in range(MAX_DEFER_PASSES):
+                    ran_this_pass = False
 
-                if task.resolved_path is None:
-                    self.update_task_node_by_key(task.state_key, TaskStatus.FAILED)
-                    self.log_system(f"Missing file: {task.script_name}", is_err=True)
+                    for task in self.tasks:
+                        key = task.state_key
 
-                    if self.stop_on_fail:
-                        self.log_system("stop-on-fail active. Aborting pipeline.", is_err=True)
-                        self.exit(1)
-                        return
+                        if key in handled:
+                            continue
 
-                    action = await self.push_screen_wait(
-                        ConflictModalScreen(
-                            task.script_name,
-                            "unresolved",
-                            None,
-                            "File missing from disk. Target could not be resolved.",
-                        )
-                    )
+                        if task.always and key in self._always_handled:
+                            handled.add(key)
+                            continue
 
-                    if action == "abort":
-                        self.log_system("User aborted execution sequence.", is_err=True)
-                        self.exit(1)
-                        return
+                        status = self.statuses.get(key)
+                        if StateStore.is_done(status) and not task.always:
+                            handled.add(key)
+                            continue
 
-                    self.finish_task(task, "skipped", None, "missing file")
-                    continue
+                        if task.condition and not self.conditions.check(task.condition):
+                            if pass_idx < MAX_DEFER_PASSES - 1:
+                                self.log_system(
+                                    f"Condition not met yet; deferring: {task.script_name} ({task.condition})"
+                                )
+                                continue
 
-                if self.manual:
-                    self.status_label.update(f"{S('running')} Pending manual approval: {task.script_name}")
-                    cmd_preview = shlex.join(self._task_command(task))
-                    action = await self.push_screen_wait(ManualModalScreen(task.script_name, cmd_preview))
+                            self.log_system(
+                                f"Condition not met, skipping: {task.script_name} ({task.condition})"
+                            )
+                            self.finish_task(task, "skipped_condition", None, f"condition:{task.condition}")
+                            handled.add(key)
+                            continue
 
-                    if action == "skip":
-                        self.finish_task(task, "skipped", None, "manual skip")
-                        continue
-                    elif action == "quit":
-                        self.log_system("Manual override: aborting pipeline.", is_err=True)
-                        self.exit(1)
-                        return
+                        ran_this_pass = True
+                        ran_any = True
 
-                if task.mode == "S" and not await self._ensure_sudo():
-                    self.update_task_node_by_key(task.state_key, TaskStatus.FAILED)
-                    self.log_system("Sudo authentication unavailable.", is_err=True)
+                        outcome = await self._run_task_with_policy(task)
+                        handled.add(key)
 
-                    if self.stop_on_fail:
-                        self.exit(1)
-                        return
-
-                    action = await self.push_screen_wait(
-                        ConflictModalScreen(
-                            task.script_name,
-                            "sudo authentication",
-                            None,
-                            "Sudo authentication unavailable. Cannot run root task.",
-                        )
-                    )
-
-                    if action == "skip":
-                        self.finish_task(task, "skipped", None, "sudo unavailable")
-                        continue
-
-                    self.exit(1)
-                    return
-
-                self.active_task = task
-                self.update_task_node_by_key(task.state_key, TaskStatus.RUNNING)
-                self.status_label.update(f"Executing: {task.script_name} [{task.mode}]")
-                self.speed_label.update("Status: running | ETA: --:--")
-                self.log_system(f">>> PROCESS INITIATED: {task.script_name}")
-
-                cmd = self._task_command(task)
-                env = self._task_env(task)
-
-                self.logger.open_task(task, cmd)
-                start = time.monotonic()
-                success, code, last = await self._execute_task_cmd(task, cmd, env)
-                task.duration = time.monotonic() - start
-
-                resolved = False
-
-                while not success and not resolved:
-                    if task.ignore_fail:
-                        self.log_system(f"Task failed but marked ignore-fail. Continuing: {task.script_name}")
-                        self.finish_task(task, "ignored", code, last)
-                        resolved = True
-                        success = True
-                        break
-
-                    self.state.mark(task, "failed", code, last)
-                    self.update_task_node_by_key(task.state_key, TaskStatus.FAILED)
-
-                    if self.stop_on_fail:
-                        self.log_system("stop-on-fail active. Aborting pipeline.", is_err=True)
-                        self.exit(1)
-                        return
-
-                    error_msg = f"Last output:\n{last}" if last else "No captured output."
-                    action = await self.push_screen_wait(
-                        ConflictModalScreen(task.script_name, shlex.join(cmd), code, error_msg)
-                    )
-
-                    match action:
-                        case "retry":
-                            self.log_system(f"Retrying task: {task.script_name}...")
-                            self.update_task_node_by_key(task.state_key, TaskStatus.RUNNING)
-                            start = time.monotonic()
-                            success, code, last = await self._execute_task_cmd(task, cmd, env)
-                            task.duration = time.monotonic() - start
-
-                        case "manual":
-                            self.log_system(f"Manual intervention TTY: {task.script_name}...")
-                            m_success, m_code, m_last = await self._execute_suspended(task, cmd, env)
-                            if m_success:
-                                self.finish_task(task, "manual", m_code, "manual override")
-                                resolved = True
-                                success = True
-                            else:
-                                code = m_code
-                                last = m_last
-                                self.log_system("Manual intervention failed.", is_err=True)
-
-                        case "skip":
-                            self.finish_task(task, "skipped", code, last)
-                            resolved = True
-
-                        case _:
-                            self.log_system("User aborted execution sequence.", is_err=True)
-                            self.exit(1)
+                        if outcome == "abort":
                             return
 
-                if success and not resolved:
-                    self.finish_task(task, "completed", code, "")
-                    self.log_system(f"Successfully completed: {task.script_name}")
+                        if self.profile.post_script_delay > 0 and outcome in ("completed", "ignored", "manual"):
+                            await asyncio.sleep(self.profile.post_script_delay)
 
-                self.active_task = None
+                    if not ran_this_pass:
+                        # Mark any remaining condition-blocked tasks as skipped.
+                        for task in self.tasks:
+                            key = task.state_key
+                            if key in handled:
+                                continue
 
-                if self.profile.post_script_delay > 0:
-                    await asyncio.sleep(self.profile.post_script_delay)
+                            status = self.statuses.get(key)
+                            if StateStore.is_done(status) and not task.always:
+                                handled.add(key)
+                                continue
 
-            self.status_label.update(f"{S('completed')} All orchestrator sequences completed successfully!")
-            self.speed_label.update("Status: idle | ETA: 00:00")
+                            if task.condition and not self.conditions.check(task.condition):
+                                self.finish_task(task, "skipped_condition", None, f"condition:{task.condition}")
+                                handled.add(key)
 
-            with suppress(Exception):
-                self.query_one("#footer_status", Label).update("Engine: complete")
+                        break
 
-            self.log_system("Execution sequence finished. All system targets resolved.")
-            self.logger.write_report(self.profile, self.tasks, self.statuses, self.counters)
+                self.status_label.update(f"{S('completed')} Orchestrator sequence finished.")
+                self.speed_label.update("Status: idle | ETA: 00:00")
 
-            AudioNotifier.play("complete")
-            DesktopNotifier.notify("Dusky Orchestrator", "Setup completed successfully.", "normal")
+                with suppress(Exception):
+                    self.query_one("#footer_status", Label).update("Engine: complete")
+
+                self.log_system("Execution sequence finished.")
+                counters = self._compute_counters()
+                self.logger.write_report(self.profile, self.tasks, self.statuses, counters)
+
+                failed_tasks = [
+                    t for t in self.tasks if self.statuses.get(t.state_key) == "failed"
+                ]
+
+                if failed_tasks:
+                    AudioNotifier.play("alert")
+                    DesktopNotifier.notify(
+                        "Dusky Orchestrator",
+                        f"{len(failed_tasks)} task(s) failed.",
+                        "critical",
+                    )
+
+                    action = await self.push_screen_wait(
+                        FailureSummaryScreen(
+                            counters,
+                            failed_tasks,
+                            str(self.logger.root or logs_dir()),
+                        )
+                    )
+
+                    if action == "retry":
+                        self.log_system("Retrying failed tasks...")
+                        continue
+
+                else:
+                    AudioNotifier.play("complete")
+                    DesktopNotifier.notify(
+                        "Dusky Orchestrator",
+                        "Setup completed successfully.",
+                        "normal",
+                    )
+
+                break
 
         finally:
             self.active_task = None
@@ -3930,6 +4706,7 @@ def parse_command_line() -> argparse.Namespace:
     parser.add_argument("--reset", action="store_true", help="Reset state for selected profile and exit")
     parser.add_argument("--reset-and-run", action="store_true", help="Reset state for selected profile, then run")
     parser.add_argument("--dry-run", action="store_true", help="Validate everything but do not execute scripts")
+    parser.add_argument("--explain", action="store_true", help="Explain run decisions and exit")
     parser.add_argument("--force", action="store_true", help="Export DUSKY_FORCE=1 and pass --force to scripts")
     parser.add_argument("--manual", "-m", action="store_true", help="Prompt before executing every script")
     parser.add_argument("--stop-on-fail", action="store_true", help="Halt execution immediately if a script fails")
@@ -3985,14 +4762,62 @@ def run_doctor() -> None:
     print(f"sudo:           {shutil.which('sudo') or 'missing'}")
     print(f"pacman:         {shutil.which('pacman') or 'missing'}")
     print(f"systemctl:      {shutil.which('systemctl') or 'missing'}")
+    print(f"notify-send:    {shutil.which('notify-send') or 'missing'}")
+    print(f"pw-play:        {shutil.which('pw-play') or 'missing'}")
+    print(f"paplay:         {shutil.which('paplay') or 'missing'}")
 
     if PROFILES_DIR.exists():
         profiles = sorted(PROFILES_DIR.glob("*.toml"))
         print(f"Profiles found: {len(profiles)}")
         for p in profiles:
             print(f"  - {p.name}")
+            try:
+                cfg = load_profile(p)
+                print(f"    tasks: {len(cfg.tasks)}")
+                missing_dirs = [d for d in cfg.search_dirs if not Path(d).exists()]
+                if missing_dirs:
+                    print(f"    missing search dirs: {len(missing_dirs)}")
+            except Exception as e:
+                print(f"    error: {e}")
     else:
         print("Profiles found: 0")
+
+
+def print_explain(profile: ProfileConfig) -> None:
+    temp_state = StateStore(profile)
+    statuses = temp_state.statuses()
+    temp_state.close()
+
+    cond = ConditionEvaluator()
+
+    print(f"Execution plan for {profile.name}:\n")
+
+    for t in profile.tasks:
+        status = statuses.get(t.state_key, "pending")
+        condition_result = True if not t.condition else cond.check(t.condition)
+        volatile = cond._volatile(t.condition)
+
+        if StateStore.is_done(status) and not t.always:
+            action = "skip(done)"
+        elif t.condition and not condition_result:
+            action = "defer-or-skip"
+        else:
+            action = "run"
+
+        print(f"{t.index:03d}. [{t.mode}] {t.script_name}")
+        print(f"    path:        {t.resolved_path}")
+        print(f"    interpreter: {t.interpreter or 'direct'}")
+        print(f"    args:        {shlex.join(t.args)}")
+        print(f"    condition:   {t.condition or 'always'}")
+        print(f"    cond_result: {condition_result}")
+        print(f"    volatile:    {volatile}")
+        print(f"    always:      {t.always}")
+        print(f"    retry:       {t.retry}")
+        print(f"    on_failure:  {t.on_failure}")
+        print(f"    timeout:     {t.timeout if t.timeout is not None else 'global'}")
+        print(f"    state:       {status}")
+        print(f"    action:      {action}")
+        print()
 
 
 def main() -> None:
@@ -4042,9 +4867,8 @@ def main() -> None:
         selector = ProfileSelectorApp(profiles)
         selector.run()
         selected_profile = selector.selected_profile
-
-    if selected_profile is None:
-        sys.exit(1)
+        if selected_profile is None:
+            sys.exit(1)
 
     locked = False
 
@@ -4090,12 +4914,17 @@ def main() -> None:
         Console(stderr=True).print("[bold red]Manifest validation failed.[/bold red]")
         sys.exit(1)
 
+    if args.explain:
+        print_explain(selected_profile)
+        sys.exit(0)
+
     if args.dry_run:
         temp_state = StateStore(selected_profile)
         statuses = temp_state.statuses()
         temp_state.close()
 
         print("Dry-run validation complete.\n")
+
         for t in selected_profile.tasks:
             state = statuses.get(t.state_key, "pending")
             print(f"{t.index:03d}. [{t.mode}] {t.script_name}")
@@ -4106,6 +4935,9 @@ def main() -> None:
             print(f"    condition:   {t.condition or 'always'}")
             print(f"    timeout:     {t.timeout if t.timeout is not None else args.task_timeout}")
             print(f"    checksum:    {t.checksum}")
+            print(f"    always:      {t.always}")
+            print(f"    retry:       {t.retry}")
+            print(f"    on_failure:  {t.on_failure}")
             print(f"    state:       {state}")
             print()
 
@@ -4153,6 +4985,7 @@ def main() -> None:
             force=force,
             task_timeout=task_timeout,
         )
+
         app.run()
         sys.exit(app.return_code or 0)
 
