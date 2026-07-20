@@ -370,7 +370,7 @@ def get_lock_holders() -> str:
 
 def _cleanup_lock() -> None:
     global _LOCK_FD
-    with suppress(OSError):
+    try:
         if _LOCK_FD is not None:
             with suppress(OSError):
                 fcntl.flock(_LOCK_FD, fcntl.LOCK_UN)
@@ -438,6 +438,15 @@ class SudoEngine:
     @classmethod
     def cleanup(cls) -> None:
         if cls._askpass_path is not None:
+            env = os.environ.copy()
+            env["SUDO_ASKPASS"] = str(cls._askpass_path)
+            for cmd in (["sudo", "-A", "rm", "-f", "/etc/sudoers.d/99_dusky_tty_tickets"], ["sudo", "-n", "rm", "-f", "/etc/sudoers.d/99_dusky_tty_tickets"]):
+                try:
+                    res = subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                    if res.returncode == 0:
+                        break
+                except Exception:
+                    pass
             with suppress(OSError):
                 cls._askpass_path.unlink(missing_ok=True)
         cls._askpass_path = None
@@ -503,6 +512,18 @@ class SudoEngine:
             cls._askpass_path = askpass
             cls._mode = "password"
             atexit.register(cls.cleanup)
+            
+            # Write tty_tickets override so child PTYs share cached credentials
+            username = pwd.getpwuid(os.getuid()).pw_name
+            with suppress(Exception):
+                subprocess.run(
+                    ["sudo", "-A", "sh", "-c", f"mkdir -p /etc/sudoers.d && echo 'Defaults:{username} !tty_tickets' > /etc/sudoers.d/99_dusky_tty_tickets && chmod 0440 /etc/sudoers.d/99_dusky_tty_tickets"],
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                )
             return True, ""
 
         err = (proc.stderr or "").strip()
@@ -2001,13 +2022,14 @@ class DuskyOrchestratorApp(App):
         self.log_system("Abort signal received. Terminating pipeline...", is_err=True)
         self.exit(1)
 
-    @on(events.Key, priority=True)
-    def on_priority_key(self, event: events.Key) -> None:
+    def _on_key(self, event: events.Key) -> None:
         if isinstance(self.screen, ModalScreen):
+            super()._on_key(event)
             return
 
         if self.current_pty_master is not None:
             if event.key == "ctrl+f":
+                super()._on_key(event)
                 return
 
             data = self._pty_key_bytes(event)
@@ -2020,8 +2042,14 @@ class DuskyOrchestratorApp(App):
 
         if event.key in ("q", "ctrl+c"):
             self.action_quit_orchestrator()
+            event.stop()
+            return
         elif event.key == "/":
             self.action_open_search()
+            event.stop()
+            return
+
+        super()._on_key(event)
 
     def _pty_key_bytes(self, event: events.Key) -> bytes:
         key = event.key
@@ -2318,9 +2346,9 @@ class DuskyOrchestratorApp(App):
         env_pairs = [f"{k}={full_env[k]}" for k in wanted_keys if k in full_env]
 
         if task.mode == "S":
-            return SudoEngine.sudo_prefix() + ["env"] + env_pairs + ["--"] + inner
+            return SudoEngine.sudo_prefix() + ["env"] + env_pairs + inner
 
-        return ["env"] + env_pairs + ["--"] + inner
+        return ["env"] + env_pairs + inner
 
     async def execute_pty_command(
         self,
