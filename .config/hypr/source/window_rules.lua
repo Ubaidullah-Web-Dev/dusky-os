@@ -1829,7 +1829,13 @@ hl.layer_rule({
     ignore_alpha = 0.54
 })
 
-
+-- Dusky Visualizer Layer Rule
+hl.layer_rule({
+    name = "dusky_visualizer_blur",
+    match = { namespace = "dusky-visualizer" },
+    blur = true,
+    ignore_alpha = 0.0
+})
 
 -- SMART GAPS (Disabled / Examples)
 -- -----------------------------------------------------------------------------

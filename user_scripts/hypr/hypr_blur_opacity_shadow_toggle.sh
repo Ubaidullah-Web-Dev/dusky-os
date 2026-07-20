@@ -300,13 +300,7 @@ fi
 
 # --- Apply Changes at Runtime (Single Batch IPC) ---
 if command -v hyprctl &>/dev/null; then
-    HYPR_BATCH_CMD="keyword decoration:blur:enabled ${NEW_ENABLED}; keyword decoration:shadow:enabled ${NEW_ENABLED}; keyword decoration:active_opacity ${NEW_ACTIVE}; keyword decoration:inactive_opacity ${NEW_INACTIVE}"
-    
-    if ! hyprctl --batch "$HYPR_BATCH_CMD" &>/dev/null; then
-        printf 'Warning: hyprctl batch command failed. Is Hyprland running?\n' >&2
-    fi
-    
-    # Efficiently reload the config to catch the new Lua window rules without flickering monitors
+    hyprctl eval "hl.config({ decoration = { blur = { enabled = ${NEW_ENABLED} }, shadow = { enabled = ${NEW_ENABLED} }, active_opacity = ${NEW_ACTIVE}, inactive_opacity = ${NEW_INACTIVE} } })" &>/dev/null || true
     hyprctl reload config-only &>/dev/null || true
 fi
 

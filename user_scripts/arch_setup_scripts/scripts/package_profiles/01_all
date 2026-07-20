@@ -51,6 +51,10 @@ noto-fonts-emoji
 sassc
 python-packaging
 python
+python-gobject
+python-cairo
+python-opengl
+gtk-layer-shell
 python-evdev
 python-pyudev
 fontconfig
