@@ -25,7 +25,12 @@ THEME_FILE = "~/.config/matugen/generated/dusky_tui.json"
 # =============================================================================
 # 3. TABS DEFINITION
 # =============================================================================
-TABS = ["Style", "Motion", "Effects", "Advanced"]
+TABS = [
+    "Style",
+    "Motion",
+    "Effects",
+    "Advanced"
+]
 
 # =============================================================================
 # 4. SCHEMA DEFINITION
