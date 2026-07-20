@@ -1,0 +1,124 @@
+# =============================================================================
+# Dusky Interactive Package Installer & Search (pkg_search)
+# Exposes a dynamic, interactive FZF installer utilizing paru, yay, or pacman.
+# =============================================================================
+
+pkg_search() {
+    # 1. Dependency Validation
+    if (( ! $+commands[fzf] )); then
+        print -u2 -P "\n%F{red}✖ Error:%f 'fzf' is not installed."
+        return 1
+    fi
+
+    # 2. Package Manager Detection & Configuration
+    local helper=""
+    local -a list_cmd
+    local -a install_cmd
+    local preview_helper=""
+
+    if (( $+commands[paru] )); then
+        helper="paru"
+        preview_helper="paru"
+        list_cmd=(paru -Slq)
+        install_cmd=(paru -S)
+    elif (( $+commands[yay] )); then
+        helper="yay"
+        preview_helper="yay"
+        list_cmd=(yay -Slq)
+        install_cmd=(yay -S)
+    else
+        helper="pacman"
+        preview_helper="pacman"
+        list_cmd=(pacman -Slq)
+        install_cmd=(sudo pacman -S)
+    fi
+
+    # 3. Compile Live Preview Script (FZF Preview Window)
+    export DUSKY_INPKG_PREVIEW='
+export LC_ALL=C
+pkg="$1"
+helper="$2"
+
+# Dynamic Status Badge (Installed vs Available)
+if pacman -Q "$pkg" >/dev/null 2>&1; then
+    status_str="\e[1;32mInstalled\e[0m"
+else
+    status_str="\e[1;34mAvailable\e[0m"
+fi
+
+cols=${FZF_PREVIEW_COLUMNS:-80}
+hr="${(ml:$cols::─:)}"
+
+printf "\033[1;38;5;81m:: \033[1;37mPackage Info: \033[1;32m%s\033[0m\n\033[38;5;238m%s\033[0m\n" "$pkg" "$hr"
+printf "\033[1;38;5;39m%-16s\033[0m: %b\n" "Status" "$status_str"
+
+# Run sync info query and format output nicely
+"$helper" -Sii "$pkg" 2>/dev/null | awk -F":" '\''
+    function print_kv(key, val, color) {
+        printf "\033[1;38;5;39m%-16s\033[0m: \033[38;5;%sm%s\033[0m\n", key, color, val
+    }
+    {
+        key = $1; sub(/[ \t]+$/, "", key)
+        val = $2; for(i=3; i<=NF; i++) val = val ":" $i
+        sub(/^[ \t]+/, "", val)
+    }
+    key == "Repository"      { print_kv("Repository", val, val == "aur" ? "203" : "213") }
+    key == "Version"         { print_kv("Version", val, "220") }
+    key == "Description"     { print_kv("Description", val, "253") }
+    key == "Architecture"    { print_kv("Architecture", val, "141") }
+    key == "URL"             { print_kv("URL", val, "114") }
+    key == "AUR URL"         { print_kv("AUR URL", val, "114") }
+    key == "Download Size"   { print_kv("Download Size", val, "115") }
+    key == "Installed Size"  { print_kv("Installed Size", val, "115") }
+    key == "Depends On"      { print_kv("Dependencies", val, val == "None" ? "242" : "250") }
+    key == "Make Deps"       { print_kv("Make Deps", val, val == "None" ? "242" : "250") }
+    key == "Check Deps"      { print_kv("Check Deps", val, val == "None" ? "242" : "250") }
+    key == "Optional Deps"   { print_kv("Optional Deps", val, val == "None" ? "242" : "250") }
+    key == "Conflicts With"  { print_kv("Conflicts", val, val == "None" ? "242" : "196") }
+    key == "Replaces"        { print_kv("Replaces", val, val == "None" ? "242" : "208") }
+    key == "Maintainer"      { print_kv("Maintainer", val, "242") }
+    key == "Packager"        { print_kv("Packager", val, "242") }
+    key == "Build Date"      { print_kv("Built", val, "250") }
+    key == "First Submitted" { print_kv("Submitted", val, "250") }
+    key == "Last Modified"   { print_kv("Modified", val, "250") }
+    key == "Votes"           { print_kv("Votes", val, "220") }
+    key == "Popularity"      { print_kv("Popularity", val, "220") }
+'\''
+'
+
+    # 4. Execution via interactive FZF (using modern v0.74+ structures)
+    local -a pkgs
+    pkgs=(${(f)"$("${list_cmd[@]}" | sort -u | fzf --multi --ansi \
+        --prompt=" 󰏖 Install ($helper) ❯ " \
+        --pointer="" \
+        --marker="✓" \
+        --layout=reverse \
+        --border=rounded \
+        --border-label=" Interactive Package Installer ($helper) " \
+        --border-label-pos=3 \
+        --preview-label=" Package Metadata " \
+        --preview-label-pos=bottom \
+        --header="Tab: Select Multi | Alt-C: Copy Name | Ctrl-P: Toggle Preview | Enter: Install | ESC: Exit" \
+        --header-first \
+        --bind="ctrl-p:toggle-preview" \
+        --bind="ctrl-d:preview-page-down" \
+        --bind="ctrl-u:preview-page-up" \
+        --bind="alt-c:execute-silent(echo -n {1} | wl-copy)+change-prompt( 󰏖 Copied Package Name! ❯ )" \
+        --color="bg+:#1e1e2e,bg:#11111b,spinner:#f5e0dc" \
+        --color="fg:#cdd6f4,fg+:#cdd6f4,header:#89b4fa,info:#cba6f7" \
+        --color="pointer:#a6e3a1,marker:#f5e0dc,prompt:#cba6f7" \
+        --color="hl:#f38ba8,hl+:#f38ba8,border:#585b70,label:#a6e3a1" \
+        --preview='zsh -c "$DUSKY_INPKG_PREVIEW" _ {1} '"$preview_helper" \
+        --preview-window="down,70%,border-top,wrap")"})
+
+    # Cleanup environment variables
+    unset DUSKY_INPKG_PREVIEW
+
+    # 5. Install Selected Packages
+    if (( ${#pkgs} )) && [[ -n "${pkgs[1]}" ]]; then
+        print -P "\n%F{blue}::%f %BInstalling packages via $helper:%b ${pkgs[*]}"
+        "${install_cmd[@]}" "${pkgs[@]}"
+    else
+        print -P "\n%F{yellow}⚠%f No packages selected for installation."
+    fi
+}
