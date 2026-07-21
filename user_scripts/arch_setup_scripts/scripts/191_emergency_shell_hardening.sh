@@ -5,12 +5,15 @@
 set -Eeuo pipefail
 export LC_ALL=C
 
-preflight_checks() {
-    (( EUID == 0 )) || fatal "Run as root."
+ensure_root() {
+    if (( EUID != 0 )); then
+        printf '\033[1;32m[*]\033[0m Elevating to root privileges via sudo...\n'
+        exec sudo -- "$0" "$@"
+    fi
 }
 
 fatal() { printf '\033[1;31m[FATAL]\033[0m %s\n' "$1" >&2; exit 1; }
-info() { printf '\033[1;32m[INFO]\033[0m %s\n'; }
+info() { printf '\033[1;32m[INFO]\033[0m %s\n' "$1"; }
 
 apply_emergency_hardening() {
     info "Configuring Systemd Emergency and Rescue shell overrides..."
@@ -32,5 +35,5 @@ EOF
     info "Systemd emergency console hardening successfully applied."
 }
 
-preflight_checks
+ensure_root
 apply_emergency_hardening
