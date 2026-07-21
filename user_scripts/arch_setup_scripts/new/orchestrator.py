@@ -4551,40 +4551,8 @@ class DuskyOrchestratorApp(App):
                 print(f"\n--- INTERACTIVE WORKFLOW: {task.script_name} ---")
                 print(f"Executing: {shlex.join(cmd)}\n")
 
-                try:
-                    proc = await asyncio.create_subprocess_exec(
-                        *cmd,
-                        env=env,
-                        process_group=0,
-                    )
-                    new_group = True
-                except TypeError:
-                    proc = await asyncio.create_subprocess_exec(*cmd, env=env)
-                    new_group = False
-
-                self.active_child_pid = proc.pid
-                self.active_child_group = new_group
-
-                if new_group and stdin_fd is not None and proc.pid:
-                    with suppress(OSError):
-                        os.tcsetpgrp(stdin_fd, proc.pid)
-
-                try:
-                    code = await proc.wait()
-                except asyncio.CancelledError:
-                    if new_group:
-                        with suppress(ProcessLookupError, PermissionError, OSError):
-                            os.killpg(proc.pid, signal.SIGTERM)
-                        with suppress(Exception):
-                            await asyncio.wait_for(proc.wait(), timeout=2.0)
-                        if proc.returncode is None:
-                            with suppress(ProcessLookupError, PermissionError, OSError):
-                                os.killpg(proc.pid, signal.SIGKILL)
-                    else:
-                        with suppress(ProcessLookupError, PermissionError, OSError):
-                            proc.kill()
-                    raise
-
+                res = subprocess.run(cmd, env=env)
+                code = res.returncode
                 return code == 0, code, "interactive session"
 
             except Exception as e:
