@@ -1,5 +1,5 @@
 #!/usr/bin/env -S python3 -I
-"""SSHFS remote manager for Arch Linux with intuitive defaults and robust error recovery."""
+"""SSHFS remote manager for Arch Linux with multi-mount support and robust error recovery."""
 
 import os
 import sys
@@ -38,7 +38,7 @@ except (RuntimeError, KeyError) as exc:
 
 # --- Fixed paths ---
 STATE_FILE: Final[Path] = HOME / ".config/dusky/settings/sshfiles/sshfs"
-MOUNT_POINT: Final[Path] = HOME / "Documents/sshfs"
+BASE_MOUNT_DIR: Final[Path] = HOME / "Documents/sshfs"
 
 MAX_HISTORY: Final[int] = 10
 
@@ -109,21 +109,26 @@ class ParsedTarget(NamedTuple):
     @property
     def sshfs_target_spec(self) -> str:
         prefix = f"{self.user}@" if self.user else ""
-        return f"{prefix}{self.host}:{self.remote_path}"
+        path = self.remote_path if self.remote_path else "/"
+        return f"{prefix}{self.host}:{path}"
 
     @property
     def canonical_string(self) -> str:
         prefix = f"{self.user}@" if self.user else ""
+        path_part = self.remote_path if self.remote_path else "/"
         if self.port != 22:
-            path_part = self.remote_path if self.remote_path else ""
             if path_part.startswith("/"):
                 return f"ssh://{prefix}{self.host}:{self.port}{path_part}"
-            elif path_part:
-                return f"{prefix}{self.host}:{self.port}:{path_part}"
             else:
-                return f"{prefix}{self.host}:{self.port}"
+                return f"{prefix}{self.host}:{self.port}:{path_part}"
         else:
-            return f"{prefix}{self.host}:{self.remote_path}"
+            return f"{prefix}{self.host}:{path_part}"
+
+
+class ActiveMount(NamedTuple):
+    source: str
+    mount_point: Path
+    fstype: str
 
 
 def parse_target(raw: str) -> ParsedTarget | None:
@@ -131,11 +136,11 @@ def parse_target(raw: str) -> ParsedTarget | None:
     Validate and parse an SSH target string into a structured ParsedTarget.
 
     Accepted forms:
-      - user@host (defaults to port 22, remote home directory)
-      - host (defaults to port 22, remote home directory)
-      - user@host: (remote home directory)
+      - user@host (defaults to port 22, remote root directory /)
+      - host (defaults to port 22, remote root directory /)
+      - user@host: (remote root directory /)
       - user@host:/path (remote path)
-      - user@host:2222 (port 2222, remote home directory)
+      - user@host:2222 (port 2222, remote root directory /)
       - user@host:2222/path or user@host:2222:/path (port 2222, remote path)
       - ssh://[user@]host[:port][/path] (URI format)
     """
@@ -152,7 +157,7 @@ def parse_target(raw: str) -> ParsedTarget | None:
             return None
         parts = rest.split("/", 1)
         authority = parts[0]
-        remote_path = "/" + parts[1] if len(parts) > 1 else ""
+        remote_path = "/" + parts[1] if len(parts) > 1 else "/"
         if not authority:
             return None
 
@@ -221,12 +226,12 @@ def parse_target(raw: str) -> ParsedTarget | None:
 
     if not after_host:
         port = 22
-        remote_path = ""
+        remote_path = "/"
     elif after_host.isdigit():
         port = int(after_host)
         if not (1 <= port <= 65535):
             return None
-        remote_path = ""
+        remote_path = "/"
     elif ":" in after_host:
         parts = after_host.split(":", 1)
         if not parts[0].isdigit():
@@ -234,7 +239,7 @@ def parse_target(raw: str) -> ParsedTarget | None:
         port = int(parts[0])
         if not (1 <= port <= 65535):
             return None
-        remote_path = parts[1]
+        remote_path = parts[1] or "/"
     else:
         m = re.match(r"^(\d+)/(.*)$", after_host)
         if m and (1 <= int(m.group(1)) <= 65535):
@@ -242,7 +247,7 @@ def parse_target(raw: str) -> ParsedTarget | None:
             remote_path = "/" + m.group(2)
         else:
             port = 22
-            remote_path = after_host
+            remote_path = after_host or "/"
 
     return ParsedTarget(
         user=user,
@@ -253,16 +258,36 @@ def parse_target(raw: str) -> ParsedTarget | None:
     )
 
 
+def derive_mount_point(target: ParsedTarget, custom_path: str | None = None) -> Path:
+    """Derive local mount path for a target."""
+    if custom_path and custom_path.strip():
+        c = custom_path.strip()
+        p = Path(c).expanduser()
+        if not p.is_absolute():
+            return BASE_MOUNT_DIR / c
+        return p
+
+    host_clean = re.sub(r"[^\w.-]", "_", target.host)
+    user_prefix = f"{target.user}_" if target.user and target.user != os.environ.get("USER") else ""
+
+    path_clean = ""
+    if target.remote_path and target.remote_path != "/":
+        path_clean = "_" + re.sub(r"[^\w.-]", "_", target.remote_path.strip("/"))
+
+    dir_name = f"{user_prefix}{host_clean}{path_clean}".strip("_")
+    if not dir_name:
+        dir_name = "default"
+
+    return BASE_MOUNT_DIR / dir_name
+
+
 def normalize_target(raw: str) -> str | None:
     parsed = parse_target(raw)
     return parsed.canonical_string if parsed else None
 
 
 def _unescape_proc_field(field: bytes) -> bytes:
-    """
-    Unescape octal sequences from /proc/mounts fields.
-    Example: b"/mnt/my\\040dir" -> b"/mnt/my dir"
-    """
+    """Unescape octal sequences from /proc/mounts fields."""
     out = bytearray()
     i = 0
     while i < len(field):
@@ -296,35 +321,44 @@ def _mount_entries() -> Iterator[tuple[str, str, str]]:
         return
 
 
-def get_mount_info() -> tuple[str, str] | None:
-    """Return (source, fstype) if MOUNT_POINT is currently mounted."""
-    wanted = os.path.normpath(str(MOUNT_POINT))
+def get_active_mounts() -> list[ActiveMount]:
+    """Return all active SSHFS mounts under BASE_MOUNT_DIR or mounted by sshfs."""
+    active: list[ActiveMount] = []
+    base_str = os.path.normpath(str(BASE_MOUNT_DIR))
+    for source, target, fstype in _mount_entries():
+        if fstype == "fuse.sshfs" or fstype.startswith("fuse."):
+            norm_target = os.path.normpath(target)
+            if norm_target == base_str or norm_target.startswith(base_str + os.sep):
+                active.append(ActiveMount(source, Path(target), fstype))
+    return active
+
+
+def get_mount_info_for(mount_point: Path) -> tuple[str, str] | None:
+    """Return (source, fstype) if mount_point is currently mounted."""
+    wanted = os.path.normpath(str(mount_point))
     for source, target, fstype in _mount_entries():
         if os.path.normpath(target) == wanted:
             return source, fstype
     return None
 
 
-def cleanup_stale_mount() -> bool:
+def cleanup_stale_mount(mount_point: Path) -> bool:
     """Attempt a lazy unmount to clean up stale/broken FUSE mounts."""
     fusermount = find_executable("fusermount3")
     if not fusermount:
         return False
     with contextlib.suppress(OSError):
         subprocess.run(
-            [fusermount, "-u", "-z", str(MOUNT_POINT)],
+            [fusermount, "-u", "-z", str(mount_point)],
             check=False,
             text=True,
             capture_output=True,
         )
-    return wait_until_unmounted(timeout=2.0)
+    return wait_until_unmounted(mount_point, timeout=2.0)
 
 
 def state_destination() -> Path:
-    """
-    If STATE_FILE is a symlink, write through to its target so the symlink
-    itself is preserved.
-    """
+    """Preserve symlinks on STATE_FILE."""
     if STATE_FILE.is_symlink():
         try:
             return STATE_FILE.resolve(strict=False)
@@ -440,7 +474,7 @@ def ensure_state_file() -> None:
 
 
 def ensure_directories() -> None:
-    if not STATE_FILE.is_absolute() or not MOUNT_POINT.is_absolute():
+    if not STATE_FILE.is_absolute() or not BASE_MOUNT_DIR.is_absolute():
         fail("State and mount paths must be absolute. Check HOME.")
 
     try:
@@ -459,24 +493,13 @@ def ensure_directories() -> None:
     if destination.exists() and not os.access(destination, os.R_OK | os.W_OK):
         fail(f"State file {destination} is not readable/writable.{root_hint(destination)}")
 
-    if get_mount_info() is None:
-        if MOUNT_POINT.is_symlink():
-            return
-
-        try:
-            MOUNT_POINT.mkdir(parents=True, exist_ok=True, mode=0o700)
-        except OSError as exc:
-            if exc.errno in (errno.ENOTCONN, errno.EBUSY):
-                cleanup_stale_mount()
-            else:
-                fail(f"Cannot create mountpoint {MOUNT_POINT}: {exc}{root_hint(MOUNT_POINT.parent)}")
-
-        if not MOUNT_POINT.is_dir():
-            try:
-                if not MOUNT_POINT.exists():
-                    MOUNT_POINT.mkdir(parents=True, exist_ok=True, mode=0o700)
-            except OSError as exc:
-                fail(f"{MOUNT_POINT} exists and is not accessible: {exc}")
+    try:
+        BASE_MOUNT_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError as exc:
+        if exc.errno in (errno.ENOTCONN, errno.EBUSY):
+            cleanup_stale_mount(BASE_MOUNT_DIR)
+        else:
+            fail(f"Cannot create base mount directory {BASE_MOUNT_DIR}: {exc}{root_hint(BASE_MOUNT_DIR.parent)}")
 
 
 def install_package(package: str) -> bool:
@@ -569,63 +592,113 @@ def check_fuse_device() -> bool:
     return True
 
 
-def wait_until_unmounted(timeout: float = 2.0) -> bool:
+def wait_until_unmounted(mount_point: Path, timeout: float = 2.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if get_mount_info() is None:
+        if get_mount_info_for(mount_point) is None:
             return True
         time.sleep(0.1)
-    return get_mount_info() is None
+    return get_mount_info_for(mount_point) is None
 
 
-def mount_appeared() -> bool:
-    if get_mount_info() is not None:
+def mount_appeared(mount_point: Path) -> bool:
+    if get_mount_info_for(mount_point) is not None:
         return True
 
-    if MOUNT_POINT.is_symlink():
+    if mount_point.is_symlink():
         with contextlib.suppress(OSError):
-            return os.path.ismount(MOUNT_POINT)
+            return os.path.ismount(mount_point)
 
     return False
 
 
-def wait_until_mounted(timeout: float = 5.0) -> bool:
+def wait_until_mounted(mount_point: Path, timeout: float = 5.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if mount_appeared():
+        if mount_appeared(mount_point):
             return True
         time.sleep(0.1)
-    return mount_appeared()
+    return mount_appeared(mount_point)
 
 
-def unmount(*, lazy: bool = False, interactive: bool = False) -> bool:
-    info = get_mount_info()
+def unmount(
+    target_path: Path | str | None = None,
+    *,
+    all_mounts: bool = False,
+    lazy: bool = False,
+    interactive: bool = False,
+) -> bool:
+    if all_mounts:
+        mounts = get_active_mounts()
+        if not mounts:
+            print("[*] No active SSHFS connections to unmount.")
+            return True
+        success = True
+        for m in mounts:
+            print(f"[*] Unmounting {m.mount_point} ({m.source})...")
+            if not unmount(m.mount_point, lazy=lazy, interactive=False):
+                success = False
+        return success
+
+    if target_path is None:
+        mounts = get_active_mounts()
+        if not mounts:
+            print("[*] Directory is not currently mounted.")
+            return True
+
+        if len(mounts) == 1:
+            target_path = mounts[0].mount_point
+        elif interactive:
+            print("\nActive SSHFS Mounts:")
+            for i, m in enumerate(mounts, 1):
+                print(f"  {i}. {m.source} -> {m.mount_point}")
+            print(f"  {len(mounts) + 1}. Unmount ALL connections")
+
+            raw = read_input(f"Select connection to unmount (1-{len(mounts) + 1}) [1]: ")
+            if raw is None:
+                return False
+            if raw == "" or raw == "1":
+                target_path = mounts[0].mount_point
+            elif raw == str(len(mounts) + 1) or raw.lower() in ("all", "a"):
+                return unmount(all_mounts=True, lazy=lazy, interactive=False)
+            else:
+                try:
+                    idx = int(raw)
+                    if 1 <= idx <= len(mounts):
+                        target_path = mounts[idx - 1].mount_point
+                    else:
+                        print("[-] Invalid selection.")
+                        return False
+                except ValueError:
+                    print("[-] Invalid selection.")
+                    return False
+        else:
+            target_path = mounts[0].mount_point
+
+    target_p = Path(target_path).expanduser().resolve()
+    info = get_mount_info_for(target_p)
 
     if info is None:
         fusermount = find_executable("fusermount3")
         if fusermount:
-            try:
-                proc = subprocess.run(
-                    [fusermount, "-u", str(MOUNT_POINT)],
+            with contextlib.suppress(OSError):
+                subprocess.run(
+                    [fusermount, "-u", str(target_p)],
                     check=False,
                     text=True,
                     capture_output=True,
                 )
-            except OSError:
-                proc = None
-
-            if proc is not None and proc.returncode == 0 and wait_until_unmounted():
+            if wait_until_unmounted(target_p):
                 print("[+] Unmounted successfully.")
                 return True
-
-        print("[*] Directory is not currently mounted.")
+        print(f"[*] {target_p} is not currently mounted.")
         return True
 
     source, fstype = info
 
     if not (fstype == "fuse" or fstype.startswith("fuse.")):
         print(
-            f"[-] {MOUNT_POINT} is mounted as '{fstype}', not FUSE. Refusing to unmount.",
+            f"[-] {target_p} is mounted as '{fstype}', not FUSE. Refusing to unmount.",
             file=sys.stderr,
         )
         return False
@@ -641,10 +714,10 @@ def unmount(*, lazy: bool = False, interactive: bool = False) -> bool:
     cmd = [fusermount, "-u"]
     if lazy:
         cmd.append("-z")
-    cmd.append(str(MOUNT_POINT))
+    cmd.append(str(target_p))
 
     action = "Lazily unmounting" if lazy else "Unmounting"
-    print(f"[*] {action} {MOUNT_POINT} ({source})...")
+    print(f"[*] {action} {target_p} ({source})...")
 
     try:
         proc = subprocess.run(cmd, check=False, text=True, capture_output=True)
@@ -653,25 +726,22 @@ def unmount(*, lazy: bool = False, interactive: bool = False) -> bool:
         return False
 
     if proc.returncode == 0:
-        if wait_until_unmounted():
+        if wait_until_unmounted(target_p):
             print("[+] Unmounted successfully.")
             return True
-
         print("[-] Unmount command succeeded but the mount is still present.", file=sys.stderr)
         return False
+
+    if not lazy:
+        return unmount(target_p, lazy=True, interactive=interactive)
 
     output = (proc.stderr or proc.stdout or "").strip()
     if output:
         print(output, file=sys.stderr)
-
-    if not lazy and interactive:
-        if confirm("[?] Normal unmount failed. Try lazy unmount (fusermount3 -u -z)? [Y/n]: ", default=True):
-            return unmount(lazy=True, interactive=False)
-
     return False
 
 
-def mount(raw_target: str) -> bool:
+def mount(raw_target: str, custom_mount_path: str | None = None) -> bool:
     parsed = parse_target(raw_target)
     if parsed is None:
         print(
@@ -680,24 +750,25 @@ def mount(raw_target: str) -> bool:
         )
         return False
 
+    mount_point = derive_mount_point(parsed, custom_mount_path)
     target_spec = parsed.sshfs_target_spec
     canonical = parsed.canonical_string
 
-    info = get_mount_info()
+    info = get_mount_info_for(mount_point)
     if info is not None:
         is_healthy = False
         with contextlib.suppress(OSError):
-            is_healthy = MOUNT_POINT.is_dir() and os.access(MOUNT_POINT, os.R_OK)
+            is_healthy = mount_point.is_dir() and os.access(mount_point, os.R_OK)
 
         if not is_healthy:
-            print(f"[!] Existing mount at {MOUNT_POINT} ({info[0]}) is unresponsive or broken. Cleaning up...")
-            cleanup_stale_mount()
+            print(f"[!] Existing mount at {mount_point} ({info[0]}) is unresponsive or broken. Cleaning up...")
+            cleanup_stale_mount(mount_point)
         elif info[0] == target_spec or info[0] == canonical:
-            print(f"[*] {MOUNT_POINT} is already mounted to {canonical}.")
+            print(f"[*] {mount_point} is already mounted to {canonical}.")
             return True
         else:
-            print(f"[*] {MOUNT_POINT} is currently mounted to {info[0]}. Unmounting to switch target...")
-            if not unmount(interactive=False):
+            print(f"[*] {mount_point} is currently mounted to {info[0]}. Unmounting to switch target...")
+            if not unmount(mount_point, interactive=False):
                 print("[-] Cannot mount while the existing mount is active.", file=sys.stderr)
                 return False
 
@@ -706,17 +777,17 @@ def mount(raw_target: str) -> bool:
         extra_options.extend(["-p", str(parsed.port)])
 
     try:
-        if not MOUNT_POINT.is_symlink():
-            MOUNT_POINT.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if not mount_point.is_symlink():
+            mount_point.mkdir(parents=True, exist_ok=True, mode=0o700)
 
-            if not MOUNT_POINT.is_dir():
-                print(f"[-] {MOUNT_POINT} exists and is not a directory.", file=sys.stderr)
+            if not mount_point.is_dir():
+                print(f"[-] {mount_point} exists and is not a directory.", file=sys.stderr)
                 return False
 
             try:
-                if any(MOUNT_POINT.iterdir()):
+                if any(mount_point.iterdir()):
                     if not confirm(
-                        f"[!] {MOUNT_POINT} is not empty. Mounting will hide existing files. Continue? [y/N]: ",
+                        f"[!] {mount_point} is not empty. Mounting will hide existing files. Continue? [y/N]: ",
                         default=False,
                     ):
                         print("[*] Mount cancelled.")
@@ -726,7 +797,7 @@ def mount(raw_target: str) -> bool:
             except OSError as exc:
                 if exc.errno in (errno.ENOTCONN, errno.EBUSY):
                     print("[!] Stale mount detected. Attempting unmount...")
-                    if not cleanup_stale_mount():
+                    if not cleanup_stale_mount(mount_point):
                         print(f"[-] Stale mount cleanup failed: {exc}", file=sys.stderr)
                         return False
                 else:
@@ -735,7 +806,7 @@ def mount(raw_target: str) -> bool:
     except OSError as exc:
         if exc.errno in (errno.ENOTCONN, errno.EBUSY):
             print("[!] Stale mount detected on directory creation. Attempting cleanup...")
-            cleanup_stale_mount()
+            cleanup_stale_mount(mount_point)
         else:
             print(f"[-] Cannot inspect mountpoint: {exc}", file=sys.stderr)
             return False
@@ -751,8 +822,8 @@ def mount(raw_target: str) -> bool:
         print("[-] sshfs is missing.", file=sys.stderr)
         return False
 
-    if MOUNT_POINT.is_symlink():
-        cleanup_stale_mount()
+    if mount_point.is_symlink():
+        cleanup_stale_mount(mount_point)
 
     options = list(SSHFS_OPTIONS)
 
@@ -769,9 +840,9 @@ def mount(raw_target: str) -> bool:
     if "nonempty" in extra_options:
         cmd.extend(("-o", "nonempty"))
 
-    cmd.extend((target_spec, str(MOUNT_POINT)))
+    cmd.extend((target_spec, str(mount_point)))
 
-    print(f"[*] Mounting {canonical} at {MOUNT_POINT}...")
+    print(f"[*] Mounting {canonical} at {mount_point}...")
 
     try:
         proc = subprocess.run(
@@ -795,26 +866,52 @@ def mount(raw_target: str) -> bool:
         print(f"[-] Failed to run sshfs: {exc}", file=sys.stderr)
         return False
 
-    if wait_until_mounted():
-        print(f"[+] Successfully mounted. Access files at {MOUNT_POINT}")
-        print("    Hint: Automatic reconnect works best with SSH key authentication.")
+    if wait_until_mounted(mount_point):
+        print(f"[+] Successfully mounted. Access files at {mount_point}")
         return True
 
     print("[-] sshfs exited successfully but the mount did not appear.", file=sys.stderr)
     return False
 
 
+def select_remote_user(parsed: ParsedTarget) -> ParsedTarget | None:
+    default_user = parsed.user or os.environ.get("USER", "user")
+    print("\nSelect remote account:")
+    print(f"1. Normal user ({default_user}) [default]")
+    print("2. Root (root)")
+
+    choice = read_input(f"Select account (1/2) [{default_user}]: ")
+    if choice is None:
+        return None
+
+    choice_str = choice.strip().lower()
+    if choice_str in ("2", "root", "r"):
+        selected_user = "root"
+    elif choice_str in ("1", ""):
+        selected_user = default_user
+    else:
+        selected_user = choice.strip()
+
+    return ParsedTarget(
+        user=selected_user,
+        host=parsed.host,
+        port=parsed.port,
+        remote_path=parsed.remote_path,
+        raw_input=parsed.raw_input,
+    )
+
+
 def print_usage() -> None:
     print("=== SSHFS Remote Manager ===")
     print("\nUsage:")
-    print("  dusky_ssh_filesystem.py [TARGET]        Mount target directly")
-    print("  dusky_ssh_filesystem.py -u | --unmount   Unmount current connection")
-    print("  dusky_ssh_filesystem.py -s | --status    Show mount status")
-    print("  dusky_ssh_filesystem.py -h | --help      Show this help message")
+    print("  dusky_ssh_filesystem.py [TARGET] [MOUNT_PATH]  Mount target directly")
+    print("  dusky_ssh_filesystem.py -u | --unmount [PATH|all] Unmount connection(s)")
+    print("  dusky_ssh_filesystem.py -s | --status         Show all active mounts")
+    print("  dusky_ssh_filesystem.py -h | --help           Show this help message")
     print("\nExamples:")
     print("  dusky_ssh_filesystem.py user@host")
-    print("  dusky_ssh_filesystem.py user@host:/path")
-    print("  dusky_ssh_filesystem.py user@host:2222")
+    print("  dusky_ssh_filesystem.py root@host /home/dusk/Documents/sshfs/server1")
+    print("  dusky_ssh_filesystem.py -u all")
 
 
 def main() -> int:
@@ -829,20 +926,29 @@ def main() -> int:
             print_usage()
             return 0
         elif arg in ("-u", "--unmount"):
-            return 0 if unmount(interactive=False) else 1
-        elif arg in ("-s", "--status"):
-            info = get_mount_info()
-            if info:
-                print(f"Mounted: {info[0]} -> {MOUNT_POINT} ({info[1]})")
+            target_arg = sys.argv[2].strip() if len(sys.argv) > 2 else None
+            if target_arg and target_arg.lower() in ("all", "a"):
+                return 0 if unmount(all_mounts=True, interactive=False) else 1
+            elif target_arg:
+                return 0 if unmount(target_path=target_arg, interactive=False) else 1
             else:
-                print(f"Not mounted: {MOUNT_POINT}")
+                return 0 if unmount(interactive=False) else 1
+        elif arg in ("-s", "--status"):
+            active = get_active_mounts()
+            if active:
+                print(f"Active SSHFS Mounts ({len(active)} active):")
+                for m in active:
+                    print(f"  - {m.source} -> {m.mount_point} ({m.fstype})")
+            else:
+                print(f"No active mounts under {BASE_MOUNT_DIR}")
             return 0
         else:
             parsed = parse_target(arg)
             if not parsed:
                 print(f"[-] Invalid target argument: '{arg}'", file=sys.stderr)
                 return 1
-            if mount(arg):
+            custom_path = sys.argv[2].strip() if len(sys.argv) > 2 else None
+            if mount(parsed.canonical_string, custom_path):
                 update_history(history, parsed.canonical_string)
                 return 0
             return 1
@@ -850,18 +956,23 @@ def main() -> int:
     print("=== SSHFS Remote Manager ===")
 
     while True:
-        info = get_mount_info()
-        if info:
-            print(f"\nCurrent mount: {info[0]} -> {MOUNT_POINT} ({info[1]})")
+        active = get_active_mounts()
+        if active:
+            print(f"\nActive SSHFS Mounts ({len(active)} active):")
+            for i, m in enumerate(active, 1):
+                print(f"  {i}. {m.source} -> {m.mount_point}")
         else:
-            print(f"\nNot mounted: {MOUNT_POINT}")
+            print(f"\nNo active mounts in {BASE_MOUNT_DIR}")
 
         menu: list[tuple[str, str]] = [
-            ("1", "Connect to a new server (user@host[:port][/path])")
+            ("1", "Connect to a new server (mount alongside existing connections)")
         ]
         if history:
             menu.append(("2", "Connect to a recently used server"))
-        menu.append(("3", "Unmount current connection"))
+        if active:
+            menu.append(("3", "Unmount a connection"))
+        else:
+            menu.append(("3", "Unmount connection"))
         menu.append(("4", "Exit"))
 
         print("\nOptions:")
@@ -907,8 +1018,17 @@ def main() -> int:
                     )
                     continue
 
-                if mount(target_raw):
-                    history = update_history(history, parsed.canonical_string)
+                parsed_with_user = select_remote_user(parsed)
+                if parsed_with_user is None:
+                    print("\n[*] Exiting...")
+                    break
+
+                default_dir = derive_mount_point(parsed_with_user)
+                folder_input = read_input(f"Enter local mount path [{default_dir}]: ")
+                custom_path = folder_input.strip() if folder_input and folder_input.strip() else None
+
+                if mount(parsed_with_user.canonical_string, custom_path):
+                    history = update_history(history, parsed_with_user.canonical_string)
 
             case "2" if history:
                 print("\nRecent connections:")
@@ -935,8 +1055,22 @@ def main() -> int:
                     continue
 
                 target = history[index - 1]
-                if mount(target):
-                    history = update_history(history, target)
+                parsed = parse_target(target)
+                if parsed is None:
+                    print("[-] Invalid entry in history.")
+                    continue
+
+                parsed_with_user = select_remote_user(parsed)
+                if parsed_with_user is None:
+                    print("\n[*] Exiting...")
+                    break
+
+                default_dir = derive_mount_point(parsed_with_user)
+                folder_input = read_input(f"Enter local mount path [{default_dir}]: ")
+                custom_path = folder_input.strip() if folder_input and folder_input.strip() else None
+
+                if mount(parsed_with_user.canonical_string, custom_path):
+                    history = update_history(history, parsed_with_user.canonical_string)
 
             case "3":
                 unmount(interactive=True)
