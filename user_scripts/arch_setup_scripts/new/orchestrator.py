@@ -229,30 +229,41 @@ def runtime_dir() -> Path:
 
 
 @functools.cache
+def documents_root() -> Path:
+    root = user_home() / "Documents"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        sys.stderr.write(f"[FATAL] Cannot create Documents root {root}: {e}\n")
+        sys.exit(1)
+    return root
+
+
+def _documents_subdir(name: str) -> Path:
+    path = documents_root() / name
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        with suppress(OSError):
+            path.chmod(0o700)
+    except OSError as e:
+        sys.stderr.write(f"[FATAL] Cannot create required Documents directory {path}: {e}\n")
+        sys.exit(1)
+    return path
+
+
+@functools.cache
 def state_dir() -> Path:
-    pw = target_user_pw()
-    return safe_dir(
-        xdg_state_home() / "dusky" / "state",
-        Path(tempfile.gettempdir()) / f"dusky-{pw.pw_uid}" / "state",
-    )
+    return _documents_subdir("state")
 
 
 @functools.cache
 def logs_dir() -> Path:
-    pw = target_user_pw()
-    return safe_dir(
-        xdg_state_home() / "dusky" / "logs",
-        Path(tempfile.gettempdir()) / f"dusky-{pw.pw_uid}" / "logs",
-    )
+    return _documents_subdir("logs")
 
 
 @functools.cache
 def backups_dir() -> Path:
-    pw = target_user_pw()
-    return safe_dir(
-        xdg_data_home() / "dusky" / "backups",
-        Path(tempfile.gettempdir()) / f"dusky-{pw.pw_uid}" / "backups",
-    )
+    return _documents_subdir("dusky_backups")
 
 
 @functools.cache
@@ -546,12 +557,7 @@ def reset_state_for_profile(profile: ProfileConfig) -> None:
 
 class OnceStore:
     def __init__(self) -> None:
-        try:
-            base = ensure_dir(xdg_state_home() / "dusky" / "state", 0o700)
-            self.path = base / "once.db"
-        except OSError:
-            self.path = state_dir() / "once.db"
-
+        self.path = state_dir() / "once.db"
         self.conn = sqlite3.connect(self.path)
         self.conn.execute("PRAGMA journal_mode=WAL;")
         self.conn.execute("PRAGMA synchronous=NORMAL;")
@@ -783,8 +789,9 @@ class RunLogger:
             self.enabled = True
             self.system(f"Logging started for profile: {profile.name}")
             self.system(f"Run ID: {run_id}")
-        except OSError:
-            self.enabled = False
+        except OSError as e:
+            sys.stderr.write(f"[FATAL] Cannot create log directory or main log file under {logs_dir()}: {e}\n")
+            sys.exit(1)
 
     def system(self, msg: str) -> None:
         if not self.enabled or self._main is None:
@@ -2559,8 +2566,23 @@ class ConditionEvaluator:
 # ==============================================================================
 # GIT SELF UPDATE
 # ==============================================================================
+GIT_UPSTREAM_BRANCH = "main"
+GIT_UPSTREAM_REF = "refs/dusky/upstream/main"
+
+
 def _git_env() -> dict[str, str]:
     env = os.environ.copy()
+
+    for key in (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_LITERAL_PATHSPECS",
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+    ):
+        env.pop(key, None)
+
     env.update(
         {
             "GIT_TERMINAL_PROMPT": "0",
@@ -2603,9 +2625,11 @@ def _proc_holds_file(path: Path) -> bool:
     for pid_dir in proc_dir.iterdir():
         if not pid_dir.name.isdigit():
             continue
+
         fd_dir = pid_dir / "fd"
         if not fd_dir.exists():
             continue
+
         with suppress(OSError):
             for fd_link in fd_dir.iterdir():
                 with suppress(OSError):
@@ -2615,53 +2639,236 @@ def _proc_holds_file(path: Path) -> bool:
     return False
 
 
-def _clear_stale_git_locks(git_dir: Path) -> bool:
-    locks = [
-        "index.lock",
-        "config.lock",
-        "packed-refs.lock",
-        "shallow.lock",
-        "HEAD.lock",
-        "ORIG_HEAD.lock",
-        "FETCH_HEAD.lock",
+def _delete_path(target: Path) -> None:
+    if target.is_dir() and not target.is_symlink():
+        shutil.rmtree(target, ignore_errors=True)
+    else:
+        target.unlink(missing_ok=True)
+
+
+def _iter_git_lock_files(git_dir: Path) -> list[Path]:
+    locks: list[Path] = [
+        git_dir / "index.lock",
+        git_dir / "config.lock",
+        git_dir / "packed-refs.lock",
+        git_dir / "shallow.lock",
+        git_dir / "HEAD.lock",
+        git_dir / "ORIG_HEAD.lock",
+        git_dir / "FETCH_HEAD.lock",
     ]
 
-    for lock_name in locks:
-        lock_file = git_dir / lock_name
+    refs_dir = git_dir / "refs"
+    if refs_dir.is_dir():
+        with suppress(OSError):
+            locks.extend(refs_dir.rglob("*.lock"))
+
+    return locks
+
+
+def _clear_stale_git_locks(git_dir: Path) -> bool:
+    for lock_file in _iter_git_lock_files(git_dir):
         if not lock_file.exists():
             continue
 
         if _proc_holds_file(lock_file):
-            sys.stderr.write(f"[ERROR] Git lock {lock_file} is open by a live process. Aborting git update.\n")
+            sys.stderr.write(
+                f"[ERROR] Git lock {lock_file} is open by a live process. Aborting git update.\n"
+            )
             return False
 
-        with suppress(OSError):
+        try:
             age = time.time() - lock_file.stat().st_mtime
-            if age > 60:
-                lock_file.unlink(missing_ok=True)
-                sys.stdout.write(f"[GIT] Cleared stale Git lock: {lock_name}\n")
+        except OSError as e:
+            sys.stderr.write(f"[ERROR] Cannot stat Git lock {lock_file}: {e}\n")
+            return False
+
+        if age <= 60:
+            sys.stderr.write(
+                f"[ERROR] Git lock {lock_file} is too recent to safely auto-clear. Aborting.\n"
+            )
+            return False
+
+        try:
+            if lock_file.is_dir() and not lock_file.is_symlink():
+                shutil.rmtree(lock_file, ignore_errors=True)
             else:
-                sys.stderr.write(f"[ERROR] Git lock {lock_file} is too recent to safely auto-clear. Aborting.\n")
-                return False
+                lock_file.unlink(missing_ok=True)
+        except OSError as e:
+            sys.stderr.write(f"[ERROR] Failed to remove stale Git lock {lock_file}: {e}\n")
+            return False
+
+        if lock_file.exists():
+            sys.stderr.write(f"[ERROR] Failed to remove stale Git lock {lock_file}.\n")
+            return False
+
+        sys.stdout.write(f"[GIT] Cleared stale Git lock: {lock_file.name}\n")
 
     return True
 
 
-def _remote_ref(base_cmd: list[str], remote: str) -> str:
-    with suppress(Exception):
-        _git_check(base_cmd + ["remote", "set-head", remote, "-a"], timeout=30)
+def _detect_git_operation_state(git_dir: Path) -> str:
+    if (git_dir / "rebase-merge").is_dir() or (git_dir / "rebase-apply").is_dir():
+        return "rebase"
+    if (git_dir / "MERGE_HEAD").is_file():
+        return "merge"
+    if (git_dir / "CHERRY_PICK_HEAD").is_file():
+        return "cherry-pick"
+    if (git_dir / "REVERT_HEAD").is_file():
+        return "revert"
+    if (git_dir / "BISECT_LOG").is_file():
+        return "bisect"
+    return "none"
 
-    with suppress(Exception):
-        out = _git_check(base_cmd + ["symbolic-ref", f"refs/remotes/{remote}/HEAD"], timeout=20)
-        return out.removeprefix("refs/remotes/")
 
-    for branch in ("main", "master"):
-        ref = f"{remote}/{branch}"
-        with suppress(Exception):
-            _git_check(base_cmd + ["rev-parse", ref], timeout=20)
-            return ref
+def _git_repo_status(base_cmd: list[str], git_dir: Path, work_tree: Path) -> str:
+    if git_dir.is_symlink():
+        sys.stderr.write(f"[ERROR] Git directory must not be a symlink: {git_dir}\n")
+        return "invalid"
 
-    raise RuntimeError("Could not determine upstream branch (tried main/master).")
+    if not git_dir.exists():
+        return "absent"
+
+    if not git_dir.is_dir():
+        sys.stderr.write(f"[ERROR] Git path exists but is not a directory: {git_dir}\n")
+        return "invalid"
+
+    try:
+        if git_dir.stat().st_uid != target_user_pw().pw_uid:
+            sys.stderr.write(f"[ERROR] Git directory is not owned by the target user: {git_dir}\n")
+            return "invalid"
+    except OSError:
+        sys.stderr.write(f"[ERROR] Cannot stat Git directory: {git_dir}\n")
+        return "invalid"
+
+    if not work_tree.is_dir() or not os.access(work_tree, os.W_OK):
+        sys.stderr.write(f"[ERROR] Git work tree is missing or not writable: {work_tree}\n")
+        return "invalid"
+
+    if not _clear_stale_git_locks(git_dir):
+        return "invalid"
+
+    op = _detect_git_operation_state(git_dir)
+    if op != "none":
+        sys.stderr.write(f"[ERROR] Git {op} is in progress in {git_dir}. Resolve it before updating.\n")
+        return "invalid"
+
+    try:
+        _git_check(base_cmd + ["rev-parse", "--git-dir"], timeout=20)
+    except Exception:
+        sys.stderr.write(f"[ERROR] Git repository metadata is invalid or corrupted: {git_dir}\n")
+        return "invalid"
+
+    return "valid"
+
+
+def _nearest_existing_ancestor(path: Path) -> Path:
+    p = path
+    while not p.exists():
+        if p.parent == p:
+            break
+        p = p.parent
+    return p
+
+
+def _free_bytes(path: Path) -> int:
+    try:
+        return shutil.disk_usage(_nearest_existing_ancestor(path)).free
+    except OSError:
+        return 0
+
+
+def _ensure_free_space(path: Path, required_bytes: int, context: str) -> bool:
+    if required_bytes <= 0:
+        return True
+
+    reserve = 64 * 1024 * 1024
+    free = _free_bytes(path)
+
+    if free < required_bytes + reserve:
+        need_mb = (required_bytes + reserve + 1_048_575) // 1_048_576
+        free_mb = (free + 1_048_575) // 1_048_576
+        sys.stderr.write(
+            f"[ERROR] Insufficient disk space for {context}: "
+            f"need {need_mb}MB, have {free_mb}MB at {path}\n"
+        )
+        return False
+
+    return True
+
+
+def _path_copy_size(path: Path) -> int:
+    try:
+        if path.is_dir() and not path.is_symlink():
+            total = 0
+            for root, _dirs, files in os.walk(path):
+                for name in files:
+                    fp = Path(root) / name
+                    with suppress(OSError):
+                        total += fp.lstat().st_size
+            return total
+
+        return path.lstat().st_size
+    except OSError:
+        return 0
+
+
+def _write_text_file(path: Path, text: str) -> None:
+    with suppress(OSError):
+        path.write_text(text, encoding="utf-8")
+
+
+def _write_backup_info(info_path: Path, lines: list[str]) -> None:
+    _write_text_file(info_path, "\n".join(lines) + "\n")
+
+
+def _move_to_backup(src: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    if src.is_dir() and not src.is_symlink():
+        shutil.copytree(src, dest, symlinks=True, dirs_exist_ok=True)
+        shutil.rmtree(src, ignore_errors=True)
+    else:
+        shutil.move(src, dest)
+
+
+def _copy_path_to_backup(src: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    if src.is_dir() and not src.is_symlink():
+        shutil.copytree(src, dest, symlinks=True, dirs_exist_ok=True)
+    else:
+        shutil.copy2(src, dest, follow_symlinks=False)
+
+
+def _atomic_copy_file(src: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    if src.is_dir() and not src.is_symlink():
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target, ignore_errors=True)
+        elif target.exists() or target.is_symlink():
+            target.unlink(missing_ok=True)
+
+        shutil.copytree(src, target, symlinks=True, dirs_exist_ok=True)
+        return
+
+    tmp = target.parent / f".{target.name}.dusky_tmp"
+
+    if tmp.is_dir() and not tmp.is_symlink():
+        shutil.rmtree(tmp, ignore_errors=True)
+    elif tmp.exists() or tmp.is_symlink():
+        tmp.unlink(missing_ok=True)
+
+    shutil.copy2(src, tmp, follow_symlinks=False)
+
+    if target.is_dir() and not target.is_symlink():
+        shutil.rmtree(target, ignore_errors=True)
+
+    os.replace(tmp, target)
+
+
+def _is_null_oid(oid: str) -> bool:
+    return not oid or oid.strip("0") == ""
 
 
 def _clean_old_backups(base: Path, keep: int = 10) -> None:
@@ -2678,19 +2885,453 @@ def _clean_old_backups(base: Path, keep: int = 10) -> None:
             shutil.rmtree(old, ignore_errors=True)
 
 
-def _move_to_backup(src: Path, dest: Path) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if src.is_dir() and not src.is_symlink():
-        shutil.copytree(src, dest, symlinks=True)
-        shutil.rmtree(src, ignore_errors=True)
-    else:
-        shutil.move(src, dest)
+def _collect_incoming_collisions(base_cmd: list[str], remote_ref: str, work_tree: Path) -> list[str]:
+    tracked: set[str] = set()
+    incoming: set[str] = set()
+
+    with suppress(Exception):
+        tracked_out = _git_check(base_cmd + ["ls-files", "-z"], timeout=60)
+        tracked = {x for x in tracked_out.split("\0") if x}
+
+    with suppress(Exception):
+        incoming_out = _git_check(base_cmd + ["ls-tree", "-r", "-z", "--name-only", remote_ref], timeout=60)
+        incoming = {x for x in incoming_out.split("\0") if x}
+
+    candidates: set[str] = set()
+
+    for inc in incoming:
+        target = work_tree / inc
+
+        if (target.exists() or target.is_symlink()) and inc not in tracked:
+            candidates.add(inc)
+
+        for parent in Path(inc).parents:
+            rel = str(parent)
+            if rel in (".", "/"):
+                break
+
+            ancestor = work_tree / rel
+            if (
+                (ancestor.exists() or ancestor.is_symlink())
+                and not ancestor.is_dir()
+                and rel not in tracked
+            ):
+                candidates.add(rel)
+                break
+
+    roots: set[str] = set()
+    for cand in candidates:
+        if any(cand != other and cand.startswith(other + "/") for other in candidates):
+            continue
+        roots.add(cand)
+
+    return sorted(roots)
+
+
+def _backup_collision_roots(work_tree: Path, roots: list[str], collision_dir: Path) -> Path | None:
+    if not roots:
+        return None
+
+    ensure_dir(collision_dir, 0o700)
+
+    required = sum(_path_copy_size(work_tree / rel) for rel in roots)
+    if not _ensure_free_space(collision_dir.parent, required, "collision backup"):
+        raise RuntimeError("Not enough disk space for collision backup")
+
+    moved: list[str] = []
+
+    for rel in roots:
+        src = work_tree / rel
+        dest = collision_dir / rel
+
+        if not (src.exists() or src.is_symlink()):
+            continue
+
+        _move_to_backup(src, dest)
+        moved.append(rel)
+
+    _write_backup_info(
+        collision_dir.with_name("untracked_collisions_INFO.txt"),
+        [
+            "Dusky untracked work-tree collision backup",
+            f"Created: {now_iso()}",
+            f"Work tree: {work_tree}",
+            f"Moved paths: {len(moved)}",
+        ],
+    )
+
+    _write_text_file(
+        collision_dir.with_name("untracked_collisions_MOVED_PATHS.txt"),
+        "\n".join(moved) + "\n",
+    )
+
+    return collision_dir
+
+
+def _restore_collision_dir(collision_dir: Path | None, work_tree: Path) -> None:
+    if collision_dir is None or not collision_dir.exists():
+        return
+
+    for src in collision_dir.rglob("*"):
+        if not (src.is_file() or src.is_symlink()):
+            continue
+
+        rel = src.relative_to(collision_dir)
+        dest = work_tree / rel
+
+        if dest.exists() or dest.is_symlink():
+            continue
+
+        with suppress(OSError):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest, follow_symlinks=False)
+
+
+def _capture_tracked_changes(base_cmd: list[str]) -> dict[str, dict[str, str]]:
+    with suppress(Exception):
+        _git_check(base_cmd + ["update-index", "-q", "--refresh"], timeout=60)
+
+    output = _git_check(
+        base_cmd + ["diff-index", "--raw", "--no-renames", "-z", "HEAD"],
+        timeout=120,
+    )
+
+    changes: dict[str, dict[str, str]] = {}
+    if not output:
+        return changes
+
+    parts = output.split("\0")
+    i = 0
+    parsed = 0
+
+    while i < len(parts) - 1:
+        meta = parts[i]
+        path = parts[i + 1]
+        i += 2
+
+        if not meta or not path:
+            continue
+
+        tokens = meta.split()
+        if len(tokens) < 5:
+            continue
+
+        changes[path] = {
+            "status": tokens[4][0],
+            "old_mode": tokens[0].lstrip(":"),
+            "new_mode": tokens[1],
+            "old_oid": tokens[2],
+            "new_oid": tokens[3],
+        }
+        parsed += 1
+
+    if parsed == 0:
+        raise RuntimeError("Git reported tracked changes, but the change parser found none.")
+
+    return changes
+
+
+def _git_head_path_meta(base_cmd: list[str], path: str) -> tuple[str, str]:
+    with suppress(Exception):
+        out = _git_check(base_cmd + ["ls-tree", "-z", "HEAD", "--", path], timeout=30)
+        if out:
+            record = out.split("\0", 1)[0]
+            meta = record.split("\t", 1)[0]
+            tokens = meta.split()
+            if len(tokens) >= 3:
+                return tokens[0], tokens[2]
+
+    return "", ""
+
+
+def _backup_user_mods(
+    work_tree: Path,
+    changes: dict[str, dict[str, str]],
+    backup_root: Path,
+) -> Path | None:
+    if not changes:
+        return None
+
+    user_mods_dir = backup_root / "user_mods"
+    ensure_dir(user_mods_dir, 0o700)
+
+    required = 0
+    for path, info in changes.items():
+        if info["status"] == "D":
+            continue
+
+        src = work_tree / path
+        if src.exists() or src.is_symlink():
+            required += _path_copy_size(src)
+
+    if not _ensure_free_space(backup_root.parent, required, "modified-files backup"):
+        raise RuntimeError("Not enough disk space for modified-files backup")
+
+    manifest: list[str] = []
+
+    for path, info in changes.items():
+        src = work_tree / path
+        has_copy = False
+
+        if info["status"] != "D" and (src.exists() or src.is_symlink()):
+            dest = user_mods_dir / path
+            _copy_path_to_backup(src, dest)
+            has_copy = True
+
+        manifest.append(
+            f"status={info['status']} "
+            f"old_mode={info['old_mode']} "
+            f"old_oid={info['old_oid']} "
+            f"has_copy={1 if has_copy else 0} "
+            f"path={path}"
+        )
+
+    _write_backup_info(
+        user_mods_dir.with_name("user_mods_INFO.txt"),
+        [
+            "Dusky tracked-change backup",
+            f"Created: {now_iso()}",
+            f"Work tree: {work_tree}",
+            f"Changes: {len(changes)}",
+        ],
+    )
+
+    _write_text_file(
+        user_mods_dir.with_name("user_mods_MANIFEST.txt"),
+        "\n".join(manifest) + "\n",
+    )
+
+    return user_mods_dir
+
+
+def _backup_full_tracked_tree(base_cmd: list[str], work_tree: Path, backup_root: Path) -> Path | None:
+    out = _git_check(base_cmd + ["ls-files", "-z"], timeout=60)
+    files = [x for x in out.split("\0") if x]
+
+    if not files:
+        return None
+
+    full_dir = backup_root / "full_tracked"
+    ensure_dir(full_dir, 0o700)
+
+    required = 0
+    for rel in files:
+        src = work_tree / rel
+        if src.exists() or src.is_symlink():
+            required += _path_copy_size(src)
+
+    if not _ensure_free_space(backup_root.parent, required, "full tracked-tree backup"):
+        raise RuntimeError("Not enough disk space for full tracked-tree backup")
+
+    count = 0
+
+    for rel in files:
+        src = work_tree / rel
+        if not (src.exists() or src.is_symlink()):
+            continue
+
+        dest = full_dir / rel
+        _copy_path_to_backup(src, dest)
+        count += 1
+
+    _write_backup_info(
+        full_dir.with_name("full_tracked_INFO.txt"),
+        [
+            "Dusky full tracked-tree backup",
+            f"Created: {now_iso()}",
+            f"Work tree: {work_tree}",
+            f"Files: {count}",
+        ],
+    )
+
+    return full_dir
+
+
+def _restore_user_mods(
+    base_cmd: list[str],
+    work_tree: Path,
+    changes: dict[str, dict[str, str]],
+    user_mods_dir: Path | None,
+    needs_merge_dir: Path,
+) -> tuple[int, int, int]:
+    if not changes or user_mods_dir is None:
+        return 0, 0, 0
+
+    restored = 0
+    merged = 0
+    deleted = 0
+
+    for path, info in changes.items():
+        status = info["status"]
+        old_mode = info["old_mode"]
+        old_oid = info["old_oid"]
+
+        backup_file = user_mods_dir / path
+        target = work_tree / path
+
+        new_mode, new_oid = _git_head_path_meta(base_cmd, path)
+        old_valid = not _is_null_oid(old_oid)
+
+        if status == "D":
+            if not new_oid:
+                deleted += 1
+                continue
+
+            if old_valid and new_oid == old_oid and new_mode == old_mode:
+                with suppress(OSError):
+                    _delete_path(target)
+                deleted += 1
+            else:
+                ensure_dir(needs_merge_dir, 0o700)
+                marker = needs_merge_dir / f"{path}.dusky_deleted"
+
+                with suppress(OSError):
+                    marker.parent.mkdir(parents=True, exist_ok=True)
+                    marker.write_text(
+                        "Tracked deletion requires manual review.\n"
+                        f"path: {path}\n"
+                        f"old_mode: {old_mode}\n"
+                        f"old_oid: {old_oid}\n"
+                        f"new_mode: {new_mode or '<absent>'}\n"
+                        f"new_oid: {new_oid or '<absent>'}\n",
+                        encoding="utf-8",
+                    )
+
+                merged += 1
+
+            continue
+
+        if not (backup_file.exists() or backup_file.is_symlink()):
+            continue
+
+        safe = False
+
+        if old_valid:
+            if new_oid == old_oid and new_mode == old_mode:
+                safe = True
+        elif not new_oid:
+            safe = True
+
+        if safe:
+            try:
+                _atomic_copy_file(backup_file, target)
+                restored += 1
+            except OSError:
+                ensure_dir(needs_merge_dir, 0o700)
+                dest = needs_merge_dir / path
+                with suppress(OSError):
+                    _copy_path_to_backup(backup_file, dest)
+                merged += 1
+        else:
+            ensure_dir(needs_merge_dir, 0o700)
+            dest = needs_merge_dir / path
+            with suppress(OSError):
+                _copy_path_to_backup(backup_file, dest)
+            merged += 1
+
+    return restored, merged, deleted
+
+
+def _move_all_to_needs_merge(src_dir: Path | None, needs_merge_dir: Path) -> int:
+    if src_dir is None or not src_dir.exists():
+        return 0
+
+    ensure_dir(needs_merge_dir, 0o700)
+
+    count = 0
+
+    for src in src_dir.rglob("*"):
+        if not (src.is_file() or src.is_symlink()):
+            continue
+
+        rel = src.relative_to(src_dir)
+        dest = needs_merge_dir / rel
+
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            _copy_path_to_backup(src, dest)
+            count += 1
+        except OSError:
+            pass
+
+    return count
+
+
+def _print_update_preview(base_cmd: list[str], local_head: str, remote_head: str) -> None:
+    commits = "?"
+    files = 0
+
+    with suppress(Exception):
+        commits = _git_check(
+            base_cmd + ["rev-list", "--count", f"{local_head}..{remote_head}"],
+            timeout=30,
+        )
+
+    with suppress(Exception):
+        out = _git_check(
+            base_cmd + ["diff", "--name-only", "-z", f"{local_head}..{remote_head}"],
+            timeout=60,
+        )
+        files = len([x for x in out.split("\0") if x])
+
+    sys.stdout.write(f"[GIT] Upstream preview: {commits} commit(s), {files} file(s) changed.\n")
+
+
+def _prompt_choice(
+    lines: list[str],
+    default: str = "1",
+    assume_yes: bool = False,
+    yes_choice: str = "2",
+) -> str:
+    if assume_yes:
+        return yes_choice
+
+    if not sys.stdin.isatty():
+        return default
+
+    for line in lines:
+        sys.stdout.write(line)
+
+    sys.stdout.flush()
+
+    r, _, _ = select.select([sys.stdin], [], [], 60)
+    if r:
+        choice = sys.stdin.readline().strip()
+        return choice or default
+
+    return default
+
+
+def _fetch_upstream_main(base_cmd: list[str], remote: str) -> str:
+    last_error: Exception | None = None
+
+    for attempt in range(1, 6):
+        try:
+            _git_check(
+                base_cmd
+                + [
+                    "fetch",
+                    "--no-write-fetch-head",
+                    remote,
+                    f"+refs/heads/{GIT_UPSTREAM_BRANCH}:{GIT_UPSTREAM_REF}",
+                ],
+                timeout=90,
+            )
+            return GIT_UPSTREAM_REF
+        except Exception as e:
+            last_error = e
+            if attempt < 5:
+                wait = 2 * attempt
+                sys.stdout.write(f"[WARN] Fetch attempt {attempt}/5 failed. Retrying in {wait}s...\n")
+                time.sleep(wait)
+
+    raise RuntimeError(f"git fetch failed after 5 attempts: {last_error}")
 
 
 def validate_updated_sources(my_path: Path, wrapper_path: Path) -> None:
     compile(my_path.read_bytes(), str(my_path), "exec")
 
-    if wrapper_path.exists():
+    if wrapper_path.is_file():
         subprocess.run(
             ["bash", "-n", str(wrapper_path)],
             stdout=subprocess.DEVNULL,
@@ -2720,247 +3361,269 @@ def run_git_self_update(
 
     git_dir = resolve_home(profile.git_dir)
     work_tree = resolve_home(profile.git_work_tree)
+    base_cmd = [
+        "git",
+        "--no-optional-locks",
+        "--no-advice",
+        f"--git-dir={git_dir}",
+        f"--work-tree={work_tree}",
+    ]
 
-    if not git_dir.exists():
+    try:
+        repo_state = _git_repo_status(base_cmd, git_dir, work_tree)
+    except Exception as e:
+        sys.stderr.write(f"[WARN] Git repository check failed: {e}\n")
+        return False
+
+    if repo_state == "absent":
         sys.stdout.write(f"[WARN] Git dir not found ({git_dir}). Skipping self-update.\n")
         return False
 
-    if not _clear_stale_git_locks(git_dir):
-        return False
-
-    base_cmd = ["git", f"--git-dir={git_dir}", f"--work-tree={work_tree}"]
-
-    sys.stdout.write("[GIT] Fetching upstream updates...\n")
-    fetch_success = False
-    for attempt in range(1, 6):
-        try:
-            _git_check(base_cmd + ["fetch", profile.git_remote], timeout=90)
-            fetch_success = True
-            break
-        except Exception:
-            if attempt < 5:
-                sys.stdout.write(f"[WARN] Fetch attempt {attempt}/5 failed. Retrying in 2s...\n")
-                time.sleep(2)
-
-    if not fetch_success:
-        sys.stderr.write("[ERROR] Git fetch failed after 5 attempts. Continuing without update.\n")
+    if repo_state != "valid":
+        sys.stderr.write("[WARN] Git repository is not healthy. Skipping self-update.\n")
         return False
 
     my_path = Path(__file__).resolve()
-    wrapper_path = my_path.with_name("orchestrator.sh")
+
+    wrapper_path = my_path.with_suffix(".sh")
+    if not wrapper_path.is_file():
+        wrapper_path = my_path.with_name("orchestrator.sh")
+
+    if not my_path.is_relative_to(work_tree):
+        sys.stderr.write(
+            f"[ERROR] Running orchestrator is outside git work tree ({work_tree}). "
+            "Skipping self-update.\n"
+        )
+        return False
+
+    sys.stdout.write("[GIT] Fetching upstream updates...\n")
 
     try:
-        if not my_path.is_relative_to(work_tree):
-            sys.stderr.write(
-                f"[ERROR] Running orchestrator is outside git work tree ({work_tree}). Skipping self-update.\n"
-            )
-            return False
-
-        local_head = _git_check(base_cmd + ["rev-parse", "HEAD"])
-        remote_ref = _remote_ref(base_cmd, profile.git_remote)
+        remote_ref = _fetch_upstream_main(base_cmd, profile.git_remote)
         remote_head = _git_check(base_cmd + ["rev-parse", remote_ref])
+    except Exception as e:
+        sys.stderr.write(f"[ERROR] Git fetch failed: {e}\n")
+        sys.stderr.write("[ERROR] Continuing without update.\n")
+        return False
 
-        if local_head == remote_head:
+    try:
+        local_head = ""
+        with suppress(subprocess.CalledProcessError):
+            local_head = _git_check(base_cmd + ["rev-parse", "HEAD"])
+
+        if local_head and local_head == remote_head:
             sys.stdout.write("[GIT] Orchestrator is up to date.\n")
             return False
-
-        try:
-            merge_base = _git_check(base_cmd + ["merge-base", "HEAD", remote_head])
-        except Exception:
-            merge_base = ""
-
-        if merge_base != local_head and local_head != remote_head:
-            sys.stdout.write("\n[DIVERGED HISTORY] Local history diverges from upstream.\n")
-            sys.stdout.write("  1) Abort (keep current state) [DEFAULT]\n")
-            sys.stdout.write("  2) Reset to upstream [RECOMMENDED]\n")
-            sys.stdout.write("Choice [1-2] (default: 1): ")
-            sys.stdout.flush()
-
-            choice = "2" if assume_yes else "1"
-            if not assume_yes and sys.stdin.isatty():
-                r, _, _ = select.select([sys.stdin], [], [], 60)
-                if r:
-                    choice = sys.stdin.readline().strip()
-
-            if choice != "2":
-                sys.stdout.write("Aborting update by user request.\n")
-                return False
-
-        tracked_files: set[str] = set()
-        incoming_files: set[str] = set()
-        collisions: list[str] = []
-
-        with suppress(Exception):
-            tracked_out = _git_check(base_cmd + ["ls-files", "-z"])
-            tracked_files = {x for x in tracked_out.split("\0") if x}
-
-        with suppress(Exception):
-            incoming_out = _git_check(base_cmd + ["ls-tree", "-r", "-z", "--name-only", remote_ref])
-            incoming_files = {x for x in incoming_out.split("\0") if x}
-
-        for inc in incoming_files:
-            target_file = work_tree / inc
-            if target_file.exists() and inc not in tracked_files:
-                collisions.append(inc)
-
-        changed_files: dict[str, str] = {}
-        with suppress(Exception):
-            diff_output = _git_check(base_cmd + ["diff-index", "-z", "--raw", "--no-renames", "HEAD"])
-            if diff_output:
-                parts = diff_output.split("\0")
-                i = 0
-                while i < len(parts) - 1:
-                    meta = parts[i]
-                    path = parts[i + 1]
-                    i += 2
-                    if not meta:
-                        continue
-                    meta_tokens = meta.split()
-                    if len(meta_tokens) >= 5:
-                        old_oid = meta_tokens[2]
-                        status = meta_tokens[4][0]
-                        if status != "D":
-                            changed_files[path] = old_oid
-
-        if (changed_files or collisions) and not assume_yes:
-            sys.stdout.write("\n[LOCAL CHANGES DETECTED]\n")
-            sys.stdout.write(f"  Modified tracked files: {len(changed_files)}\n")
-            sys.stdout.write(f"  Untracked incoming collisions: {len(collisions)}\n")
-            sys.stdout.write("  1) Abort [DEFAULT]\n")
-            sys.stdout.write("  2) Backup and reset to upstream\n")
-            sys.stdout.write("Choice [1-2] (default: 1): ")
-            sys.stdout.flush()
-
-            choice = "1"
-            if sys.stdin.isatty():
-                r, _, _ = select.select([sys.stdin], [], [], 60)
-                if r:
-                    choice = sys.stdin.readline().strip()
-
-            if choice != "2":
-                sys.stdout.write("Aborting update by user request.\n")
-                return False
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_root = backups_dir() / f"dusky_backup_{timestamp}_{remote_head[:7]}"
         ensure_dir(backup_root, 0o700)
         _clean_old_backups(backups_dir(), keep=10)
 
-        with suppress(Exception):
-            _git_check(base_cmd + ["branch", f"dusky/backup/{timestamp}", local_head], timeout=30)
-
         collision_dir = backup_root / "untracked_collisions"
-        user_mods_dir = backup_root / "user_mods"
         needs_merge_dir = backup_root / "needs_merge"
 
-        def restore_collisions() -> None:
-            if not collision_dir.exists():
-                return
-            for src in collision_dir.rglob("*"):
-                if src.is_file():
-                    rel = src.relative_to(collision_dir)
-                    dest = work_tree / rel
-                    if not dest.exists():
-                        with suppress(OSError):
-                            dest.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(src, dest)
+        user_mods_dir: Path | None = None
+        full_dir: Path | None = None
+        changes: dict[str, dict[str, str]] = {}
+        destructive = False
 
-        def restore_user_mods() -> None:
-            if not user_mods_dir.exists():
-                return
-            for src in user_mods_dir.rglob("*"):
-                if src.is_file():
-                    rel = src.relative_to(user_mods_dir)
-                    dest = work_tree / rel
+        if not local_head:
+            sys.stdout.write("[GIT] Local repository has no commits. Initializing from upstream...\n")
+
+            collision_roots = _collect_incoming_collisions(base_cmd, remote_ref, work_tree)
+
+            if collision_roots:
+                choice = _prompt_choice(
+                    [
+                        "\n[UNBORN REPOSITORY]\n",
+                        f"  This will initialize the work tree from {remote_ref}.\n",
+                        f"  Untracked incoming collisions: {len(collision_roots)}\n",
+                        "  1) Abort [DEFAULT]\n",
+                        "  2) Backup collisions and initialize from upstream\n",
+                        "Choice [1-2] (default: 1): ",
+                    ],
+                    default="1",
+                    assume_yes=assume_yes,
+                    yes_choice="2",
+                )
+
+                if choice != "2":
+                    sys.stdout.write("Aborting update by user request.\n")
+                    return False
+
+            try:
+                _backup_collision_roots(work_tree, collision_roots, collision_dir)
+
+                with suppress(Exception):
+                    _git_check(
+                        base_cmd + ["symbolic-ref", "HEAD", f"refs/heads/{GIT_UPSTREAM_BRANCH}"],
+                        timeout=30,
+                    )
+
+                _git_check(base_cmd + ["reset", "--hard", remote_head], timeout=180)
+            except Exception:
+                _restore_collision_dir(collision_dir, work_tree)
+                raise
+
+            try:
+                validate_updated_sources(my_path, wrapper_path)
+            except Exception as e:
+                sys.stderr.write(f"[ERROR] Initialized orchestrator failed validation: {e}\n")
+                _restore_collision_dir(collision_dir, work_tree)
+                return False
+
+        else:
+            try:
+                merge_base = _git_check(base_cmd + ["merge-base", "HEAD", remote_head])
+            except Exception:
+                merge_base = ""
+
+            if merge_base == "":
+                _print_update_preview(base_cmd, local_head, remote_head)
+
+                choice = _prompt_choice(
+                    [
+                        "\n[UNRELATED HISTORY]\n",
+                        "  Local repository does not share history with upstream.\n",
+                        "  1) Abort (keep current state) [DEFAULT]\n",
+                        "  2) Replace local repo contents with upstream [RECOMMENDED]\n",
+                        "Choice [1-2] (default: 1): ",
+                    ],
+                    default="1",
+                    assume_yes=assume_yes,
+                    yes_choice="2",
+                )
+
+                if choice != "2":
+                    sys.stdout.write("Aborting update by user request.\n")
+                    return False
+
+                destructive = True
+
+            elif merge_base != local_head:
+                _print_update_preview(base_cmd, local_head, remote_head)
+
+                choice = _prompt_choice(
+                    [
+                        "\n[DIVERGED HISTORY]\n",
+                        "  Local history diverges from upstream.\n",
+                        "  1) Abort (keep current state) [DEFAULT]\n",
+                        "  2) Reset to upstream [RECOMMENDED]\n",
+                        "Choice [1-2] (default: 1): ",
+                    ],
+                    default="1",
+                    assume_yes=assume_yes,
+                    yes_choice="2",
+                )
+
+                if choice != "2":
+                    sys.stdout.write("Aborting update by user request.\n")
+                    return False
+
+                destructive = True
+
+            collision_roots = _collect_incoming_collisions(base_cmd, remote_ref, work_tree)
+            changes = _capture_tracked_changes(base_cmd)
+
+            if not destructive and (collision_roots or changes) and not assume_yes:
+                choice = _prompt_choice(
+                    [
+                        "\n[LOCAL CHANGES DETECTED]\n",
+                        f"  Modified tracked files: {len(changes)}\n",
+                        f"  Untracked incoming collisions: {len(collision_roots)}\n",
+                        "  1) Abort [DEFAULT]\n",
+                        "  2) Backup and reset to upstream\n",
+                        "Choice [1-2] (default: 1): ",
+                    ],
+                    default="1",
+                    assume_yes=False,
+                    yes_choice="2",
+                )
+
+                if choice != "2":
+                    sys.stdout.write("Aborting update by user request.\n")
+                    return False
+
+            try:
+                _backup_collision_roots(work_tree, collision_roots, collision_dir)
+                user_mods_dir = _backup_user_mods(work_tree, changes, backup_root)
+
+                if destructive:
+                    full_dir = _backup_full_tracked_tree(base_cmd, work_tree, backup_root)
+            except Exception:
+                _restore_collision_dir(collision_dir, work_tree)
+                raise
+
+            with suppress(Exception):
+                _git_check(base_cmd + ["branch", f"dusky/backup/{timestamp}", local_head], timeout=30)
+
+            orch_backup = backup_root / "orchestrator.py"
+            with suppress(OSError):
+                shutil.copy2(my_path, orch_backup)
+
+            sys.stdout.write(f"[GIT] Updating from {local_head[:7]} to {remote_head[:7]}...\n")
+
+            try:
+                _git_check(base_cmd + ["reset", "--hard", remote_head], timeout=180)
+            except Exception:
+                _restore_collision_dir(collision_dir, work_tree)
+                _restore_user_mods(base_cmd, work_tree, changes, user_mods_dir, needs_merge_dir)
+                raise
+
+            try:
+                validate_updated_sources(my_path, wrapper_path)
+            except Exception as e:
+                sys.stderr.write(f"[ERROR] Updated orchestrator failed validation: {e}\n")
+                sys.stdout.write("[GIT] Rolling back to previous HEAD...\n")
+
+                with suppress(Exception):
+                    _git_check(base_cmd + ["reset", "--hard", local_head], timeout=180)
+
+                if orch_backup.exists():
                     with suppress(OSError):
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(src, dest)
+                        shutil.copy2(orch_backup, my_path)
 
-        if collisions:
-            sys.stdout.write(f"[WARN] Backing up {len(collisions)} untracked work-tree collisions...\n")
-            ensure_dir(collision_dir, 0o700)
-            for coll in collisions:
-                src = work_tree / coll
-                dest = collision_dir / coll
-                with suppress(OSError):
-                    _move_to_backup(src, dest)
+                _restore_collision_dir(collision_dir, work_tree)
+                _restore_user_mods(base_cmd, work_tree, changes, user_mods_dir, needs_merge_dir)
 
-        orch_backup = backup_root / "orchestrator.py"
-        with suppress(OSError):
-            shutil.copy2(my_path, orch_backup)
+                return False
 
-        if changed_files:
-            ensure_dir(user_mods_dir, 0o700)
-            sys.stdout.write(f"[WARN] Backing up {len(changed_files)} modified tracked files...\n")
-            for path in changed_files:
-                src = work_tree / path
-                if src.exists() and src.is_file():
-                    dest = user_mods_dir / path
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    with suppress(OSError):
-                        shutil.copy2(src, dest)
+            if changes:
+                restored, merged, deleted = _restore_user_mods(
+                    base_cmd,
+                    work_tree,
+                    changes,
+                    user_mods_dir,
+                    needs_merge_dir,
+                )
 
-        sys.stdout.write(f"[GIT] Updating from {local_head[:7]} to {remote_head[:7]}...\n")
-        _git_check(base_cmd + ["reset", "--hard", remote_head], timeout=180)
+                if restored:
+                    sys.stdout.write(f"[GIT] Restored {restored} safe local edits.\n")
 
-        if changed_files:
-            sys.stdout.write("[GIT] Processing local edits...\n")
-            restored = 0
-            merged = 0
+                if deleted:
+                    sys.stdout.write(f"[GIT] Preserved {deleted} tracked deletion(s).\n")
 
-            for path, old_oid in changed_files.items():
-                backup_file = user_mods_dir / path
-                if not backup_file.exists():
-                    continue
+                if merged:
+                    sys.stdout.write(
+                        f"[WARN] {merged} local edit(s) need manual merge. Saved in: {needs_merge_dir}\n"
+                    )
 
                 try:
-                    tree_out = _git_check(base_cmd + ["ls-tree", "HEAD", "--", path])
-                    new_oid = tree_out.split()[2] if tree_out else ""
-                except Exception:
-                    new_oid = ""
+                    validate_updated_sources(my_path, wrapper_path)
+                except Exception as e:
+                    sys.stderr.write(f"[WARN] Restored local edits broke validation: {e}\n")
+                    sys.stdout.write("[GIT] Keeping pristine upstream and isolating local edits...\n")
 
-                target_file = work_tree / path
+                    _git_check(base_cmd + ["reset", "--hard", remote_head], timeout=180)
 
-                if new_oid == old_oid or not new_oid:
-                    try:
-                        target_file.parent.mkdir(parents=True, exist_ok=True)
-                        tmp_file = target_file.parent / f".{target_file.name}.dusky_tmp"
-                        shutil.copy2(backup_file, tmp_file)
-                        os.replace(tmp_file, target_file)
-                        restored += 1
-                    except OSError:
-                        ensure_dir(needs_merge_dir, 0o700)
-                        conflict_dest = needs_merge_dir / path
-                        conflict_dest.parent.mkdir(parents=True, exist_ok=True)
-                        with suppress(OSError):
-                            shutil.copy2(backup_file, conflict_dest)
-                        merged += 1
-                else:
-                    ensure_dir(needs_merge_dir, 0o700)
-                    conflict_dest = needs_merge_dir / path
-                    conflict_dest.parent.mkdir(parents=True, exist_ok=True)
-                    with suppress(OSError):
-                        shutil.copy2(backup_file, conflict_dest)
-                    merged += 1
+                    isolated = _move_all_to_needs_merge(user_mods_dir, needs_merge_dir)
+                    sys.stdout.write(f"[WARN] Isolated {isolated} local edit file(s) in: {needs_merge_dir}\n")
 
-            if restored:
-                sys.stdout.write(f"[GIT] Restored {restored} safe local edits.\n")
-            if merged:
-                sys.stdout.write(f"[WARN] {merged} files had upstream conflicts. Saved in: {needs_merge_dir}\n")
+                    validate_updated_sources(my_path, wrapper_path)
 
-        try:
-            validate_updated_sources(my_path, wrapper_path)
-        except Exception as e:
-            sys.stderr.write(f"[ERROR] Updated orchestrator failed validation: {e}\n")
-            sys.stdout.write("[GIT] Rolling back to previous HEAD...\n")
-            with suppress(Exception):
-                _git_check(base_cmd + ["reset", "--hard", local_head], timeout=180)
-            if orch_backup.exists():
-                with suppress(OSError):
-                    shutil.copy2(orch_backup, my_path)
-            restore_collisions()
-            restore_user_mods()
-            return False
+        if full_dir:
+            sys.stdout.write(f"[GIT] Full tracked-tree backup saved in: {full_dir}\n")
 
         sys.stdout.write("[GIT] Update applied. Restarting orchestrator...\n")
         sys.stdout.flush()
@@ -2972,22 +3635,31 @@ def run_git_self_update(
         if "--no-git-update" not in args:
             args.append("--no-git-update")
 
-        if wrapper_path.exists():
-            with suppress(OSError):
-                os.chmod(wrapper_path, 0o755)
-            os.execv(str(wrapper_path), [str(wrapper_path)] + args)
+        try:
+            if wrapper_path.is_file():
+                with suppress(OSError):
+                    os.chmod(wrapper_path, 0o755)
+                os.execv(str(wrapper_path), [str(wrapper_path)] + args)
 
-        os.execv(sys.executable, [sys.executable] + args)
+            os.execv(sys.executable, [sys.executable] + args)
+        except OSError as e:
+            sys.stderr.write(f"[FATAL] Failed to restart orchestrator after update: {e}\n")
+            sys.exit(1)
+
         return True
 
     except subprocess.CalledProcessError as e:
         stderr = ""
         if e.stderr:
             stderr = str(e.stderr).strip()
+
         sys.stderr.write(f"[WARN] Git operation failed: {e}\n")
+
         if stderr:
             sys.stderr.write(stderr + "\n")
+
         return False
+
     except Exception as e:
         sys.stderr.write(f"[WARN] Git update failed: {e}\n")
         return False
