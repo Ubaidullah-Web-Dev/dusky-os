@@ -3369,6 +3369,7 @@ def run_git_self_update(
     update_only: bool = False,
     offline: bool = False,
     assume_yes: bool = False,
+    preserve_profile: bool = False,
 ) -> bool:
     if offline or not profile.git_enabled:
         return False
@@ -3438,6 +3439,8 @@ def run_git_self_update(
             args = [a for a in sys.argv[1:] if a != "--git-update-only"]
             if "--no-git-update" not in args:
                 args.append("--no-git-update")
+            if preserve_profile and profile and not any(a == "--profile" or a.startswith("--profile=") or a == "-p" for a in args):
+                args.extend(["--profile", profile.filepath.stem])
 
             try:
                 if wrapper_path.is_file():
@@ -3710,6 +3713,8 @@ def run_git_self_update(
         args = [a for a in sys.argv[1:] if a != "--git-update-only"]
         if "--no-git-update" not in args:
             args.append("--no-git-update")
+        if preserve_profile and profile and not any(a == "--profile" or a.startswith("--profile=") or a == "-p" for a in args):
+            args.extend(["--profile", profile.filepath.stem])
 
         try:
             if wrapper_path.is_file():
@@ -5951,6 +5956,46 @@ def main() -> None:
         store.close()
         sys.exit(0)
 
+    git_check_profile: ProfileConfig | None = None
+    if args.profile:
+        if args.profile.isdigit():
+            idx = int(args.profile) - 1
+            if 0 <= idx < len(profiles):
+                git_check_profile = profiles[idx]
+        else:
+            for p in profiles:
+                if p.name == args.profile or p.filepath.stem == args.profile:
+                    git_check_profile = p
+                    break
+    else:
+        for p in profiles:
+            if p.git_enabled:
+                git_check_profile = p
+                break
+        if git_check_profile is None and profiles:
+            git_check_profile = profiles[0]
+
+    if args.git_update_only:
+        if git_check_profile:
+            run_git_self_update(
+                git_check_profile,
+                update_only=True,
+                offline=args.offline,
+                assume_yes=args.yes,
+                preserve_profile=bool(args.profile),
+            )
+        sys.exit(0)
+
+    if not args.no_git_update and not args.offline:
+        if git_check_profile and run_git_self_update(
+            git_check_profile,
+            update_only=False,
+            offline=False,
+            assume_yes=args.yes,
+            preserve_profile=bool(args.profile),
+        ):
+            sys.exit(0)
+
     selected_profile: ProfileConfig | None = None
 
     if args.profile:
@@ -5995,24 +6040,6 @@ def main() -> None:
         if not acquire_lock():
             sys.exit(1)
         locked = True
-
-    if args.git_update_only:
-        run_git_self_update(
-            selected_profile,
-            update_only=True,
-            offline=args.offline,
-            assume_yes=args.yes,
-        )
-        sys.exit(0)
-
-    if not args.no_git_update and not args.offline:
-        if run_git_self_update(
-            selected_profile,
-            update_only=False,
-            offline=False,
-            assume_yes=args.yes,
-        ):
-            sys.exit(0)
 
     if not resolve_and_validate_manifest(selected_profile):
         Console(stderr=True).print("[bold red]Manifest validation failed.[/bold red]")
