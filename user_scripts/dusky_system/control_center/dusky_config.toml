@@ -1179,7 +1179,7 @@ icon = "audio-speakers-symbolic"
 button_text = "Switch"
 [pages.layout.items.on_press]
 type = "exec"
-command = "$HOME/user_scripts/audio/audio_switch.sh"
+command = "$HOME/user_scripts/audio/dusky_output.sh"
 terminal = false
 
 [[pages.layout.items]]
@@ -1191,7 +1191,7 @@ icon = "microphone-sensitivity-high-symbolic"
 button_text = "Switch"
 [pages.layout.items.on_press]
 type = "exec"
-command = "$HOME/user_scripts/audio/mic_switch.sh"
+command = "$HOME/user_scripts/audio/dusky_input.sh"
 terminal = false
 
 
@@ -2005,7 +2005,7 @@ style = "suggested"
 button_text = "Run"
 [pages.layout.items.layout.items.on_press]
 type = "exec"
-command = "kitty --class 035_configure_hyprland_gpu.py --hold sh -c \"python3 $HOME/user_scripts/arch_setup_scripts/scripts/035_configure_hyprland_gpu.py\""
+command = "kitty --class 383_configure_hyprland_gpu.py --hold sh -c \"python3 $HOME/user_scripts/arch_setup_scripts/scripts/383_configure_hyprland_gpu.py\""
 
 [[pages.layout.items.layout]]
 type = "section"
@@ -2155,7 +2155,7 @@ button_text = "TUI"
 style = "suggested"
 [pages.layout.items.layout.items.properties.buttons.on_press]
 type = "exec"
-command = "kitty --class dusky_workspace_manager.sh --hold sh -c \"$HOME/user_scripts/hypr/dusky_workspace_manager.sh\""
+command = "foot --app-id=dusky_tui --hold $HOME/user_scripts/dusky_tui/python/main/main.py $HOME/user_scripts/hypr/rules/tui_workspace_rules.py"
 
 [[pages.layout.items.layout.items]]
 type = "button"
@@ -2639,7 +2639,7 @@ icon = "microphone-sensitivity-high-symbolic"
 button_text = "Install"
 [pages.layout.items.on_press]
 type = "exec"
-command = "kitty --class parakeet_installer.sh --hold sh -c \"$HOME/user_scripts/tts_stt/dusky_parakeet/parakeet_installer.sh\""
+command = "kitty --class dusky_installer.py --hold sh -c \"python3 $HOME/user_scripts/tts_stt/dusky_parakeet/dusky_installer.py\""
 terminal = false
 
 
@@ -3145,7 +3145,7 @@ icon = "application-x-executable-symbolic"
 button_text = "Reset"
 [pages.layout.items.on_press]
 type = "exec"
-command = "kitty --class 020_desktop_apps_username_setter.sh --hold sh -c \"$HOME/user_scripts/arch_setup_scripts/scripts/020_desktop_apps_username_setter.sh\""
+command = "kitty --class 020_desktop_entries.py --hold sh -c \"python3 $HOME/user_scripts/arch_setup_scripts/scripts/020_desktop_entries.py\""
 terminal = false
 
 [[pages.layout.items]]
@@ -3188,25 +3188,13 @@ terminal = false
 [[pages.layout.items]]
 type = "button"
 [pages.layout.items.properties]
-title = "Fix Waypaper"
-description = "Reset wallpaper configuration"
-icon = "image-x-generic-symbolic"
-button_text = "Reset"
-[pages.layout.items.on_press]
-type = "exec"
-command = "kitty --class 170_waypaper_config_reset.sh --hold sh -c \"$HOME/user_scripts/arch_setup_scripts/scripts/170_waypaper_config_reset.sh\""
-terminal = false
-
-[[pages.layout.items]]
-type = "button"
-[pages.layout.items.properties]
 title = "Reset Animations"
 description = "Restore default animation settings"
 icon = "media-playlist-shuffle-symbolic"
 button_text = "Reset"
 [pages.layout.items.on_press]
 type = "exec"
-command = "kitty --class 175_animation_default.sh --hold sh -c \"$HOME/user_scripts/arch_setup_scripts/scripts/175_animation_default.sh\""
+command = "kitty --class 006_animation_default.sh --hold sh -c \"$HOME/user_scripts/arch_setup_scripts/scripts/006_animation_default.sh\""
 terminal = false
 
 [[pages.layout.items]]
