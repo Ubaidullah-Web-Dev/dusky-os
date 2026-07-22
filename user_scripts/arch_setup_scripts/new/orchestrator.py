@@ -1719,12 +1719,15 @@ RichLog {{
     border: none;
     background: {p['bg']};
     color: {p['fg']};
-    scrollbar-size: 1 1;
+    scrollbar-size-vertical: 1;
+    scrollbar-size-horizontal: 0;
 }}
 
 Tree {{
     background: {p['bg']};
     color: {p['fg']};
+    scrollbar-size-vertical: 1;
+    scrollbar-size-horizontal: 0;
 }}
 
 TaskSearchScreen, ConflictModalScreen, ManualModalScreen, SudoPasswordScreen, ConfirmQuitScreen, HelpScreen, LogSearchScreen, FailureSummaryScreen {{
@@ -1747,10 +1750,26 @@ TaskSearchScreen, ConflictModalScreen, ManualModalScreen, SudoPasswordScreen, Co
     color: {p['fg']};
 }}
 
-#modal_dialog, #manual_dialog, #sudo_dialog, #confirm_dialog, #help_dialog, #summary_dialog {{
+* {{
+    scrollbar-size-vertical: 1;
+    scrollbar-size-horizontal: 0;
+    scrollbar-color: {p['muted']} {p['bg']};
+    scrollbar-color-hover: {p['accent']} {p['bg']};
+    scrollbar-color-active: {p['accent']} {p['bg']};
+}}
+
+#modal_dialog, #manual_dialog, #sudo_dialog, #help_dialog, #summary_dialog {{
     width: 90;
     height: auto;
     background: {p['bg']};
+    padding: 1 2;
+}}
+
+#confirm_dialog {{
+    width: 56;
+    height: auto;
+    background: {p['bg']};
+    border: solid {p['error']};
     padding: 1 2;
 }}
 
@@ -1815,8 +1834,49 @@ Button {{
     height: 1;
     min-width: 16;
     border: none;
+    outline: none;
     margin: 0 1;
     padding: 0;
+    text-style: bold;
+}}
+
+Button:focus {{
+    border: none;
+    outline: none;
+}}
+
+Button.-primary {{
+    background: {p['muted']};
+    color: {p['fg']};
+    border: none;
+}}
+
+Button.-primary:focus {{
+    background: {p['accent']};
+    color: {p['bg']};
+    border: none;
+}}
+
+Button.-primary:hover {{
+    background: {p['accent']};
+    color: {p['bg']};
+}}
+
+Button.-error {{
+    background: {p['error']};
+    color: {p['bg']};
+    border: none;
+}}
+
+Button.-error:focus {{
+    background: {p['error']};
+    color: {p['bg']};
+    border: none;
+}}
+
+Button.-error:hover {{
+    background: {p['fg']};
+    color: {p['bg']};
 }}
 
 Input {{
@@ -4097,59 +4157,71 @@ class SudoPasswordScreen(ModalScreen[bool]):
 
 
 class ConfirmQuitScreen(ModalScreen[str]):
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("y,a,enter", "confirm_abort", "Abort"),
+        Binding("n,c,q", "cancel", "Cancel"),
+    ]
 
     def compose(self) -> ComposeResult:
         with Container(id="confirm_dialog"):
-            yield Static(f"{S('failed')} Abort Orchestrator?", id="confirm_title")
-            yield Static("This will terminate the active sequence.", id="confirm_text")
+            yield Static(f"{S('failed')}  ABORT ORCHESTRATOR?", id="confirm_title")
+            yield Static("Are you sure you want to terminate the active sequence?", id="confirm_text")
             with Horizontal(id="button_bar"):
-                yield Button("Abort [A]", variant="error", id="btn_abort")
-                yield Button("Cancel [C]", variant="primary", id="btn_cancel")
+                yield Button("Cancel [N/C]", variant="primary", id="btn_cancel")
+                yield Button("Abort [Y/A]", variant="error", id="btn_abort")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss("abort" if event.button.id == "btn_abort" else "cancel")
 
     def on_key(self, event: events.Key) -> None:
         key = event.key.lower()
-        if key == "a":
+        if key in ("a", "y", "enter", "space"):
             self.dismiss("abort")
-        elif key in ("c", "escape", "q"):
+        elif key in ("c", "n", "escape", "q"):
             self.dismiss("cancel")
+
+    def action_confirm_abort(self) -> None:
+        self.dismiss("abort")
 
     def action_cancel(self) -> None:
         self.dismiss("cancel")
 
 
 class HelpScreen(ModalScreen[None]):
-    BINDINGS = [Binding("escape", "dismiss", "Dismiss")]
+    BINDINGS = [
+        Binding("escape", "dismiss", "Dismiss"),
+        Binding("f1", "dismiss", "Dismiss"),
+        Binding("question_mark", "dismiss", "Dismiss"),
+    ]
 
     def compose(self) -> ComposeResult:
         with Container(id="help_dialog"):
-            yield Static(f"{S('logo')} Dusky Orchestrator Help", id="help_title")
+            yield Static(f"{S('logo')} Dusky Orchestrator Keybindings & Help", id="help_title")
 
             text = Text()
-            text.append("Global Keys\n", style="bold")
-            text.append("  Ctrl+F   Search tasks\n")
-            text.append("  Ctrl+L   Search current log\n")
-            text.append("  Ctrl+Q   Quit / abort\n")
-            text.append("  F        Cycle task filter\n")
-            text.append("  ?        Help\n\n")
+            text.append("Global Navigation & Shortcuts\n", style="bold cyan")
+            text.append("  F1 / ?         Open this Help screen\n")
+            text.append("  Ctrl+F         Fuzzy search tasks\n")
+            text.append("  Ctrl+L         Search current execution log\n")
+            text.append("  F              Cycle filter (all/pending/running/completed/failed/skipped)\n")
+            text.append("  q / Esc / Ctrl+Q / Ctrl+Z   Quit / Abort confirmation dialog\n\n")
 
-            text.append("During Task Execution\n", style="bold")
-            text.append("  Keys are forwarded to the running task.\n")
-            text.append("  Ctrl+F opens search without stopping the task.\n")
-            text.append("  Ctrl+L searches logs without stopping the task.\n")
-            text.append("  Ctrl+Q aborts immediately.\n\n")
+            text.append("Pane Resizing & Layout\n", style="bold cyan")
+            text.append("  Alt+Right / Alt+L / ]  Expand left sidebar width\n")
+            text.append("  Alt+Left / Alt+H / [   Shrink left sidebar width\n")
+            text.append("  Mouse Drag     Click and drag split border left or right\n\n")
 
-            text.append("Interactive Tasks\n", style="bold")
-            text.append("  The TUI suspends and gives the task full control.\n")
-            text.append("  When the task exits, the TUI returns.\n")
+            text.append("Tree & Item Selection\n", style="bold cyan")
+            text.append("  j / k or Up/Down       Navigate tasks in left sidebar\n")
+            text.append("  Enter                  Select task and open task log view\n")
+            text.append("  y / a                  Confirm / Abort in modal dialogs\n")
+            text.append("  n / c / Esc            Cancel in modal dialogs\n")
 
             yield Static(text)
 
             with Horizontal(id="button_bar"):
-                yield Button("Close", variant="primary", id="btn_close")
+                yield Button("Close [Esc/F1]", variant="primary", id="btn_close")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(None)
@@ -4284,12 +4356,19 @@ class DuskyOrchestratorApp(App):
         Binding("q", "request_quit", "Quit", priority=True),
         Binding("escape", "request_quit", "Quit", priority=True),
         Binding("ctrl+z", "request_quit", "Quit", priority=True),
+        Binding("f1", "help", "Help", priority=True),
+        Binding("question_mark", "help", "Help"),
+        Binding("f", "cycle_filter", "Filter"),
+        Binding("alt+left", "shrink_left_pane", "Shrink Sidebar", priority=True),
+        Binding("alt+right", "expand_left_pane", "Expand Sidebar", priority=True),
+        Binding("alt+h", "shrink_left_pane", "Shrink Sidebar", priority=True),
+        Binding("alt+l", "expand_left_pane", "Expand Sidebar", priority=True),
         Binding("ctrl+left", "shrink_left_pane", "Shrink Sidebar", priority=True),
         Binding("ctrl+right", "expand_left_pane", "Expand Sidebar", priority=True),
         Binding("bracketleft", "shrink_left_pane", "Shrink Sidebar"),
         Binding("bracketright", "expand_left_pane", "Expand Sidebar"),
-        Binding("f", "cycle_filter", "Filter"),
-        Binding("question_mark", "help", "Help"),
+        Binding("j", "tree_down", "Tree Down"),
+        Binding("k", "tree_up", "Tree Up"),
     ]
 
     def __init__(
@@ -4533,20 +4612,52 @@ class DuskyOrchestratorApp(App):
             self.query_one("#left_pane").styles.width = f"{self.left_pane_width}%"
             self.query_one("#right_pane").styles.width = f"{100 - self.left_pane_width}%"
 
+    def _update_pane_width_from_mouse(self, mouse_screen_x: int) -> None:
+        with suppress(Exception):
+            dashboard = self.query_one("#main_dashboard")
+            dash_x = dashboard.region.x
+            dash_w = dashboard.region.width
+            if dash_w > 0:
+                rel_x = mouse_screen_x - dash_x
+                pct = int(rel_x * 100 / dash_w)
+                self._set_pane_widths(pct)
+
     def action_shrink_left_pane(self) -> None:
         self._set_pane_widths(self.left_pane_width - 4)
 
     def action_expand_left_pane(self) -> None:
         self._set_pane_widths(self.left_pane_width + 4)
 
+    def action_tree_down(self) -> None:
+        with suppress(Exception):
+            self.tree_widget.action_cursor_down()
+
+    def action_tree_up(self) -> None:
+        with suppress(Exception):
+            self.tree_widget.action_cursor_up()
+
     def on_mouse_down(self, event: events.MouseDown) -> None:
         if isinstance(self.screen, ModalScreen):
             return
-        width = self.size.width
-        if width > 0:
-            click_pct = int(event.x * 100 / width)
-            if abs(click_pct - self.left_pane_width) <= 5:
-                self._set_pane_widths(click_pct)
+        with suppress(Exception):
+            dashboard = self.query_one("#main_dashboard")
+            dash_x = dashboard.region.x
+            dash_w = dashboard.region.width
+            if dash_w > 0:
+                current_split_x = dash_x + int(dash_w * self.left_pane_width / 100)
+                if abs(event.screen_x - current_split_x) <= 6:
+                    self._is_dragging_pane = True
+                    self._update_pane_width_from_mouse(event.screen_x)
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if getattr(self, "_is_dragging_pane", False):
+            if event.button == 0:
+                self._is_dragging_pane = False
+            else:
+                self._update_pane_width_from_mouse(event.screen_x)
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        self._is_dragging_pane = False
 
     def action_request_quit(self) -> None:
         if isinstance(self.screen, ConfirmQuitScreen):
