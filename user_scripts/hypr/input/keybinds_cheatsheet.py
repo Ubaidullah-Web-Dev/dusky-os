@@ -1,20 +1,21 @@
 #!/usr/bin/env python3.14
 """
 ==============================================================================
-  DUSKY · Hyprland Keybinds Cheatsheet
-  Python 3.14.6+  ·  Catppuccin Mocha  ·  Arch Linux  ·  Hyprland
-==============================================================================
-  Glance window: any key dismisses  ·  Designed for kitty / floating rule
+Description: Dusky Keybinds Cheatsheet
+Language:    Python 3.14.6+ (Native Generics, Type Aliases, Match Statements)
+Design:      Dynamic Matugen Palette, Accurate Color Legend Matching
 ==============================================================================
 """
 
 from __future__ import annotations
 
+import json
 import sys
 import termios
 import tty
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Final
 
 from rich import box
@@ -31,59 +32,56 @@ if sys.version_info < (3, 14):
         f"│ FATAL │ Python 3.14+ required  ·  running {sys.version.split()[0]}"
     )
 
-# ── palette · Catppuccin Mocha (exact upstream hex) ─────────────────────────
-class Mocha:
-    ROSEWATER = "#f5e0dc"
-    FLAMINGO  = "#f2cdcd"
-    PINK      = "#f5c2e7"
-    MAUVE     = "#cba6f7"
-    RED       = "#f38ba8"
-    MAROON    = "#eba0ac"
-    PEACH     = "#fab387"
-    YELLOW    = "#f9e2af"
-    GREEN     = "#a6e3a1"
-    TEAL      = "#94e2d5"
-    SKY       = "#89dceb"
-    SAPPHIRE  = "#74c7ec"
-    BLUE      = "#89b4fa"
-    LAVENDER  = "#b4befe"
-    TEXT      = "#cdd6f4"
-    SUBTEXT1  = "#bac2de"
-    SUBTEXT0  = "#a6adc8"
-    OVERLAY2  = "#9399b2"
-    OVERLAY1  = "#7f849c"
-    OVERLAY0  = "#6c7086"
-    SURFACE2  = "#585b70"
-    SURFACE1  = "#45475a"
-    SURFACE0  = "#313244"
-    BASE      = "#1e1e2e"
-    MANTLE    = "#181825"
-    CRUST     = "#11111b"
+# ── Matugen Dynamic Palette Integration ──────────────────────────────────────
+MATUGEN_PATH: Final[Path] = Path.home() / ".config/matugen/generated/dusky_tui.json"
 
 
-C = Mocha  # short alias used everywhere below
+class Palette:
+    BG: str       = "#1d100a"
+    FG: str       = "#f8ddd2"
+    ACCENT: str   = "#ffb694"
+    ERROR: str    = "#ffb4ab"
+    WARNING: str  = "#efbc94"
+    SUCCESS: str  = "#f0be79"
+    MUTED: str    = "#c8b0a6"
+
+    @classmethod
+    def load(cls) -> None:
+        if MATUGEN_PATH.exists():
+            try:
+                data = json.loads(MATUGEN_PATH.read_text(encoding="utf-8"))
+                cls.BG = data.get("bg", cls.BG)
+                cls.FG = data.get("fg", cls.FG)
+                cls.ACCENT = data.get("accent", cls.ACCENT)
+                cls.ERROR = data.get("error", cls.ERROR)
+                cls.WARNING = data.get("warning", cls.WARNING)
+                cls.SUCCESS = data.get("success", cls.SUCCESS)
+                cls.MUTED = cls.FG
+            except Exception:
+                pass
+
+
+Palette.load()
+C = Palette  # short alias used everywhere below
+
 
 # ── domain ──────────────────────────────────────────────────────────────────
 class Tag(StrEnum):
-    PRIMARY = "primary"
     ACCENT  = "accent"
-    DANGER  = "danger"
-    WARNING = "warning"
-    INFO    = "info"
     SUCCESS = "success"
+    WARNING = "warning"
+    DANGER  = "danger"
     MUTED   = "muted"
 
 
 def tag_fg(tag: Tag) -> str:
-    """Python 3.14 structural match → foreground colour."""
+    """Python 3.14 structural match → Matugen foreground colour."""
     match tag:
-        case Tag.PRIMARY: return C.BLUE
-        case Tag.ACCENT:  return C.MAUVE
-        case Tag.DANGER:  return C.RED
-        case Tag.WARNING: return C.PEACH
-        case Tag.INFO:    return C.SKY
-        case Tag.SUCCESS: return C.GREEN
-        case Tag.MUTED:   return C.SUBTEXT0
+        case Tag.ACCENT:  return C.ACCENT
+        case Tag.SUCCESS: return C.SUCCESS
+        case Tag.WARNING: return C.WARNING
+        case Tag.DANGER:  return C.ERROR
+        case Tag.MUTED:   return C.FG
 
 
 MODS: Final[frozenset[str]] = frozenset({
@@ -95,8 +93,7 @@ MODS: Final[frozenset[str]] = frozenset({
 class Bind:
     keys: tuple[str, ...]
     action: str
-    tag: Tag = Tag.PRIMARY
-    ctx: str = ""          # short context / backend tool
+    tag: Tag = Tag.ACCENT
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,132 +109,123 @@ CATALOGUE: Final[tuple[Category, ...]] = (
     Category(
         title="LAUNCHERS  &  SEARCH",
         icon="󰀻",
-        accent=C.BLUE,
+        accent=C.ACCENT,
         binds=(
-            Bind(("SUPER", "Q"),             "Launch Terminal",         Tag.PRIMARY, "kitty"),
-            Bind(("SUPER", "W"),             "Launch Web Browser",      Tag.PRIMARY, "Zen · Firefox"),
-            Bind(("SUPER", "E"),             "Launch File Manager",     Tag.PRIMARY, "Thunar · Yazi"),
-            Bind(("SUPER", "R"),             "Open Text Editor",        Tag.PRIMARY, "Neovim · VSCode"),
-            Bind(("ALT", "SPACE"),           "App Launcher / Search",   Tag.ACCENT,  "Rofi dmenu"),
-            Bind(("SUPER", "SPACE"),         "System Quick Menu",       Tag.ACCENT,  "Rofi system"),
-            Bind(("SUPER", "V"),             "Clipboard Manager",       Tag.INFO,    "history & paste"),
-            Bind(("SUPER", "G"),             "Image Search & Lens",     Tag.INFO,    "select → search"),
-            Bind(("SUPER", "CTRL", "SPACE"), "Emoji Picker & Insert",   Tag.ACCENT,  "Rofi emoji"),
+            Bind(("SUPER", "Q"),             "Launch Terminal",         Tag.ACCENT),
+            Bind(("SUPER", "W"),             "Launch Web Browser",      Tag.ACCENT),
+            Bind(("SUPER", "E"),             "Launch File Manager",     Tag.ACCENT),
+            Bind(("SUPER", "R"),             "Open Text Editor",        Tag.ACCENT),
+            Bind(("ALT", "SPACE"),           "App Launcher & Search",   Tag.SUCCESS),
+            Bind(("SUPER", "SPACE"),         "System Quick Menu",       Tag.SUCCESS),
+            Bind(("SUPER", "V"),             "Clipboard Manager",       Tag.ACCENT),
+            Bind(("SUPER", "G"),             "Image Search & Lens",     Tag.SUCCESS),
+            Bind(("SUPER", "CTRL", "SPACE"), "Emoji Picker & Insert",   Tag.SUCCESS),
         ),
     ),
     Category(
         title="WINDOW  TILING  &  POSITION",
         icon="󰝣",
-        accent=C.GREEN,
+        accent=C.SUCCESS,
         binds=(
-            Bind(("SUPER", "C"),                   "Close Focused Window",  Tag.DANGER,  "kill active"),
-            Bind(("SUPER", "A"),                   "Toggle Fullscreen",     Tag.WARNING, "monocle"),
-            Bind(("SUPER", "D"),                   "Toggle Smart Float",    Tag.INFO,    "floating"),
-            Bind(("SUPER", "Y"),                   "Toggle Window Split",   Tag.INFO,    "vert · horiz"),
-            Bind(("SUPER", "X"),                   "Pin Window (Sticky)",   Tag.INFO,    "all workspaces"),
-            Bind(("SUPER", "SHIFT", "A"),          "Maximize Window",       Tag.WARNING, "fill screen"),
-            Bind(("SUPER", "H  J  K  L"),          "Focus Directionally",   Tag.MUTED,   "vim keys"),
-            Bind(("SUPER", "SHIFT", "H  J  K  L"), "Move Window Position",  Tag.MUTED,   "swap tile"),
-            Bind(("SUPER", "DRAG"),                "Move or Resize Window", Tag.MUTED,   "LMB · RMB"),
+            Bind(("SUPER", "C"),                "Close Focused Window",   Tag.DANGER),
+            Bind(("SUPER", "A"),                "Toggle Fullscreen",      Tag.WARNING),
+            Bind(("SUPER", "D"),                "Toggle Smart Float",     Tag.ACCENT),
+            Bind(("SUPER", "Y"),                "Toggle Window Split",    Tag.ACCENT),
+            Bind(("SUPER", "X"),                "Pin Window (Sticky)",    Tag.ACCENT),
+            Bind(("SUPER", "SHIFT", "A"),       "Maximize Window",        Tag.WARNING),
+            Bind(("SUPER", "H/J/K/L"),          "Focus Directionally",    Tag.MUTED),
+            Bind(("SUPER", "SHIFT", "H/J/K/L"), "Move Window Position",   Tag.MUTED),
+            Bind(("SUPER", "DRAG"),             "Move / Resize Window",   Tag.MUTED),
         ),
     ),
     Category(
         title="WORKSPACES  &  NAVIGATION",
         icon="󰽙",
-        accent=C.MAUVE,
+        accent=C.WARNING,
         binds=(
-            Bind(("SUPER", "1 … 9"),           "Switch Workspace 1–9",    Tag.PRIMARY, "direct jump"),
-            Bind(("SUPER", "SHIFT", "1 … 9"),  "Move Window → WS 1–9",    Tag.WARNING, "take tile"),
-            Bind(("SUPER", "ALT", "1 … 9"),    "Silent Move → WS",        Tag.MUTED,   "background"),
-            Bind(("SUPER", "TAB"),             "Last Active Workspace",   Tag.ACCENT,  "quick toggle"),
-            Bind(("SUPER", "Z"),               "Toggle Scratchpad",       Tag.ACCENT,  "dropdown term"),
-            Bind(("SUPER", "SHIFT", "Z"),      "Send to Scratchpad",      Tag.WARNING, "hide window"),
-            Bind(("SUPER", "SHIFT", "M"),      "Special Spotify WS",      Tag.INFO,    "music space"),
-            Bind(("SUPER", "SCROLL"),          "Cycle Workspaces",        Tag.MUTED,   "wheel ↑ ↓"),
-            Bind(("SUPER", "SHIFT", "TAB"),    "Cycle Next Workspace",    Tag.ACCENT,  "ws sequence"),
+            Bind(("SUPER", "1..9"),          "Switch Workspace 1–9",     Tag.ACCENT),
+            Bind(("SUPER", "SHIFT", "1..9"),   "Move Window to WS 1–9",    Tag.WARNING),
+            Bind(("SUPER", "ALT", "1..9"),     "Silent Move Window to WS", Tag.MUTED),
+            Bind(("SUPER", "TAB"),             "Last Active Workspace",    Tag.SUCCESS),
+            Bind(("SUPER", "Z"),               "Toggle Scratchpad",        Tag.SUCCESS),
+            Bind(("SUPER", "SHIFT", "Z"),      "Send to Scratchpad",       Tag.WARNING),
+            Bind(("SUPER", "SHIFT", "M"),      "Special Spotify WS",       Tag.ACCENT),
+            Bind(("SUPER", "SCROLL"),          "Cycle Workspaces",         Tag.MUTED),
+            Bind(("SUPER", "SHIFT", "TAB"),    "Cycle Next Workspace",     Tag.SUCCESS),
         ),
     ),
     Category(
         title="SYSTEM  ·  TOOLS  ·  CONTROLS",
         icon="󰒓",
-        accent=C.YELLOW,
+        accent=C.ERROR,
         binds=(
-            Bind(("SUPER", "M"),             "Lock Screen",             Tag.DANGER,  "hyprlock"),
-            Bind(("ALT", "F4"),              "Power & Logout Menu",     Tag.DANGER,  "session"),
-            Bind(("CTRL", "SHIFT", "ESC"),   "Activity Monitor",        Tag.INFO,    "btop TUI"),
-            Bind(("SUPER", "S"),             "Quick Screenshot",        Tag.ACCENT,  "grim · slurp"),
-            Bind(("SUPER", "SHIFT", "S"),    "Screenshot & Annotate",   Tag.ACCENT,  "swappy area"),
-            Bind(("SUPER", "B"),             "Color Picker",            Tag.INFO,    "hyprpicker"),
-            Bind(("SUPER", "ALT", "O"),      "AI · Ollama Chat TUI",    Tag.PRIMARY, "terminal LLM"),
-            Bind(("ALT", "1  2  3"),         "Wi-Fi · BT · Audio TUI",  Tag.MUTED,   "system TUIs"),
-            Bind(("SUPER", "SHIFT", "R"),    "Reload Hyprland Config",  Tag.DANGER,  "hot reload"),
+            Bind(("SUPER", "M"),             "Lock Screen",             Tag.DANGER),
+            Bind(("ALT", "F4"),              "Power & Logout Menu",     Tag.DANGER),
+            Bind(("CTRL", "SHIFT", "ESC"),   "Activity Monitor",        Tag.ACCENT),
+            Bind(("SUPER", "S"),             "Quick Screenshot",        Tag.SUCCESS),
+            Bind(("SUPER", "SHIFT", "S"),    "Screenshot & Annotate",   Tag.SUCCESS),
+            Bind(("SUPER", "B"),             "Color Picker",            Tag.ACCENT),
+            Bind(("SUPER", "ALT", "O"),      "AI Ollama Chat TUI",      Tag.ACCENT),
+            Bind(("ALT", "1 / 2 / 3"),       "Wi-Fi / BT / Audio TUI",  Tag.MUTED),
+            Bind(("SUPER", "SHIFT", "R"),    "Reload Hyprland Config",  Tag.DANGER),
         ),
     ),
 )
 
 
 # ── pure render helpers ─────────────────────────────────────────────────────
-def _pill(token: str) -> Text:
-    """Single tactile keycap."""
+def _pill(token: str, cat_accent: str) -> Text:
+    """Concise keycap token using Matugen colors."""
     bare = token.strip()
     out = Text()
     if bare in MODS:
-        # recessed modifier / gesture
-        out.append(f" {bare} ", style=f"bold {C.TEXT} on {C.SURFACE0}")
-    elif any(ch in bare for ch in ("…", "–", "  ")):
-        # range or chord-cluster — warm so it reads as “family of keys”
-        out.append(f" {bare} ", style=f"bold {C.YELLOW} on {C.BASE}")
+        out.append(f"{bare}", style=f"bold {C.FG}")
+    elif any(ch in bare for ch in ("..", "/", "1..9")):
+        out.append(f"{bare}", style=f"bold {C.WARNING}")
     else:
-        # primary alphanumeric
-        out.append(f" {bare} ", style=f"bold {C.BLUE} on {C.SURFACE0}")
+        out.append(f"{bare}", style=f"bold {cat_accent}")
     return out
 
 
-def chord(keys: tuple[str, ...]) -> Text:
+def chord(keys: tuple[str, ...], cat_accent: str) -> Text:
     """Keycaps joined by a delicate +."""
     line = Text()
     for i, k in enumerate(keys):
         if i:
-            line.append("+", style=f"bold {C.OVERLAY0}")
-        line.append_text(_pill(k))
+            line.append(" + ", style=f"bold {C.FG}")
+        line.append_text(_pill(k, cat_accent))
     return line
 
 
-def action_cell(b: Bind) -> Text:
-    """Status gem + colour-coded verb — intent before detail."""
+def action_cell(b: Bind, cat_accent: str) -> Text:
+    """Status gem + high-contrast verb."""
     fg = tag_fg(b.tag)
     cell = Text()
-    cell.append("●", style=fg)
-    cell.append(" ")
+    cell.append("● ", style=fg)
     cell.append(b.action, style=f"bold {fg}")
     return cell
 
 
 def build_card(cat: Category, index: int) -> Panel:
-    """One category card — 3 scannable columns, zebra rows, no noise."""
+    """One category card — 2 clean columns, zero dots truncation."""
     tbl = Table(
         show_header=True,
-        header_style=f"bold {C.OVERLAY0}",
+        header_style=f"bold underline {C.FG}",
         show_edge=False,
         box=None,
         expand=True,
         pad_edge=False,
         padding=(0, 1),
-        # zebra: calm mantle wash on alternating rows
-        row_styles=["", f"on {C.MANTLE}"],
     )
-    tbl.add_column("COMBINATION", justify="left", no_wrap=True, min_width=26, ratio=5)
-    tbl.add_column("ACTION",      justify="left", no_wrap=True, min_width=22, ratio=5)
-    tbl.add_column("CONTEXT",     justify="left", no_wrap=True, min_width=12, ratio=3)
+    tbl.add_column("COMBINATION", justify="left", no_wrap=True, width=21)
+    tbl.add_column("ACTION", justify="left", no_wrap=True)
 
     for b in cat.binds:
-        ctx = Text(b.ctx, style=f"italic {C.OVERLAY1}") if b.ctx else Text("—", style=C.SURFACE1)
-        tbl.add_row(chord(b.keys), action_cell(b), ctx)
+        tbl.add_row(chord(b.keys, cat.accent), action_cell(b, cat.accent))
 
-    # title · index badge · icon · accent
     title = Text()
     title.append(f" {cat.icon} ", style=f"bold {cat.accent}")
-    title.append(f" {index:02d} ", style=f"bold {C.CRUST} on {cat.accent}")
+    title.append(f" {index:02d} ", style=f"bold {C.BG} on {cat.accent}")
     title.append(f"  {cat.title} ", style=f"bold {cat.accent}")
 
     return Panel(
@@ -251,48 +239,25 @@ def build_card(cat: Category, index: int) -> Panel:
     )
 
 
-def build_header(total: int) -> Group:
-    """Identity strip + modifier legend + bind count."""
+def build_header() -> Group:
+    """Clean centered title header."""
     brand = Text()
-    brand.append(" 󰌌 ", style=f"bold {C.CRUST} on {C.BLUE}")
-    brand.append(" DUSKY ", style=f"bold {C.CRUST} on {C.BLUE}")
-    brand.append(" KEYBINDS ", style=f"bold {C.BLUE} on {C.SURFACE0}")
-    brand.append(" · Hyprland · Arch ", style=f"{C.SUBTEXT0} on {C.SURFACE0}")
-    brand.append(f" · {total} binds ", style=f"bold {C.YELLOW} on {C.SURFACE0}")
-
-    # modifier chips with human labels — teaches the legend instantly
-    mods = Text()
-    pairs = (
-        (" SUPER ", "Win"),
-        (" ALT ",   "Alt"),
-        (" CTRL ",  "Ctrl"),
-        (" SHIFT ", "Shift"),
-        (" DRAG ",  "Mouse"),
-        (" SCROLL ", "Wheel"),
-    )
-    for i, (key, label) in enumerate(pairs):
-        if i:
-            mods.append("  ", style="")
-        mods.append(key, style=f"bold {C.TEXT} on {C.SURFACE0}")
-        mods.append(f" {label}", style=C.OVERLAY1)
+    brand.append(" 󰌌  DUSKY CHEATSHEET ", style=f"bold {C.BG} on {C.ACCENT}")
 
     return Group(
         Align.center(brand),
         Text(""),
-        Align.center(mods),
-        Text(""),
-        Rule(style=C.SURFACE1, characters="─"),
+        Rule(style=C.FG, characters="─"),
     )
 
 
 def build_legend() -> Text:
-    """Colour language key — one glance, no guessing."""
+    """Matugen color language key matching active roles."""
     items: tuple[tuple[str, Tag], ...] = (
-        ("primary", Tag.PRIMARY),
         ("accent",  Tag.ACCENT),
-        ("danger",  Tag.DANGER),
+        ("success", Tag.SUCCESS),
         ("warning", Tag.WARNING),
-        ("info",    Tag.INFO),
+        ("danger",  Tag.DANGER),
         ("muted",   Tag.MUTED),
     )
     leg = Text()
@@ -307,30 +272,28 @@ def build_legend() -> Text:
 
 def build_footer() -> Text:
     foot = Text()
-    foot.append(" press ", style=C.OVERLAY1)
-    foot.append(" any key ", style=f"bold {C.CRUST} on {C.MAUVE}")
-    foot.append(" to dismiss ", style=C.OVERLAY1)
-    foot.append(" · ", style=C.SURFACE2)
-    foot.append("q", style=f"bold {C.MAUVE}")
-    foot.append(" / ", style=C.SURFACE2)
-    foot.append("Esc", style=f"bold {C.MAUVE}")
-    foot.append(" / ", style=C.SURFACE2)
-    foot.append("Ctrl+C", style=f"bold {C.MAUVE}")
+    foot.append(" press ", style=C.FG)
+    foot.append(" any key ", style=f"bold {C.BG} on {C.ACCENT}")
+    foot.append(" to dismiss ", style=C.FG)
+    foot.append(" · ", style=C.FG)
+    foot.append("q", style=f"bold {C.ACCENT}")
+    foot.append(" / ", style=C.FG)
+    foot.append("Esc", style=f"bold {C.ACCENT}")
+    foot.append(" / ", style=C.FG)
+    foot.append("Ctrl+C", style=f"bold {C.ACCENT}")
     return foot
 
 
 def render(console: Console) -> Panel:
     """Full dashboard — responsive 2×2 or stacked."""
-    total = sum(len(c.binds) for c in CATALOGUE)
     cards = [build_card(cat, i) for i, cat in enumerate(CATALOGUE, 1)]
 
-    # outer panel steals ~6 cols (borders + padding); break a little higher
-    if console.width >= 120:
+    if console.width >= 110:
         grid = Table.grid(expand=True, padding=(0, 2))
         grid.add_column(ratio=1)
         grid.add_column(ratio=1)
         grid.add_row(cards[0], cards[1])
-        grid.add_row(Text(""), Text(""))          # vertical breath
+        grid.add_row(Text(""), Text(""))
         grid.add_row(cards[2], cards[3])
     else:
         grid = Table.grid(expand=True, padding=(0, 0))
@@ -341,11 +304,11 @@ def render(console: Console) -> Panel:
                 grid.add_row(Text(""))
 
     body = Group(
-        build_header(total),
+        build_header(),
         Text(""),
         grid,
         Text(""),
-        Rule(style=C.SURFACE1, characters="─"),
+        Rule(style=C.FG, characters="─"),
         Text(""),
         Align.center(build_legend()),
         Text(""),
@@ -359,10 +322,10 @@ def render(console: Console) -> Panel:
     )
     return Panel(
         body,
-        border_style=f"bold {C.BLUE}",
+        border_style=f"bold {C.ACCENT}",
         box=box.DOUBLE_EDGE,
         padding=(1, 2),
-        subtitle=f"[{C.OVERLAY0}]catppuccin mocha  ·  python {py}[/]",
+        subtitle=f"[{C.FG}]matugen dusky_tui  ·  python {py}[/]",
         subtitle_align="right",
     )
 
