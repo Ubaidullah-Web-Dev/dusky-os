@@ -78,7 +78,7 @@ hl.bind(
 )
 
 hl.bind(
-    "CTRL + SHIFT + code:61",
+    "CTRL + SHIFT + SPACE",
     hl.dsp.exec_cmd("pkill rofi; " .. dusky_scripts .. "rofi/keybindings.sh"),
     { description = "Show Keybinds" }
 )
