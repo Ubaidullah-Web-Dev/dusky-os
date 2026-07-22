@@ -980,8 +980,8 @@ hl.window_rule({
 
 --- parakeet Setup ---
 hl.window_rule({
-    name = "parakeet_installer.sh",
-    match = { class = "^(parakeet_installer.sh)$" },
+    name = "dusky_installer.py",
+    match = { class = "^(dusky_installer.py)$" },
     float = true,
     pin = true,
     size = {876, 601}
