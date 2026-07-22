@@ -373,7 +373,7 @@ icon = "preferences-system-time-symbolic"
 button_text = "Configure"
 [pages.layout.items.on_press]
 type = "exec"
-command = "kitty --class dusky_tui --title \"System Region Manager\" --hold python3 $HOME/user_scripts/dusky_tui/python/main/main.py $HOME/user_scripts/locale/tui_system_region.py"
+command = "kitty --class dusky_tui --title \"System Region Manager\" --hold python3 $HOME/user_scripts/locale/tui_system_region.py"
 terminal = false
 
 [[pages.layout]]
@@ -1037,7 +1037,7 @@ icon = "video-display-symbolic"
 button_text = "Open"
 [pages.layout.items.on_press]
 type = "exec"
-command = "foot --app-id=dusky_tui --hold ~/user_scripts/dusky_tui/python/main/main.py ~/user_scripts/hypr/monitor/monitor_wizard.py"
+command = "foot --app-id=dusky_tui --hold python3 ~/user_scripts/hypr/monitor/monitor_wizard.py"
 terminal = false
 
 [[pages.layout.items]]
@@ -1544,7 +1544,7 @@ icon = "view-more-symbolic"
 button_text = "Swap"
 [pages.layout.items.on_press]
 type = "exec"
-command = "foot --app-id=waybar_tui python ~/user_scripts/dusky_tui/python/main/main.py ~/user_scripts/waybar/tui_waybars.py"
+command = "foot --app-id=waybar_tui python3 ~/user_scripts/waybar/tui_waybars.py"
 terminal = false
 
 [[pages.layout.items]]
@@ -1556,7 +1556,7 @@ icon = "preferences-system-notifications-symbolic"
 button_text = "Tweak"
 [pages.layout.items.on_press]
 type = "exec"
-command = "foot --app-id=dusky_tui --hold ~/user_scripts/dusky_tui/python/main/main.py ~/user_scripts/mako_osd/mako_tui/tui_mako.py"
+command = "foot --app-id=dusky_tui --hold python3 ~/user_scripts/mako_osd/mako_tui/tui_mako.py"
 terminal = false
 
 [[pages.layout]]
@@ -1631,7 +1631,7 @@ icon = "system-run-symbolic"
 button_text = "Open"
 [pages.layout.items.on_press]
 type = "exec"
-command = "foot --app-id=dusky_tui ~/user_scripts/dusky_tui/python/main/main.py ~/user_scripts/services/tui_service_toggle.py"
+command = "foot --app-id=dusky_tui python3 ~/user_scripts/services/tui_service_toggle.py"
 terminal = false
 
 [[pages.layout.items]]
@@ -1981,7 +1981,7 @@ button_text = "TUI"
 style = "suggested"
 [pages.layout.items.layout.items.properties.buttons.on_press]
 type = "exec"
-command = "foot --app-id=dusky_tui $HOME/user_scripts/dusky_tui/python/main/main.py $HOME/user_scripts/hypr/input/tui_input.py"
+command = "foot --app-id=dusky_tui python3 $HOME/user_scripts/hypr/input/tui_input.py"
 
 [[pages.layout.items]]
 type = "navigation"
@@ -2077,7 +2077,7 @@ button_text = "TUI"
 style = "suggested"
 [pages.layout.items.layout.items.properties.buttons.on_press]
 type = "exec"
-command = "foot --app-id=dusky_tui --hold ~/user_scripts/dusky_tui/python/main/main.py ~/user_scripts/hypr/monitor/monitor_wizard.py"
+command = "foot --app-id=dusky_tui --hold python3 ~/user_scripts/hypr/monitor/monitor_wizard.py"
 
 [[pages.layout.items.layout.items]]
 type = "button"
@@ -2133,7 +2133,7 @@ button_text = "TUI"
 style = "suggested"
 [pages.layout.items.layout.items.properties.buttons.on_press]
 type = "exec"
-command = "foot --app-id=dusky_tui --hold $HOME/user_scripts/dusky_tui/python/main/main.py $HOME/user_scripts/hypr/visual/tui_appearance.py"
+command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/hypr/visual/tui_appearance.py"
 
 [[pages.layout.items.layout.items]]
 type = "button"
@@ -2155,7 +2155,7 @@ button_text = "TUI"
 style = "suggested"
 [pages.layout.items.layout.items.properties.buttons.on_press]
 type = "exec"
-command = "foot --app-id=dusky_tui --hold $HOME/user_scripts/dusky_tui/python/main/main.py $HOME/user_scripts/hypr/rules/tui_workspace_rules.py"
+command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/hypr/rules/tui_workspace_rules.py"
 
 [[pages.layout.items.layout.items]]
 type = "button"
@@ -2177,7 +2177,7 @@ button_text = "TUI"
 style = "suggested"
 [pages.layout.items.layout.items.properties.buttons.on_press]
 type = "exec"
-command = "foot --app-id=dusky_tui --hold $HOME/user_scripts/dusky_tui/python/main/main.py $HOME/user_scripts/hypridle/tui_dusky_hypridle.py"
+command = "foot --app-id=dusky_tui --hold python3 $HOME/user_scripts/hypridle/tui_dusky_hypridle.py"
 
 [[pages.layout]]
 type = "section"
@@ -2207,7 +2207,7 @@ icon = "view-more-symbolic"
 button_text = "Swap"
 [pages.layout.items.layout.items.on_press]
 type = "exec"
-command = "foot --app-id=waybar_tui python ~/user_scripts/dusky_tui/python/main/main.py ~/user_scripts/waybar/tui_waybars.py"
+command = "foot --app-id=waybar_tui python3 ~/user_scripts/waybar/tui_waybars.py"
 terminal = false
 
 [[pages.layout.items.layout.items]]
@@ -2287,7 +2287,7 @@ icon = "preferences-system-notifications-symbolic"
 button_text = "TUI"
 [pages.layout.items.layout.items.on_press]
 type = "exec"
-command = "foot --app-id=dusky_tui --hold ~/user_scripts/dusky_tui/python/main/main.py ~/user_scripts/mako_osd/mako_tui/tui_mako.py"
+command = "foot --app-id=dusky_tui --hold python3 ~/user_scripts/mako_osd/mako_tui/tui_mako.py"
 terminal = false
 
 [[pages.layout.items.layout.items]]

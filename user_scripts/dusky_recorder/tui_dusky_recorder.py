@@ -7,6 +7,20 @@ Targets: Pure Wayland | Arch Linux | GPU Screen Recorder 5.13+
 """
 
 import subprocess
+import sys
+from pathlib import Path
+
+_dusky_root = Path.home() / "user_scripts" / "dusky_tui"
+if str(_dusky_root) not in sys.path:
+    sys.path.insert(0, str(_dusky_root))
+
+import sys
+from pathlib import Path
+
+_DUSKY_TUI_ROOT = Path.home() / "user_scripts" / "dusky_tui"
+if str(_DUSKY_TUI_ROOT) not in sys.path:
+    sys.path.insert(0, str(_DUSKY_TUI_ROOT))
+
 from python.frontend.core_types import ConfigItem
 
 # =============================================================================
@@ -405,3 +419,19 @@ ConfigItem(
         ),
     ]
 }
+
+# =============================================================================
+# DIRECT EXECUTION HANDLER
+# =============================================================================
+if __name__ == "__main__":
+    import sys, subprocess
+    from pathlib import Path
+
+    script_path = Path(__file__).resolve()
+    main_router = Path.home() / "user_scripts" / "dusky_tui" / "python" / "main" / "main.py"
+
+    if main_router.exists():
+        sys.exit(subprocess.run([sys.executable, str(main_router), str(script_path)] + sys.argv[1:]).returncode)
+    else:
+        print(f"[-] Error: Main Dusky TUI router not found at {main_router}", file=sys.stderr)
+        sys.exit(1)

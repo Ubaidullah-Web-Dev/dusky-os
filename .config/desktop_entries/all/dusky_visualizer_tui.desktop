@@ -2,7 +2,7 @@
 Name=Dusky Visualizer TUI
 GenericName=Configure Audio Visualizer
 Comment=Launch Dusky TUI for Audio Visualizer
-Exec=foot --app-id=dusky_tui python /home/dusk/user_scripts/dusky_tui/python/main/main.py /home/dusk/user_scripts/way_layers/visualizer/tui_visualizer.py
+Exec=foot --app-id=dusky_tui python3 /home/dusk/user_scripts/way_layers/visualizer/tui_visualizer.py
 Icon=preferences-desktop-multimedia
 Terminal=false
 Type=Application

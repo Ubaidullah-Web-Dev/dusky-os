@@ -1403,9 +1403,15 @@ class Visualizer:
         self.reload_events = {
             Gio.FileMonitorEvent.CHANGES_DONE_HINT,
             Gio.FileMonitorEvent.CREATED,
+            Gio.FileMonitorEvent.CHANGED,
+            Gio.FileMonitorEvent.ATTRIBUTE_CHANGED,
         }
         if hasattr(Gio.FileMonitorEvent, "MOVED"):
             self.reload_events.add(Gio.FileMonitorEvent.MOVED)
+        if hasattr(Gio.FileMonitorEvent, "RENAMED"):
+            self.reload_events.add(Gio.FileMonitorEvent.RENAMED)
+        if hasattr(Gio.FileMonitorEvent, "MOVED_IN"):
+            self.reload_events.add(Gio.FileMonitorEvent.MOVED_IN)
 
         self.monitor_flags = Gio.FileMonitorFlags.NONE
         if hasattr(Gio.FileMonitorFlags, "WATCH_MOVES"):
@@ -1689,7 +1695,7 @@ class Visualizer:
                 if p:
                     paths.append(Path(p))
 
-            if any(p == CONFIG_FILE or p == COLORS_FILE for p in paths):
+            if any(p == CONFIG_FILE or p == COLORS_FILE or p.name in ("visualizer.json", "dusky_visualizer_colors.json") for p in paths):
                 self.queue_reload()
 
         except Exception:

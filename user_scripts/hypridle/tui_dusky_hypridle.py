@@ -12,6 +12,13 @@ _DUSKY_TUI_ROOT = Path(__file__).resolve().parent.parent / "dusky_tui"
 if str(_DUSKY_TUI_ROOT) not in sys.path:
     sys.path.insert(0, str(_DUSKY_TUI_ROOT))
 
+import sys
+from pathlib import Path
+
+_dusky_root = Path.home() / "user_scripts" / "dusky_tui"
+if str(_dusky_root) not in sys.path:
+    sys.path.insert(0, str(_dusky_root))
+
 from python.frontend.core_types import ConfigItem
 
 # =============================================================================

@@ -3,7 +3,7 @@ Type=Application
 Name=Dusky Battery
 GenericName=Battery Monitor Configurator
 Comment=Configure battery thresholds, timings, and alerts
-Exec=foot --app-id=dusky_tui python /home/dusk/user_scripts/dusky_tui/python/main/main.py /home/dusk/user_scripts/battery/notify/tui_battery.py
+Exec=foot --app-id=dusky_tui python3 /home/dusk/user_scripts/battery/notify/tui_battery.py
 Terminal=false
 Categories=Settings;System;Utility;
 Keywords=dusky;battery;threshold;timeout;notify;tui;config;settings;
