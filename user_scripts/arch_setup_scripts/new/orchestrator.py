@@ -5140,6 +5140,35 @@ class DuskyOrchestratorApp(App):
 
         return inner
 
+    def _task_display_command(self, task: OrchestratorTask) -> str:
+        if task.resolved_path is None:
+            return task.script_name
+
+        args = list(task.args)
+        if (self.force_flag or task.force_flag) and "--force" not in args:
+            args.append("--force")
+
+        parts: list[str] = []
+        if task.mode == "S":
+            parts.append("sudo")
+
+        if task.interpreter:
+            interp = task.interpreter
+            if interp.lower() in ("python", "python3"):
+                interp = sys.executable
+            else:
+                interp = shutil.which(interp) or interp
+
+            if Path(interp).name in ("python", "python3", "bash", "sh", "zsh", "dash"):
+                parts.extend([interp, "--", str(task.resolved_path)])
+            else:
+                parts.extend([interp, str(task.resolved_path)])
+        else:
+            parts.append(str(task.resolved_path))
+
+        parts.extend(args)
+        return shlex.join(parts)
+
     async def execute_pty_command(
         self,
         cmd: list[str],
@@ -5346,8 +5375,10 @@ class DuskyOrchestratorApp(App):
                 sys.stdout.write("\x1b[2J\x1b[H")
                 sys.stdout.flush()
 
+                clean_cmd = self._task_display_command(task)
                 print(f"\n--- INTERACTIVE WORKFLOW: {task.script_name} ---")
-                print(f"Executing: {shlex.join(cmd)}\n")
+                print(f"Executing: {clean_cmd}\n")
+                sys.stdout.flush()
 
                 res = subprocess.run(cmd, env=env)
                 code = res.returncode
@@ -5357,6 +5388,9 @@ class DuskyOrchestratorApp(App):
                 return False, None, str(e)
 
             finally:
+                sys.stdout.write("\x1b[2J\x1b[H")
+                sys.stdout.flush()
+
                 if stdin_fd is not None and old_pgrp is not None:
                     with suppress(OSError):
                         os.tcsetpgrp(stdin_fd, old_pgrp)
@@ -5476,7 +5510,7 @@ class DuskyOrchestratorApp(App):
 
         if self.manual:
             self.status_label.update(f"{S('running')} Pending manual approval: {task.script_name}")
-            cmd_preview = shlex.join(self._task_command(task))
+            cmd_preview = self._task_display_command(task)
             action = await self.push_screen_wait(ManualModalScreen(task.script_name, cmd_preview))
 
             if action == "skip":
@@ -5609,7 +5643,7 @@ class DuskyOrchestratorApp(App):
 
                 error_msg = f"Last output:\n{last}" if last else "No captured output."
                 action = await self.push_screen_wait(
-                    ConflictModalScreen(task.script_name, shlex.join(cmd), code, error_msg)
+                    ConflictModalScreen(task.script_name, self._task_display_command(task), code, error_msg)
                 )
 
                 match action:
