@@ -52,20 +52,9 @@ readonly MAKO_BG_ALPHA_OFF="ff"
 readonly MAKO_BORDER_ALPHA_OFF="ff"
 readonly MAKO_PROGRESS_ALPHA_OFF="ff"
 
-# Foot Targets
-readonly FOOT_TEMPLATE="${HOME}/.config/matugen/templates/foot-colors.ini"
-readonly FOOT_GENERATED="${HOME}/.config/matugen/generated/foot-colors.ini"
-
 # Mako OSD Specific Alpha Values
 readonly MAKO_OSD_BG_ALPHA_ON="0d"
 readonly MAKO_OSD_BG_ALPHA_OFF="ff"
-
-# Foot Alpha & Blur Values
-readonly FOOT_ALPHA_ON="0.99"
-readonly FOOT_BLUR_ON="yes"
-
-readonly FOOT_ALPHA_OFF="1.0"
-readonly FOOT_BLUR_OFF="no"
 
 # --- Global State for Signal Trapping ---
 declare -g CURRENT_TEMP_FILE=""
@@ -221,9 +210,6 @@ if [[ "$TARGET_STATE" == "on" ]]; then
     NEW_MAKO_PROGRESS_ALPHA="$MAKO_PROGRESS_ALPHA_ON"
     NEW_MAKO_OSD_BG_ALPHA="$MAKO_OSD_BG_ALPHA_ON"
     
-    NEW_FOOT_ALPHA="$FOOT_ALPHA_ON"
-    NEW_FOOT_BLUR="$FOOT_BLUR_ON"
-    
     NOTIFY_MSG="Visuals: Max (Blur/Shadow ON)"
     STATE_STRING="True"
 else
@@ -238,9 +224,6 @@ else
     NEW_MAKO_BORDER_ALPHA="$MAKO_BORDER_ALPHA_OFF"
     NEW_MAKO_PROGRESS_ALPHA="$MAKO_PROGRESS_ALPHA_OFF"
     NEW_MAKO_OSD_BG_ALPHA="$MAKO_OSD_BG_ALPHA_OFF"
-    
-    NEW_FOOT_ALPHA="$FOOT_ALPHA_OFF"
-    NEW_FOOT_BLUR="$FOOT_BLUR_OFF"
     
     NOTIFY_MSG="Visuals: Performance (Blur/Shadow OFF)"
     STATE_STRING="False"
@@ -278,19 +261,6 @@ if [[ -w "$MAKO_GENERATED" ]]; then
         -e "/GLOBAL MATUGEN COLOR INJECTION/,/STATE MODES/ s/^\([[:space:]]*border-color=#[0-9a-fA-F]\{6\}\)[0-9a-fA-F]*[[:space:]]*$/\1${NEW_MAKO_BORDER_ALPHA}/" \
         -e "/GLOBAL MATUGEN COLOR INJECTION/,/STATE MODES/ s/^\([[:space:]]*progress-color=#[0-9a-fA-F]\{6\}\)[0-9a-fA-F]*[[:space:]]*$/\1${NEW_MAKO_PROGRESS_ALPHA}/" \
         -e "/^\[app-name=OSD\]/,/^\[app-name=/ s/^\([[:space:]]*background-color=#[0-9a-fA-F]\{6\}\)[0-9a-fA-F]*[[:space:]]*$/\1${NEW_MAKO_OSD_BG_ALPHA}/"
-fi
-
-# Foot
-if [[ -w "$FOOT_TEMPLATE" ]]; then
-    atomic_sed "$FOOT_TEMPLATE" \
-        -e "s/^\([[:space:]]*alpha[[:space:]]*=[[:space:]]*\)[0-9.]*/\1${NEW_FOOT_ALPHA}/" \
-        -e "s/^\([[:space:]]*blur[[:space:]]*=[[:space:]]*\)[a-z][a-z]*/\1${NEW_FOOT_BLUR}/"
-fi
-
-if [[ -w "$FOOT_GENERATED" ]]; then
-    atomic_sed "$FOOT_GENERATED" \
-        -e "s/^\([[:space:]]*alpha[[:space:]]*=[[:space:]]*\)[0-9.]*/\1${NEW_FOOT_ALPHA}/" \
-        -e "s/^\([[:space:]]*blur[[:space:]]*=[[:space:]]*\)[a-z][a-z]*/\1${NEW_FOOT_BLUR}/"
 fi
 
 # Rofi (Untouched - Only target surface opacity)
@@ -337,8 +307,6 @@ fi
 # Reload dynamic daemons
 command -v makoctl &>/dev/null && { makoctl reload &>/dev/null || true; }
 command -v pkill &>/dev/null && { pkill -SIGUSR2 waybar || true; }
-command -v pkill &>/dev/null && { pkill -SIGUSR1 foot || true; }
-touch "$HOME/.config/foot/foot.ini" 2>/dev/null || true
 
 # --- User Feedback ---
 notify "$NOTIFY_MSG"
