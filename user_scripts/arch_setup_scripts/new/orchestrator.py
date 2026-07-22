@@ -1329,7 +1329,7 @@ done
         env_vars = " ".join(cls.ENV_KEEP)
         content = (
             f"# pid={os.getpid()} ts={int(time.time())}\n"
-            f"Defaults:{username} timestamp_type=global\n"
+            f"Defaults:{username} timestamp_type=global, timestamp_timeout=15\n"
             f"Defaults:{username} env_keep += \"{env_vars} DUSKY_*\"\n"
         )
 
@@ -1550,7 +1550,7 @@ done
         try:
             while True:
                 await asyncio.sleep(45)
-                ok = SudoEngine.refresh_sync()
+                ok = await asyncio.to_thread(SudoEngine.refresh_sync)
                 if ok:
                     fail_count = 0
                 else:
@@ -2470,8 +2470,16 @@ class ConditionEvaluator:
         return result
 
     def _eval(self, cond: str) -> bool:
-        if "," in cond and not any(cond.startswith(p) for p in ("path:", "file:", "dir:", "missing:")):
-            return all(self.check(part) for part in cond.split(","))
+        if "," in cond:
+            parts: list[str] = []
+            for token in cond.split(","):
+                if parts and ":" not in token:
+                    parts[-1] += "," + token
+                else:
+                    parts.append(token)
+
+            if len(parts) > 1:
+                return all(self.check(part) for part in parts)
 
         kind, _, value = cond.partition(":")
         kind = kind.strip().lower()
@@ -3496,7 +3504,7 @@ def run_git_self_update(
                         os.chmod(wrapper_path, 0o755)
                     os.execv(str(wrapper_path), [str(wrapper_path)] + args)
 
-                os.execv(sys.executable, [sys.executable] + args)
+                os.execv(sys.executable, [sys.executable, str(my_path)] + args)
             except OSError as e:
                 sys.stderr.write(f"[FATAL] Failed to restart orchestrator: {e}\n")
                 sys.exit(1)
@@ -3770,7 +3778,7 @@ def run_git_self_update(
                     os.chmod(wrapper_path, 0o755)
                 os.execv(str(wrapper_path), [str(wrapper_path)] + args)
 
-            os.execv(sys.executable, [sys.executable] + args)
+            os.execv(sys.executable, [sys.executable, str(my_path)] + args)
         except OSError as e:
             sys.stderr.write(f"[FATAL] Failed to restart orchestrator after update: {e}\n")
             sys.exit(1)
@@ -5319,6 +5327,13 @@ class DuskyOrchestratorApp(App):
         line_buffer = ""
 
         try:
+            def _set_controlling_tty():
+                os.setsid()
+                try:
+                    fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+                except OSError:
+                    pass
+
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=slave_fd,
@@ -5326,7 +5341,7 @@ class DuskyOrchestratorApp(App):
                 stderr=slave_fd,
                 env=env,
                 close_fds=True,
-                start_new_session=True,
+                preexec_fn=_set_controlling_tty,
             )
 
             with suppress(OSError):
@@ -5507,7 +5522,7 @@ class DuskyOrchestratorApp(App):
                 print(f"Executing: {clean_cmd}\n")
                 sys.stdout.flush()
 
-                res = subprocess.run(cmd, env=env)
+                res = await asyncio.to_thread(subprocess.run, cmd, env=env)
                 code = res.returncode
                 return code == 0, code, "interactive session"
 
