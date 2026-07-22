@@ -872,10 +872,15 @@ def prompt_action()->str:
     console.print(Panel("Dusky Factory — What to do?", style="cyan", box=box.ROUNDED))
     table=Table(box=box.SIMPLE, show_header=False)
     table.add_column("No", style="magenta", width=4); table.add_column("Action", style="white")
-    table.add_row("1","Download official repo (010)"); table.add_row("2","Build AUR repo (020)"); table.add_row("3","Both repos"); table.add_row("4","Build ISO only (030)"); table.add_row("5","Full pipeline: Official + AUR + ISO [default]")
+    table.add_row("1","Official Pacman repo + ISO (010 + 030) [default]")
+    table.add_row("2","Download official repo (010)")
+    table.add_row("3","Build AUR repo (020)")
+    table.add_row("4","Both repos (010 + 020)")
+    table.add_row("5","Build ISO only (030)")
+    table.add_row("6","Full pipeline: Official + AUR + ISO")
     console.print(table)
-    c=Prompt.ask("Enter choice", choices=["1","2","3","4","5"], default="5")
-    return {"1":"official","2":"aur","3":"both","4":"iso","5":"full"}[c]
+    c=Prompt.ask("Enter choice", choices=["1","2","3","4","5","6"], default="1")
+    return {"1":"official_iso","2":"official","3":"aur","4":"both","5":"iso","6":"full"}[c]
 
 def prompt_path(msg: str, default: Path)->Path:
     console.print(f"[cyan]{msg}[/] (default: [bold]{default}[/])")
@@ -889,7 +894,7 @@ def main():
     parser=argparse.ArgumentParser(description="Dusky Arch ISO Factory - Python 3.14.6 Final")
     parser.add_argument("--arch", action="store_true", help="Standard Arch mode")
     parser.add_argument("--cachyos", action="store_true", help="CachyOS v3 mode")
-    parser.add_argument("--action", choices=["official","aur","both","iso","full"], help="Action")
+    parser.add_argument("--action", choices=["official","aur","both","iso","full","official_iso"], help="Action")
     parser.add_argument("--official-repo", type=Path, help="Official repo dir")
     parser.add_argument("--aur-repo", type=Path, help="AUR repo dir")
     parser.add_argument("--workspace", type=Path, help="Workspace base (auto-detects zram if available)")
@@ -937,9 +942,9 @@ def main():
     info(f"Mode: {mode_name}")
     action=args.action
     if not action:
-        if args.auto: action="full"
+        if args.auto: action="official_iso"
         elif sys.stdin.isatty(): action=prompt_action()
-        else: action="full"
+        else: action="official_iso"
     real_user, real_home=get_real_user()
     step(f"Real user: {real_user} home: {real_home}")
     default_official=Path("/srv/offline-repo/official")
@@ -950,11 +955,11 @@ def main():
     source_dir=args.source_dir or default_source
     external_pkg_list=source_dir/"assets"/"iso_temp_packages"/"packages.x86_64"
     if not args.auto and sys.stdin.isatty():
-        if action in ("official","both","full"): official_repo=prompt_path("Official repo path", official_repo)
+        if action in ("official","both","full","official_iso"): official_repo=prompt_path("Official repo path", official_repo)
         if action in ("aur","both","full"): aur_repo=prompt_path("AUR repo path", aur_repo)
     ensure_sudo_cached()
     
-    if action in ("official","both","full"):
+    if action in ("official","both","full","official_iso"):
         info("=== OFFICIAL REPO BUILD ===")
         for t in ["pacman","repo-add","bsdtar","zstd","xz"]:
             if not check_tool(t): die(f"Missing tool: {t}")
@@ -1015,7 +1020,7 @@ def main():
             if failed: console.print(f"[red]Failed: {', '.join(failed)}[/]")
         finally: isolated_aur.cleanup()
         
-    if action in ("iso","full"):
+    if action in ("iso","full","official_iso"):
         info("=== ISO BUILD ===")
         if os.geteuid()!=0: die("ISO build requires root - run with sudo")
         for t in ["mkarchiso","git"]:
