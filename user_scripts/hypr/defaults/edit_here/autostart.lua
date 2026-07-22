@@ -43,6 +43,10 @@ hl.on("hyprland.start", function()
     -- hl.exec_cmd("$HOME/user_scripts/waybar/toggle_timer_waybar.sh")
     -- hl.exec_cmd("nm-applet")
 
+
+    -- hyprpm reload if you have plugins installed --
+    --hl.exec_cmd("hyprpm reload")
+
     -- EG: dusky glance (uncomment only one at a time)
     -- hl.exec_cmd("~/user_scripts/rofi/dusky_glance.sh --cpu")
     -- hl.exec_cmd("~/user_scripts/rofi/dusky_glance.sh --cpu-power")
@@ -72,6 +76,8 @@ hl.on("hyprland.start", function()
     -- hl.exec_cmd("~/user_scripts/rofi/dusky_glance.sh --world-clock America/New_York NY")
     -- hl.exec_cmd("~/user_scripts/rofi/dusky_glance.sh --world-clock Asia/Tokyo Japan")
     -- hl.exec_cmd("~/user_scripts/rofi/dusky_glance.sh --world-clock Europe/London London")
+    --
+    --
 
 end)
 
