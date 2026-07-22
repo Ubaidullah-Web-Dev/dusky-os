@@ -4402,42 +4402,144 @@ Tooltip {
         def do_execute():
             self.notify_status(f"Executing: {item.label}...", level="info")
 
-            async def run_task():
+            def _check_interactive(cmd_str: str) -> bool:
+                if not cmd_str:
+                    return False
+
+                interactive_apps = {
+                    "fzf", "nmtui", "vim", "nvim", "neovim", "nano", "micro", 
+                    "helix", "hx", "emacs", "less", "more", "man", "htop", 
+                    "btop", "yazi", "ranger", "lf"
+                }
+                wrappers = {"sudo", "doas", "pkexec", "env", "time", "nice", "nohup", "exec", "stdbuf", "watch", "xargs"}
+                shells = {"bash", "sh", "zsh", "fish", "dash"}
+                interpreters = {"python", "python3", "node", "ruby", "perl", "docker", "podman"}
+                control_operators = {"|", "||", "&&", ";", "&"}
+
                 try:
-                    proc = await asyncio.create_subprocess_shell(
-                        command,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    )
+                    tokens = shlex.split(cmd_str)
+                except Exception:
+                    tokens = re.findall(r"\b[a-zA-Z0-9_\/-]+\b", cmd_str)
 
-                    try:
-                        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10.0)
-                    except asyncio.TimeoutError:
-                        proc.kill()
-                        self.notify_status("Action timed out after 10 seconds.", level="error")
-                        return
+                expecting_executable = True
+                skip_next = False
 
-                    if proc.returncode == 0:
-                        out = stdout.decode("utf-8", errors="replace").strip()
+                for i, token in enumerate(tokens):
+                    if skip_next:
+                        skip_next = False
+                        continue
 
-                        if out:
-                            out_single = out.split("\n")[0]
-                            self.notify_status(f"Success: {out_single[:60]}", level="success")
-                        else:
-                            self.notify_status(f"Action '{item.label}' completed.", level="success")
+                    clean_token = token.strip("()$`\"'\t\n{}")
 
+                    # Subshell Catch-All across all token positions
+                    if "$(" in token:
+                        sub_content = token.split("$(", 1)[1]
+                        if _check_interactive(sub_content):
+                            return True
+                    elif "`" in token:
+                        sub_content = token.split("`", 1)[1]
+                        if _check_interactive(sub_content):
+                            return True
+
+                    if expecting_executable:
+                        # Skip environment variable assignments before a command
+                        if "=" in clean_token and not clean_token.startswith("-"):
+                            continue
+
+                        # Skip flags (and arguments for known flag values)
+                        if clean_token.startswith("-"):
+                            if clean_token in ("-u", "--user", "-g", "--group", "-C"):
+                                skip_next = True
+                            continue
+
+                        base_name = clean_token.split("/")[-1].lower()
+
+                        if base_name in wrappers:
+                            continue
+
+                        if base_name in shells and i + 1 < len(tokens) and tokens[i+1] == "-c":
+                            skip_next = True
+                            if i + 2 < len(tokens) and _check_interactive(tokens[i+2]):
+                                return True
+                            continue
+
+                        if base_name in interactive_apps:
+                            return True
+
+                        # Target Check for Shells and Interpreters (e.g. python3 -i, docker exec -it)
+                        if base_name in shells or base_name in interpreters:
+                            for sub_tok in tokens[i+1:]:
+                                c_sub = sub_tok.strip()
+                                # STOP scanning flags if a chained command begins (e.g. docker start && sed -i)
+                                if c_sub in control_operators or sub_tok in control_operators:
+                                    break
+                                if c_sub in ("-i", "--interactive"):
+                                    return True
+                                if c_sub.startswith("-") and not c_sub.startswith("--") and "i" in c_sub and "t" in c_sub:
+                                    return True
+
+                        if base_name:
+                            expecting_executable = False
                     else:
-                        err = stderr.decode("utf-8", errors="replace").strip().split("\n")[0]
+                        if token in control_operators or clean_token in control_operators:
+                            expecting_executable = True
 
-                        if not err:
-                            err = "Unknown execution error"
+                return False
 
-                        self.notify_status(f"Action failed: {err[:60]}", level="error")
+            is_interactive = _check_interactive(command)
 
-                except Exception as e:
-                    self.notify_status(f"Execution error: {str(e)[:60]}", level="error")
+            if is_interactive:
+                async def run_int_task():
+                    try:
+                        with self.suspend():
+                            proc = await asyncio.create_subprocess_shell(command)
+                            rc = await proc.wait()
 
-            asyncio.create_task(run_task())
+                        if rc == 0:
+                            self.notify_status(f"Action '{item.label}' completed.", level="success")
+                        else:
+                            self.notify_status(f"Action '{item.label}' returned code {rc}.", level="warning")
+                    except Exception as e:
+                        self.notify_status(f"Execution error: {str(e)[:60]}", level="error")
+
+                asyncio.create_task(run_int_task())
+            else:
+                async def run_task():
+                    try:
+                        proc = await asyncio.create_subprocess_shell(
+                            command,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE
+                        )
+
+                        try:
+                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15.0)
+                        except asyncio.TimeoutError:
+                            proc.kill()
+                            self.notify_status("Action timed out after 15 seconds.", level="error")
+                            return
+
+                        if proc.returncode == 0:
+                            out = stdout.decode("utf-8", errors="replace").strip()
+
+                            if out:
+                                out_single = out.split("\n")[0]
+                                self.notify_status(f"Success: {out_single[:60]}", level="success")
+                            else:
+                                self.notify_status(f"Action '{item.label}' completed.", level="success")
+
+                        else:
+                            err = stderr.decode("utf-8", errors="replace").strip().split("\n")[0]
+
+                            if not err:
+                                err = "Unknown execution error"
+
+                            self.notify_status(f"Action failed: {err[:60]}", level="error")
+
+                    except Exception as e:
+                        self.notify_status(f"Execution error: {str(e)[:60]}", level="error")
+
+                asyncio.create_task(run_task())
 
         if item.confirm_message:
             self.push_screen(
