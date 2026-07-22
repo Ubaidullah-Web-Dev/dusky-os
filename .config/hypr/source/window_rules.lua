@@ -536,7 +536,15 @@ hl.window_rule({
   match = { class = "^(dusky_tui)$" },
   float = true,
   size = {815,539},
-  center = true
+  center = true,
+  no_blur = false,
+})
+
+--- Foot Terminal Blur ---
+hl.window_rule({
+  name = "foot_blur",
+  match = { class = "^(foot)$" },
+  no_blur = false,
 })
 
 --- Dusky glance_mako_tui.sh ---
