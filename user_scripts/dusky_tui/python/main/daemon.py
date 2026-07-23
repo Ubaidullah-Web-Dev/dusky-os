@@ -11,6 +11,7 @@ import ctypes
 import gc
 from pathlib import Path
 from typing import Any, Final
+from multiprocessing.shared_memory import SharedMemory
 
 # Ensure project root is in sys.path
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
@@ -26,7 +27,7 @@ MAX_PAYLOAD_SIZE: Final[int] = 1024 * 1024  # 1MB security limit against OOM pay
 class DuskyDaemon:
     __slots__ = (
         "uid", "sock_path", "server", "shutdown_event", 
-        "cache", "watch_paths", "is_warmed", "bg_watch", "bg_compile", "_idle_timer"
+        "cache", "watch_paths", "is_warmed", "bg_watch", "bg_compile", "_idle_timer", "_shm_blocks"
     )
 
     def __init__(self) -> None:
@@ -38,6 +39,7 @@ class DuskyDaemon:
         self.server: asyncio.Server | None = None
         self.shutdown_event: asyncio.Event = asyncio.Event()
         self.cache: JSONDict = {}
+        self._shm_blocks: dict[str, SharedMemory] = {}
         self.is_warmed: bool = False
         self._idle_timer: asyncio.TimerHandle | None = None
         self.bg_watch: asyncio.Task | None = None
@@ -212,6 +214,14 @@ class DuskyDaemon:
         if self.server:
             self.server.close()
             await self.server.wait_closed()
+
+        for shm in self._shm_blocks.values():
+            try:
+                shm.close()
+                shm.unlink()
+            except Exception:
+                pass
+        self._shm_blocks.clear()
         
         if not int(os.environ.get("LISTEN_FDS", 0)) and os.path.exists(self.sock_path):
             try:
