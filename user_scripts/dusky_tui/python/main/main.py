@@ -228,57 +228,75 @@ def setup_logging(module_name: str, enable_logging: bool) -> logging.Logger:
 
 
 def manage_backup(target_file: Path, action: str, logger: logging.Logger) -> bool:
-    """Handles creating and restoring backups across multi-file ecosystems."""
+    """Handles creating and restoring backups across multi-file ecosystems with atomic replace & fsync."""
     backup_dir = Path("~/Documents/dusky_backups/tui_reset/").expanduser()
     backup_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        backup_dir.chmod(0o700)
+    except OSError:
+        pass
+
+    resolved = target_file.expanduser().resolve()
+    path_hash = hashlib.blake2b(str(resolved).encode(), digest_size=10).hexdigest()
+    parent_bits = "_".join(resolved.parent.parts[-2:]) if resolved.parent.parts else "root"
+    parent_bits = re.sub(r"[^\w.-]+", "_", parent_bits)[:64]
+    stem = f"{parent_bits}_{path_hash}_{resolved.name}"
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = backup_dir / f"{stem}.{timestamp}.bak"
+    latest_link = backup_dir / f"{stem}.latest.bak"
 
-    path_hash = hashlib.blake2b(str(target_file.resolve()).encode(), digest_size=3).hexdigest()
-    safe_prefix = (
-        f"{target_file.parent.name}_{path_hash}_"
-        if target_file.parent.name
-        else f"{path_hash}_"
-    )
+    def atomic_copy(src: Path, dest: Path) -> None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=str(dest.parent), prefix=f".{dest.name}.", suffix=".tmp")
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as out_f, src.open("rb") as in_f:
+                while chunk := in_f.read(1024 * 1024):
+                    out_f.write(chunk)
+                out_f.flush()
+                os.fsync(out_f.fileno())
+            os.replace(tmp_path, dest)
+            dir_fd = os.open(str(dest.parent), os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
-    backup_path = backup_dir / f"{safe_prefix}{target_file.name}.{timestamp}.bak"
-    latest_link = backup_dir / f"{safe_prefix}{target_file.name}.latest.bak"
+    match action:
+        case "check_restore":
+            if not latest_link.exists():
+                print(f"[-] Missing backup for: {resolved.name}")
+                return False
+            return True
 
-    if action == "check_restore":
-        if not latest_link.exists():
-            print(f"[-] Missing backup for: {target_file.name} (Cannot perform atomic restore)")
+        case "restore":
+            if not latest_link.exists():
+                return False
+            actual = latest_link.resolve(strict=True)
+            atomic_copy(actual, resolved)
+            print(f"[+] Restored: {resolved} from {actual.name}")
+            logger.info("Restored %s from %s", resolved, actual)
+            return True
+
+        case "create":
+            if not resolved.exists():
+                return False
+            atomic_copy(resolved, backup_path)
+            tmp_link = backup_dir / f".{stem}.latest.bak.tmp-{os.getpid()}"
+            if tmp_link.exists() or tmp_link.is_symlink():
+                tmp_link.unlink()
+            tmp_link.symlink_to(backup_path.resolve())
+            os.replace(tmp_link, latest_link)
+            print(f"[+] Backup created: {backup_path.name}")
+            logger.info("Created backup for %s at %s", resolved, backup_path)
+            return True
+
+        case _:
             return False
-
-        return True
-
-    if action == "create":
-        if not target_file.exists():
-            logger.warning(f"Cannot backup, target does not exist: {target_file}")
-            return False
-
-        shutil.copy2(target_file, backup_path)
-
-        latest_link.unlink(missing_ok=True)
-        latest_link.symlink_to(backup_path.name)
-
-        logger.info(f"Backup created at: {backup_path}")
-        print(f"[+] Backup created: {backup_path}")
-
-        return True
-
-    elif action == "restore":
-        if not latest_link.exists():
-            print(f"[-] No backup found to restore for: {target_file.name}")
-            return False
-
-        shutil.copy2(latest_link, target_file)
-
-        logger.info(f"Restored from backup: {latest_link}")
-        print(f"[+] Successfully restored configuration: {target_file.name}")
-
-        return True
-
-    return False
 
 
 # =============================================================================
@@ -422,6 +440,7 @@ EXAMPLES:
         TAB_NOTICES = getattr(schema_module, "TAB_NOTICES", None)
         DEFERRED_LOAD = getattr(schema_module, "DEFERRED_LOAD", None)
         REQUIRE_ROOT = getattr(schema_module, "REQUIRE_ROOT", False)
+        CUSTOM_VIEWS = getattr(schema_module, "CUSTOM_VIEWS", None)
 
         ENGINE_TYPE = schema_module.ENGINE_TYPE.lower()
 
@@ -838,7 +857,8 @@ EXAMPLES:
         user_presets_tab=USER_PRESETS_TAB,
         global_popup=GLOBAL_POPUP,
         tab_notices=TAB_NOTICES,
-        deferred_load=DEFERRED_LOAD
+        deferred_load=DEFERRED_LOAD,
+        custom_views=CUSTOM_VIEWS
     )
 
     for engine in engine_pool.values():

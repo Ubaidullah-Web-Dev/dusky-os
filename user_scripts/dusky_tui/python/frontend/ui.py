@@ -19,7 +19,7 @@ from textual import on, events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, Horizontal
-from textual.widgets import Label, Input, Tabs, Tab, ContentSwitcher, OptionList, Markdown
+from textual.widgets import Label, Input, Tabs, Tab, ContentSwitcher, OptionList, Markdown, Static
 from textual.widgets.option_list import Option, OptionDoesNotExist
 from textual.screen import ModalScreen
 from textual.reactive import reactive
@@ -37,6 +37,7 @@ from python.frontend.core_types import (
     KNOWN_COLORS_LOWER,
     is_theme_variable,
     is_trigger_item,
+    clone_value,
 )
 
 
@@ -1258,6 +1259,102 @@ class TabContainer(Horizontal):
             self.app.check_tab_overflow()
 
 
+class CustomRichTabWidget(Static):
+    """
+    A widget slot for rendering custom Python Rich renderables or custom UI components
+    within a DuskyTUI tab.
+    """
+
+    DEFAULT_CSS = """
+    CustomRichTabWidget {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        padding: 0 1;
+        overflow-x: auto;
+        overflow-y: auto;
+    }
+    """
+
+    def __init__(
+        self,
+        renderable_or_factory: Any,
+        app_ref: Any = None,
+        refresh_interval: float | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.renderable_or_factory = renderable_or_factory
+        self.app_ref = app_ref
+        self.refresh_interval = refresh_interval
+        self._refresh_timer: Timer | None = None
+        self._refresh_inflight = False
+
+    def on_mount(self) -> None:
+        self.update_content()
+        if self.display:
+            self._start_timer()
+
+    def on_unmount(self) -> None:
+        self._stop_timer()
+
+    def on_show(self) -> None:
+        self.update_content()
+        self._start_timer()
+
+    def on_hide(self) -> None:
+        self._stop_timer()
+
+    def _start_timer(self) -> None:
+        if self._refresh_timer is not None:
+            return
+        interval = self.refresh_interval
+        if interval is not None and interval > 0:
+            self._refresh_timer = self.set_interval(interval, self.update_content)
+
+    def _stop_timer(self) -> None:
+        if self._refresh_timer is not None:
+            self._refresh_timer.stop()
+            self._refresh_timer = None
+
+    def _invoke_factory(self) -> Any:
+        factory = self.renderable_or_factory
+        if not callable(factory):
+            return factory
+
+        import inspect
+        try:
+            sig = inspect.signature(factory)
+        except (TypeError, ValueError):
+            try:
+                return factory(self.app_ref)
+            except TypeError:
+                return factory()
+
+        required_positional = [
+            p for p in sig.parameters.values()
+            if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            and p.default is inspect.Parameter.empty
+        ]
+
+        if not required_positional:
+            return factory()
+        return factory(self.app_ref)
+
+    def update_content(self) -> None:
+        if self._refresh_inflight:
+            return
+        self._refresh_inflight = True
+        try:
+            res = self._invoke_factory()
+            if res is not None:
+                self.update(res)
+        except Exception as e:
+            self.update(Text(f"Error rendering custom view: {e}", style="bold red"))
+        finally:
+            self._refresh_inflight = False
+
+
 class DuskyTUI(App):
     CSS = """
 Screen { background: $background; }
@@ -1510,11 +1607,13 @@ Tooltip {
         global_popup: Any | None = None,
         tab_notices: dict[int, dict | list[dict]] | None = None,
         deferred_load=None,
+        custom_views: dict[int | str, Any] | None = None,
         **kwargs
     ):
         super().__init__(**kwargs)
 
         self.deferred_load = deferred_load
+        self.custom_views = custom_views or {}
         self.engine_pool = engine_pool
         self.default_engine_key = default_engine_key
         self.global_popup = global_popup
@@ -1557,6 +1656,15 @@ Tooltip {
         self.pending_commits: set[tuple[int, int]] = set()
         self.undo_stack: deque[list[tuple[int, int, Any, Any]]] = deque(maxlen=50)
         self.redo_stack: deque[list[tuple[int, int, Any, Any]]] = deque(maxlen=50)
+
+        self._committed: dict[tuple[int, int], Any] = {}
+        for t_idx, items in self.schema.items():
+            for i_idx, item in enumerate(items):
+                self._committed[(t_idx, i_idx)] = clone_value(item.value)
+
+        self._save_lock: asyncio.Lock | None = None
+        self._global_save_timer: Timer | None = None
+        self._save_queued_during_run = False
 
         self._key_map: dict[str, tuple[int, int]] = {}
         self._save_timers: dict[tuple[int, int], Timer] = {}
@@ -1719,11 +1827,33 @@ Tooltip {
                                         message = tab_notice.get("message", "")
                                         yield NoticeBox(message, level=level, id=f"notice-{i}-{n_idx}")
 
-                            with Horizontal(classes="list-wrapper"):
-                                yield ConfigOptionList(id=f"list-{i}")
+                            custom_view = self.custom_views.get(i)
+                            if custom_view is None:
+                                custom_view = self.custom_views.get(name)
 
-                                with Vertical(classes="indicator-column"):
-                                    yield ScrollIndicator("", id=f"indicator-{i}")
+                            if custom_view is not None:
+                                refresh_interval = None
+                                if isinstance(custom_view, dict) and "view" in custom_view:
+                                    refresh_interval = custom_view.get("interval")
+                                    custom_view = custom_view["view"]
+
+                                if isinstance(custom_view, type) and issubclass(custom_view, Widget):
+                                    yield custom_view()
+                                elif isinstance(custom_view, Widget):
+                                    yield custom_view
+                                else:
+                                    yield CustomRichTabWidget(
+                                        renderable_or_factory=custom_view,
+                                        app_ref=self,
+                                        refresh_interval=refresh_interval,
+                                        id=f"custom-view-{i}"
+                                    )
+                            else:
+                                with Horizontal(classes="list-wrapper"):
+                                    yield ConfigOptionList(id=f"list-{i}")
+
+                                    with Vertical(classes="indicator-column"):
+                                        yield ScrollIndicator("", id=f"indicator-{i}")
 
                             if tab_notices:
                                 for n_idx, tab_notice in enumerate(tab_notices):
@@ -1741,6 +1871,14 @@ Tooltip {
     # =========================================================================
     # ENGINE / STATE HELPERS
     # =========================================================================
+    def _sync_pending(self, tab_idx: int, item_idx: int, item: ConfigItem) -> None:
+        key = (tab_idx, item_idx)
+        baseline = self._committed.get(key, item.default)
+        if item.value == baseline:
+            self.pending_commits.discard(key)
+        else:
+            self.pending_commits.add(key)
+
     def _get_item_engine_info(self, item: ConfigItem) -> tuple[str, str]:
         """
         Resolves target engine and file config dynamically via overrides.
@@ -3571,8 +3709,6 @@ Tooltip {
         if self._save_lock is None:
             self._save_lock = asyncio.Lock()
 
-        auth_required = False
-
         async with self._save_lock:
             if self._modal_active():
                 if on_complete:
@@ -3585,20 +3721,32 @@ Tooltip {
                     on_complete(True)
                 return
 
-            batches = {}
+            # Frozen snapshot: (change_tuple, commit_key, val_str, frozen_val, ConfigItem)
+            type FrozenItem = tuple[tuple[str, str, str, str], tuple[int, int], str, Any, ConfigItem]
+            batches: dict[tuple[str, str], list[FrozenItem]] = {}
 
-            for tab_idx, item_idx in list(self.pending_commits):
+            for tab_idx, item_idx in tuple(self.pending_commits):
                 item = self.schema[tab_idx][item_idx]
-                val_str = item.serialize(item.value)
+                key = (tab_idx, item_idx)
+                frozen_val = clone_value(item.value)
+                val_str = item.serialize(frozen_val)
                 ekey = self._get_item_engine_info(item)
-
-                batches.setdefault(ekey, []).append(
-                    ((item.key, item.scope, val_str, item.type_), (tab_idx, item_idx), item)
-                )
+                change = (item.key, item.scope, val_str, str(item.type_))
+                batches.setdefault(ekey, []).append((change, key, val_str, frozen_val, item))
 
             final_success = True
             success_count = 0
             error_msgs = []
+            auth_required = False
+
+            def mark_success(key: tuple[int, int], frozen_val_str: str, frozen_val: Any, itm: ConfigItem) -> bool:
+                current_str = itm.serialize(itm.value)
+                if current_str != frozen_val_str:
+                    self._save_queued_during_run = True
+                    return False
+                self.pending_commits.discard(key)
+                self._committed[key] = clone_value(frozen_val)
+                return True
 
             for ekey, batch in batches.items():
                 engine = self.engine_pool[ekey]
@@ -3610,19 +3758,16 @@ Tooltip {
                     success, msg = False, f"Engine Error: {e}"
 
                 if success:
-                    success_count += len(changes)
-
-                    for _, commit, itm in batch:
-                        self.pending_commits.discard(commit)
-
-                        if is_trigger_item(itm):
-                            self._reset_trigger_ui(itm)
+                    for _change, key, frozen_str, frozen_val, itm in batch:
+                        if mark_success(key, frozen_str, frozen_val, itm):
+                            success_count += 1
+                            if is_trigger_item(itm):
+                                self._reset_trigger_ui(itm)
 
                     try:
                         self.last_target_mtimes[ekey] = Path(engine.target_path).expanduser().resolve().stat().st_mtime
                     except OSError:
                         pass
-
                 else:
                     if "AUTH_REQUIRED" in msg:
                         auth_required = True
@@ -3630,13 +3775,13 @@ Tooltip {
 
                     engine_success_count = 0
 
-                    for change, commit, itm in batch:
-                        key, scope, val_str, itype = change
+                    for change, key, frozen_str, frozen_val, itm in batch:
+                        key_s, scope, val_str, itype = change
 
                         try:
                             ok, item_msg, _ = await asyncio.to_thread(
                                 engine.write_value,
-                                key,
+                                key_s,
                                 scope,
                                 val_str,
                                 item_type=itype
@@ -3645,35 +3790,36 @@ Tooltip {
                             ok, item_msg = False, f"Engine Error: {e}"
 
                         if ok:
-                            success_count += 1
-                            engine_success_count += 1
-                            self.pending_commits.discard(commit)
-
-                            if is_trigger_item(itm):
-                                self._reset_trigger_ui(itm)
+                            if mark_success(key, frozen_str, frozen_val, itm):
+                                success_count += 1
+                                engine_success_count += 1
+                                if is_trigger_item(itm):
+                                    self._reset_trigger_ui(itm)
 
                             try:
                                 self.last_target_mtimes[ekey] = Path(engine.target_path).expanduser().resolve().stat().st_mtime
                             except OSError:
                                 pass
-
                         else:
                             if "AUTH_REQUIRED" in item_msg:
                                 auth_required = True
                                 break
-
                             error_msgs.append(item_msg)
-
-                            # Failed trigger buttons should not remain armed.
                             if is_trigger_item(itm):
-                                self.pending_commits.discard(commit)
+                                self.pending_commits.discard(key)
                                 self._reset_trigger_ui(itm)
 
                     if auth_required:
                         break
 
-                    if engine_success_count != len(changes):
+                    if engine_success_count != len(batch):
                         final_success = False
+
+        if self._save_queued_during_run:
+            self._save_queued_during_run = False
+            if self.pending_commits:
+                asyncio.create_task(self._save_batch_async(on_complete))
+                return
 
         if auth_required:
             if isinstance(self.screen, PasswordScreen):
@@ -3708,12 +3854,23 @@ Tooltip {
 
     async def _on_batch_password(self, pwd: str | None, on_complete=None) -> None:
         if pwd:
-            auth_res = await asyncio.to_thread(
-                subprocess.run,
-                ["sudo", "-S", "-v"],
-                input=(pwd + "\n").encode(),
-                capture_output=True
-            )
+            try:
+                auth_res = await asyncio.to_thread(
+                    subprocess.run,
+                    ["sudo", "-S", "-v"],
+                    input=(pwd + "\n").encode(),
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                    env={**os.environ, "LC_ALL": "C"}
+                )
+            except subprocess.TimeoutExpired:
+                self.notify_status("Sudo authentication timed out.", level="error")
+                if on_complete:
+                    on_complete(False)
+                return
+            finally:
+                pwd = None
 
             if auth_res.returncode == 0:
                 self.notify_status("Sudo authenticated. Retrying batch...", level="info")
@@ -4384,6 +4541,203 @@ Tooltip {
     # =========================================================================
     # ACTION EXECUTION / PRESET APPLICATION / PROMPTS
     # =========================================================================
+    def _check_interactive(self, cmd_str: str) -> bool:
+        if not cmd_str or not cmd_str.strip():
+            return False
+
+        interactive_apps = {
+            "fzf", "nmtui",
+            "vi", "vim", "nvim", "neovim", "nano", "micro", "helix", "hx", "emacs",
+            "less", "more", "man",
+            "top", "htop", "btop",
+            "yazi", "ranger", "lf",
+            "watch", "screen", "tmux",
+            "tig", "gitui", "lazygit",
+            "ipython", "bpython",
+            "psql", "mysql",
+        }
+        wrappers = {
+            "sudo", "doas", "pkexec",
+            "env", "time", "nice", "nohup", "exec", "stdbuf", "xargs",
+            "command", "builtin", "proxychains", "proxychains4",
+        }
+        shells = {"bash", "sh", "zsh", "fish", "dash", "ksh"}
+        interpreters = {
+            "python", "python2", "python3",
+            "node", "ruby", "perl",
+            "docker", "podman", "kubectl",
+            "ssh", "script",
+        }
+        control_operators = {"|", "||", "&&", ";", "&"}
+        wrapper_value_flags = {"-u", "--user", "-g", "--group", "-C"}
+
+        def extract_subs(token: str) -> list[str]:
+            out: list[str] = []
+            i, n = 0, len(token)
+            while i < n:
+                if token.startswith("$(", i):
+                    depth = 1
+                    j = i + 2
+                    while j < n and depth:
+                        if token.startswith("$(", j):
+                            depth += 1
+                            j += 2
+                            continue
+                        if token[j] == ")":
+                            depth -= 1
+                            if depth == 0:
+                                out.append(token[i + 2 : j])
+                                i = j + 1
+                                break
+                        j += 1
+                    else:
+                        break
+                    continue
+
+                if token[i] == "`":
+                    j = token.find("`", i + 1)
+                    if j == -1:
+                        break
+                    out.append(token[i + 1 : j])
+                    i = j + 1
+                    continue
+
+                if token.startswith("<(", i) or token.startswith(">(", i):
+                    j = i + 2
+                    depth = 1
+                    while j < n and depth:
+                        if token[j] == "(":
+                            depth += 1
+                        elif token[j] == ")":
+                            depth -= 1
+                            if depth == 0:
+                                out.append(token[i + 2 : j])
+                                i = j + 1
+                                break
+                        j += 1
+                    else:
+                        break
+                    continue
+
+                i += 1
+            return out
+
+        try:
+            tokens = shlex.split(cmd_str)
+        except Exception:
+            tokens = re.findall(r"[A-Za-z0-9_./+-]+", cmd_str)
+
+        expecting_executable = True
+        skip_next = False
+
+        for i, token in enumerate(tokens):
+            if skip_next:
+                skip_next = False
+                continue
+
+            for sub in extract_subs(token):
+                if self._check_interactive(sub):
+                    return True
+
+            clean = token.strip("()$`\"'\t\n{}[]")
+
+            if not expecting_executable:
+                if token in control_operators or clean in control_operators:
+                    expecting_executable = True
+                continue
+
+            if not clean.startswith("-") and "=" in clean:
+                name, _, _ = clean.partition("=")
+                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                    continue
+
+            if clean.startswith("-"):
+                if clean in wrapper_value_flags:
+                    skip_next = True
+                continue
+
+            base = clean.split("/")[-1].lower()
+            if not base:
+                continue
+
+            if base in wrappers:
+                continue
+
+            if base in shells:
+                j = i + 1
+                while j < len(tokens):
+                    t = tokens[j]
+                    c = t.strip()
+                    if c in control_operators:
+                        break
+                    if c == "-c":
+                        if j + 1 < len(tokens) and self._check_interactive(tokens[j + 1]):
+                            return True
+                        skip_next = True
+                        break
+                    if c.startswith("-") and not c.startswith("--"):
+                        body = c[1:]
+                        if "i" in body and "c" not in body:
+                            return True
+                        if "c" in body:
+                            if "i" in body:
+                                return True
+                            if j + 1 < len(tokens) and self._check_interactive(tokens[j + 1]):
+                                return True
+                            skip_next = True
+                            break
+                        j += 1
+                        continue
+                    if c.startswith("--"):
+                        j += 1
+                        continue
+                    break
+
+            if base in interactive_apps:
+                return True
+
+            if base in shells or base in interpreters:
+                require_t_with_i = base in {"docker", "podman", "kubectl"}
+                scan_nested_argv0 = base in {"docker", "podman", "kubectl", "ssh", "script"}
+
+                for j in range(i + 1, len(tokens)):
+                    sub_tok = tokens[j]
+                    c_sub = sub_tok.strip()
+
+                    if c_sub in control_operators or sub_tok in control_operators:
+                        break
+
+                    if c_sub in {"-i", "--interactive", "-t", "-tt", "--tty"}:
+                        return True
+
+                    if c_sub.startswith("-") and not c_sub.startswith("--"):
+                        flags = c_sub[1:]
+                        has_i = "i" in flags
+                        has_t = "t" in flags
+                        if require_t_with_i:
+                            if has_i and has_t:
+                                return True
+                        elif has_i:
+                            return True
+                        if has_t and base in {"ssh", "script"}:
+                            return True
+
+                    if base.startswith("python") and c_sub in {"-c", "--command", "-m", "--module"}:
+                        if j + 1 < len(tokens) and self._check_interactive(tokens[j + 1]):
+                            return True
+
+                    if scan_nested_argv0 and not c_sub.startswith("-"):
+                        nested = c_sub.strip("()$`\"'\t\n{}[]").split("/")[-1].lower()
+                        if nested in interactive_apps or nested in shells:
+                            return True
+
+                expecting_executable = False
+                continue
+
+            expecting_executable = False
+
+        return False
+
     def execute_action(self, item: ConfigItem) -> None:
         if item.key == "__save_new_preset":
             self.action_save_preset()
@@ -4402,144 +4756,71 @@ Tooltip {
         def do_execute():
             self.notify_status(f"Executing: {item.label}...", level="info")
 
-            def _check_interactive(cmd_str: str) -> bool:
-                if not cmd_str:
-                    return False
-
-                interactive_apps = {
-                    "fzf", "nmtui", "vim", "nvim", "neovim", "nano", "micro", 
-                    "helix", "hx", "emacs", "less", "more", "man", "htop", 
-                    "btop", "yazi", "ranger", "lf"
-                }
-                wrappers = {"sudo", "doas", "pkexec", "env", "time", "nice", "nohup", "exec", "stdbuf", "watch", "xargs"}
-                shells = {"bash", "sh", "zsh", "fish", "dash"}
-                interpreters = {"python", "python3", "node", "ruby", "perl", "docker", "podman"}
-                control_operators = {"|", "||", "&&", ";", "&"}
-
-                try:
-                    tokens = shlex.split(cmd_str)
-                except Exception:
-                    tokens = re.findall(r"\b[a-zA-Z0-9_\/-]+\b", cmd_str)
-
-                expecting_executable = True
-                skip_next = False
-
-                for i, token in enumerate(tokens):
-                    if skip_next:
-                        skip_next = False
-                        continue
-
-                    clean_token = token.strip("()$`\"'\t\n{}")
-
-                    # Subshell Catch-All across all token positions
-                    if "$(" in token:
-                        sub_content = token.split("$(", 1)[1]
-                        if _check_interactive(sub_content):
-                            return True
-                    elif "`" in token:
-                        sub_content = token.split("`", 1)[1]
-                        if _check_interactive(sub_content):
-                            return True
-
-                    if expecting_executable:
-                        # Skip environment variable assignments before a command
-                        if "=" in clean_token and not clean_token.startswith("-"):
-                            continue
-
-                        # Skip flags (and arguments for known flag values)
-                        if clean_token.startswith("-"):
-                            if clean_token in ("-u", "--user", "-g", "--group", "-C"):
-                                skip_next = True
-                            continue
-
-                        base_name = clean_token.split("/")[-1].lower()
-
-                        if base_name in wrappers:
-                            continue
-
-                        if base_name in shells and i + 1 < len(tokens) and tokens[i+1] == "-c":
-                            skip_next = True
-                            if i + 2 < len(tokens) and _check_interactive(tokens[i+2]):
-                                return True
-                            continue
-
-                        if base_name in interactive_apps:
-                            return True
-
-                        # Target Check for Shells and Interpreters (e.g. python3 -i, docker exec -it)
-                        if base_name in shells or base_name in interpreters:
-                            for sub_tok in tokens[i+1:]:
-                                c_sub = sub_tok.strip()
-                                # STOP scanning flags if a chained command begins (e.g. docker start && sed -i)
-                                if c_sub in control_operators or sub_tok in control_operators:
-                                    break
-                                if c_sub in ("-i", "--interactive"):
-                                    return True
-                                if c_sub.startswith("-") and not c_sub.startswith("--") and "i" in c_sub and "t" in c_sub:
-                                    return True
-
-                        if base_name:
-                            expecting_executable = False
-                    else:
-                        if token in control_operators or clean_token in control_operators:
-                            expecting_executable = True
-
-                return False
-
-            is_interactive = _check_interactive(command)
+            forced = getattr(item, "force_interactive", None)
+            is_interactive = (
+                forced if isinstance(forced, bool) else self._check_interactive(command)
+            )
 
             if is_interactive:
-                async def run_int_task():
+                if getattr(self, "_tty_action_busy", False):
+                    self.notify_status("Another TTY action is already running.", level="warning")
+                    return
+
+                self._tty_action_busy = True
+                try:
+                    with self.suspend():
+                        completed = subprocess.run(command, shell=True)
+                    rc = completed.returncode
+                    if rc == 0:
+                        self.notify_status(f"Action '{item.label}' completed.", level="success")
+                    else:
+                        self.notify_status(f"Action '{item.label}' returned code {rc}.", level="warning")
+                except Exception as e:
+                    self.notify_status(f"Execution error: {str(e)[:60]}", level="error")
+                finally:
+                    self._tty_action_busy = False
+                return
+
+            async def run_noninteractive():
+                proc: asyncio.subprocess.Process | None = None
+                try:
+                    proc = await asyncio.create_subprocess_shell(
+                        command,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+
                     try:
-                        with self.suspend():
-                            proc = await asyncio.create_subprocess_shell(command)
-                            rc = await proc.wait()
-
-                        if rc == 0:
-                            self.notify_status(f"Action '{item.label}' completed.", level="success")
-                        else:
-                            self.notify_status(f"Action '{item.label}' returned code {rc}.", level="warning")
-                    except Exception as e:
-                        self.notify_status(f"Execution error: {str(e)[:60]}", level="error")
-
-                asyncio.create_task(run_int_task())
-            else:
-                async def run_task():
-                    try:
-                        proc = await asyncio.create_subprocess_shell(
-                            command,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE
-                        )
-
-                        try:
-                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15.0)
-                        except asyncio.TimeoutError:
+                        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15.0)
+                    except TimeoutError:
+                        if proc is not None:
                             proc.kill()
-                            self.notify_status("Action timed out after 15 seconds.", level="error")
-                            return
+                            await proc.wait()
+                        self.notify_status("Action timed out after 15 seconds.", level="error")
+                        return
 
-                        if proc.returncode == 0:
-                            out = stdout.decode("utf-8", errors="replace").strip()
+                    if proc.returncode == 0:
+                        out = stdout.decode("utf-8", errors="replace").strip()
 
-                            if out:
-                                out_single = out.split("\n")[0]
-                                self.notify_status(f"Success: {out_single[:60]}", level="success")
-                            else:
-                                self.notify_status(f"Action '{item.label}' completed.", level="success")
-
+                        if out:
+                            out_single = out.split("\n")[0]
+                            self.notify_status(f"Success: {out_single[:60]}", level="success")
                         else:
-                            err = stderr.decode("utf-8", errors="replace").strip().split("\n")[0]
+                            self.notify_status(f"Action '{item.label}' completed.", level="success")
+                    else:
+                        err = stderr.decode("utf-8", errors="replace").strip().split("\n")[0]
+                        if not err:
+                            err = "Unknown execution error"
+                        self.notify_status(f"Action failed: {err[:60]}", level="error")
 
-                            if not err:
-                                err = "Unknown execution error"
+                except Exception as e:
+                    self.notify_status(f"Execution error: {str(e)[:60]}", level="error")
+                finally:
+                    if proc is not None and proc.returncode is None:
+                        proc.kill()
+                        await proc.wait()
 
-                            self.notify_status(f"Action failed: {err[:60]}", level="error")
-
-                    except Exception as e:
-                        self.notify_status(f"Execution error: {str(e)[:60]}", level="error")
-
-                asyncio.create_task(run_task())
+            asyncio.create_task(run_noninteractive())
 
         if item.confirm_message:
             self.push_screen(

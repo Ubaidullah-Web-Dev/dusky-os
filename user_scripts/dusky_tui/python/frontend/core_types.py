@@ -109,6 +109,7 @@ class ConfigItem:
     confirm_message: str | None = None  # Requires explicit dialog confirmation before mutation
     target_file_override: str | None = None
     engine_type_override: str | None = None
+    force_interactive: bool | None = None
 
     # Caching & Optimization Fields
     _ratio_cache: float | None = field(default=None, repr=False, compare=False)
@@ -160,6 +161,21 @@ class ConfigItem:
                     return raw_val[1:-1]
             return raw_val
         return raw_val
+
+
+def clone_value(v: Any) -> Any:
+    """Structural clone; avoids deepcopy overhead on scalars."""
+    match v:
+        case None | bool() | int() | float() | str():
+            return v
+        case list() as xs:
+            return [clone_value(x) for x in xs]
+        case dict() as d:
+            return {k: clone_value(x) for k, x in d.items()}
+        case tuple() as t:
+            return tuple(clone_value(x) for x in t)
+        case _:
+            return copy.deepcopy(v)
 
 class BaseEngine(ABC):
     """
