@@ -487,17 +487,9 @@ init_config() {
     
     cat > "$CONFIG_FILE" <<'CONFIG'
 {
-  "smoothTransitions": false,
   "ecoMode": true,
-  "showSyncIndicator": true,
-  "transitionMs": 300,
-  "autoDisableDarkSites": false,
-  "nakedMode": false,
-  "paletteShortcut": "ctrl+alt+c",
   "colorsPath": "~/.config/matugen/generated/firefox_websites.css",
   "websitesDir": "~/.config/dusky_sites",
-  "presets": [],
-  "blocklist": []
 }
 CONFIG
     log_success "Default config.json created."

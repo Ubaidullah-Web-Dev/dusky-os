@@ -20,10 +20,8 @@ function applyTheme(data, force = false) {
         return;
     }
 
-    const cssContent = data.websiteCss || '';
-    const hash = data.timestamp + '|' + cssContent.length + '|' + cssContent.slice(-32);
-    if (!force && hash === lastHash) return;
-    lastHash = hash;
+    if (!force && data.timestamp === lastHash) return;
+    lastHash = data.timestamp;
 
     let css = ':root {\n';
     for (const [k, v] of Object.entries(data.colors)) {

@@ -37,7 +37,6 @@ function connectNative() {
     try {
         const port = browser.runtime.connectNative(NATIVE_NAME);
         state.port = port;
-        state.reconnectDelay = RECONNECT_BASE;
 
         port.onMessage.addListener(handleHostMessage);
         port.onDisconnect.addListener(handleHostDisconnect);
@@ -99,8 +98,7 @@ function resolveThemeData() {
     if (!state.lastThemeData) return null;
     return {
         ...state.lastThemeData,
-        colors: { ...state.lastThemeData.colors },
-        timestamp: Date.now() / 1000
+        colors: { ...state.lastThemeData.colors }
     };
 }
 
@@ -109,7 +107,7 @@ function buildPalette(colors) {
     const tmpl = state.config.paletteTemplate || DEFAULT_CONFIG.paletteTemplate;
     const palette = {};
     for (const [role, varName] of Object.entries(tmpl)) {
-        palette[role] = colors[varName] || colors[varName.replace(/^--/, '')] || null;
+        palette[role] = colors[varName] || null;
     }
     return palette;
 }
@@ -270,6 +268,7 @@ function saveConfig(partial = null) {
 
 // ─── Host Message Handler ───
 function handleHostMessage(msg) {
+    state.reconnectDelay = RECONNECT_BASE;
     switch (msg.type) {
         case 'MATUGEN_UPDATE': {
             if (!msg.data?.colors) return;
@@ -285,9 +284,8 @@ function handleHostMessage(msg) {
             }
 
             broadcastToTabs();
-            const data = resolveThemeData();
-            if (state.config.browserThemeEnabled) applyBrowserTheme(data?.colors);
-            if (state.config.duckduckgoEnabled) applyDDGTheme(data?.colors);
+            if (state.config.browserThemeEnabled) applyBrowserTheme(msg.data.colors);
+            if (state.config.duckduckgoEnabled) applyDDGTheme(msg.data.colors);
             notifyUI({ type: 'THEME_APPLIED', colors: msg.data.colors });
             break;
         }

@@ -60,6 +60,8 @@ if [[ "$OSTYPE" == "linux-gnu"* ]]; then
     [ -d "$HOME/.var/app/io.gitlab.librewolf-community/.librewolf" ] && TARGETS+=("$HOME/.var/app/io.gitlab.librewolf-community/.librewolf/native-messaging-hosts")
     [ -d "$HOME/.waterfox" ] && TARGETS+=("$HOME/.waterfox/native-messaging-hosts")
     [ -d "$HOME/.floorp" ] && TARGETS+=("$HOME/.floorp/native-messaging-hosts")
+    [ -d "$HOME/.zen" ] && TARGETS+=("$HOME/.zen/native-messaging-hosts")
+    [ -d "$HOME/.firedragon" ] && TARGETS+=("$HOME/.firedragon/native-messaging-hosts")
 elif [[ "$OSTYPE" == "darwin"* ]]; then
     [ -d "$HOME/Library/Application Support/Mozilla" ] && TARGETS+=("$HOME/Library/Application Support/Mozilla/NativeMessagingHosts")
     [ -d "$HOME/Library/Application Support/LibreWolf" ] && TARGETS+=("$HOME/Library/Application Support/LibreWolf/NativeMessagingHosts")
@@ -91,26 +93,7 @@ EOF
     INSTALLED=$((INSTALLED + 1))
 done
 
-# 5. Initialize config
-print_step "Initializing default configuration..."
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/matugenfox"
-CONFIG_FILE="$CONFIG_DIR/config.json"
-mkdir -p "$CONFIG_DIR"
 
-if [ ! -f "$CONFIG_FILE" ]; then
-    cat <<EOF > "$CONFIG_FILE"
-{
-  "ecoMode": true,
-  "colorsPath": "~/.config/matugen/generated/firefox_websites.css",
-  "websitesDir": "~/.config/dusky_sites",
-  "browserThemeEnabled": true,
-  "webThemeEnabled": false
-}
-EOF
-    print_success "Generated default config.json at $CONFIG_FILE"
-else
-    print_warning "config.json already exists at $CONFIG_FILE. Keeping existing configuration."
-fi
 
 echo -e "\n${GREEN}✅ Setup Complete! MatugenFox was installed into $INSTALLED browser(s).${NC}"
 echo -e "------------------------------------------------------------------"

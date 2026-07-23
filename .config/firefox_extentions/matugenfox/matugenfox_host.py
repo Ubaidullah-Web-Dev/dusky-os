@@ -18,6 +18,8 @@ config = {
 config_lock = threading.Lock()
 stdout_lock = threading.Lock()  # Protection against concurrent protocol corruption
 running = True
+force_update = False
+poll_event = threading.Event()
 
 # --- Atomic Write ---
 def atomic_write(filepath, content):
@@ -336,6 +338,7 @@ def parse_websites(websites_dir):
                     if end_idx != -1:
                         websites[domain] = content[start_idx+1:end_idx].strip()
                     else:
+                        print(f"MatugenFox: unmatched braces in {filename}", file=sys.stderr)
                         websites[domain] = content[start_idx+1:].strip()
                 else:
                     domain = filename[:-4]
@@ -400,14 +403,9 @@ def message_handler():
                     _stored_config_cache = new_config
 
             elif msg_type == "FETCH_NOW":
-                # Force a re-read on next poll cycle by resetting hash
-                # We signal this by sending the current data immediately
-                with config_lock:
-                    colors_file = config["colors_file"]
-                    websites_dir = config["websites_dir"]
-                if colors_file:
-                    data = get_theme_data(colors_file, websites_dir)
-                    send_message({"type": "MATUGEN_UPDATE", "data": data})
+                global force_update
+                force_update = True
+                poll_event.set()
 
             elif msg_type == "GET_PROFILE_PATHS":
                 # Return all discovered Firefox profiles + auto-detected chrome dir
@@ -474,7 +472,7 @@ def message_handler():
 
 
 def main():
-    global running
+    global running, force_update
     threading.Thread(target=message_handler, daemon=True).start()
 
     last_hash = ""
@@ -488,7 +486,8 @@ def main():
                 websites_dir = config["websites_dir"]
 
             if not colors_file:
-                time.sleep(2)
+                poll_event.wait(2)
+                poll_event.clear()
                 continue
 
             should_update = False
@@ -511,16 +510,18 @@ def main():
                 last_websites_state = current_websites_state
                 should_update = True
 
-            if should_update or not last_hash:
+            if should_update or not last_hash or force_update:
                 data = get_theme_data(colors_file, websites_dir)
                 current_hash = get_data_hash(data)
 
-                if current_hash != last_hash:
+                if current_hash != last_hash or force_update:
                     last_hash = current_hash
+                    force_update = False
                     data["timestamp"] = time.time()
                     send_message({"type": "MATUGEN_UPDATE", "data": data})
 
-            time.sleep(2)
+            poll_event.wait(2)
+            poll_event.clear()
         except Exception as e:
             print(f"MatugenFox host error (main): {e}", file=sys.stderr)
             time.sleep(5)

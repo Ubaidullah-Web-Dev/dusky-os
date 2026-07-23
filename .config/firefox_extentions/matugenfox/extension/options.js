@@ -73,6 +73,11 @@ async function init() {
     config = mergeConfig(stored.config);
     if (themeData?.colors) applySelfTheme(themeData.colors);
 
+    const versionEl = document.querySelector('.sidebar-footer');
+    if (versionEl && versionEl.firstChild) {
+        versionEl.firstChild.textContent = 'v' + browser.runtime.getManifest().version + ' · ';
+    }
+
     // General
     document.getElementById('opt-eco').checked = config.ecoMode || false;
     document.getElementById('opt-browser-theme-general').checked = config.browserThemeEnabled !== false;
@@ -87,7 +92,6 @@ async function init() {
     if (warningEl) warningEl.hidden = !(themeData?.status?.some(s => s.includes('not found')));
 
     // Browser Theme
-    document.getElementById('opt-browser-theme').checked = config.browserThemeEnabled !== false;
     renderPaletteTemplateForm(themeData?.colors);
     renderBrowserTemplateForm();
 
@@ -120,11 +124,9 @@ document.getElementById('opt-eco').addEventListener('change', e => {
     sendUpdate({ ecoMode: e.target.checked });
 });
 
-// Keep the two browser-theme toggles (general + browser-theme panel) in sync
 function setBrowserTheme(enabled) {
     sendUpdate({ browserThemeEnabled: enabled });
     document.getElementById('opt-browser-theme-general').checked = enabled;
-    document.getElementById('opt-browser-theme').checked = enabled;
 }
 document.getElementById('opt-browser-theme-general').addEventListener('change', e => setBrowserTheme(e.target.checked));
 document.getElementById('opt-web-theme').addEventListener('change', e => {
@@ -136,7 +138,17 @@ function savePaths() {
         colorsPath: document.getElementById('opt-colors-path').value.trim() || '~/.config/matugen/generated/firefox_websites.css',
         websitesDir: document.getElementById('opt-websites-dir').value.trim() || '~/.config/dusky_sites',
     };
-    sendUpdate(update);
+    sendUpdate(update).then(() => {
+        const el1 = document.getElementById('opt-colors-path');
+        const el2 = document.getElementById('opt-websites-dir');
+        const origBg = el1.style.background;
+        el1.style.background = 'var(--mg-accent-dim)';
+        el2.style.background = 'var(--mg-accent-dim)';
+        setTimeout(() => {
+            el1.style.background = origBg;
+            el2.style.background = origBg;
+        }, 500);
+    });
 }
 document.getElementById('opt-colors-path').addEventListener('blur', savePaths);
 document.getElementById('opt-websites-dir').addEventListener('blur', savePaths);
@@ -253,9 +265,7 @@ function renderBrowserTemplateForm() {
     });
 }
 
-document.getElementById('opt-browser-theme').addEventListener('change', e => {
-    setBrowserTheme(e.target.checked);
-});
+
 
 // ─── DuckDuckGo ───
 document.getElementById('opt-duckduckgo').addEventListener('change', e => {
@@ -263,8 +273,10 @@ document.getElementById('opt-duckduckgo').addEventListener('change', e => {
 });
 
 // ─── userChrome ───
+let pathTimeout = null;
 function loadProfilePaths() {
-    setTimeout(() => {
+    if (pathTimeout) clearTimeout(pathTimeout);
+    pathTimeout = setTimeout(() => {
         const el = document.getElementById('profile-path-info');
         if (el && el.textContent.includes('Checking')) {
             el.textContent = 'Could not reach native host. Paths not loaded.';
@@ -318,6 +330,7 @@ browser.runtime.onMessage.addListener(msg => {
     } else if (msg.type === 'HOST_RESPONSE') {
         const data = msg.data;
         if (data.type === 'PROFILE_PATHS') {
+            if (pathTimeout) clearTimeout(pathTimeout);
             const el = document.getElementById('profile-path-info');
             if (el) {
                 el.textContent = data.autoChrome
@@ -330,7 +343,6 @@ browser.runtime.onMessage.addListener(msg => {
 
 // ─── Helpers ───
 function sendUpdate(partialUpdate) {
-    return browser.runtime.sendMessage({ type: 'UPDATE_CONFIG', partialUpdate }).then(() => {
-        Object.assign(config, partialUpdate);
-    });
+    Object.assign(config, partialUpdate);
+    return browser.runtime.sendMessage({ type: 'UPDATE_CONFIG', partialUpdate });
 }

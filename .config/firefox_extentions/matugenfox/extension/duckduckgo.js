@@ -14,7 +14,6 @@ function applyTheme(theme) {
     const text = theme.k8 ? `#${theme.k8}` : '';
     const link = theme.kx ? `#${theme.kx}` : '';
     const accent = theme.k9 ? `#${theme.k9}` : '';
-    const hover = theme.k21 ? `#${theme.k21}` : '';
 
     const css = [
         `body, html { background-color: ${bg} !important; }`,
@@ -22,7 +21,7 @@ function applyTheme(theme) {
         text ? `.result__snippet, .result__extras__url, .c-base__sub { color: ${text} !important; }` : '',
         link ? `.result__url, .result__a { color: ${link} !important; }` : '',
         accent ? `.result__title a, .result__title { color: ${accent} !important; }` : '',
-        hover ? `.result:hover, .result--highlighted { background-color: #${theme.k21}22 !important; }` : '',
+        theme.k21 ? `.result:hover, .result--highlighted { background-color: #${theme.k21}22 !important; }` : '',
     ].join('\n');
 
     const style = document.createElement('style');
