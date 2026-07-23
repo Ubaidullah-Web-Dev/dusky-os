@@ -13,7 +13,8 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any, override
-from collections import deque
+from collections import deque, defaultdict
+from functools import lru_cache
 
 from textual import on, events, work
 from textual.message import Message
@@ -122,12 +123,12 @@ class OptionTextCache:
 class PresetMatchMatrix:
     """
     Structural index built once; current serialized values updated incrementally.
-    ratio() is O(1). on_item_changed is O(P).
+    ratio() is O(1). on_item_changed is O(affected) via inverted dependency index.
     """
     __slots__ = (
         "_app", "_current", "_exists", "_defaults", "_expected",
         "_all_defaults", "_matches", "_totals", "_preset_uids",
-        "_configurable_uids", "_uid_set"
+        "_configurable_uids", "_uid_set", "_item_to_presets"
     )
 
     def __init__(self, app: Any) -> None:
@@ -142,6 +143,7 @@ class PresetMatchMatrix:
         self._preset_uids: list[str] = []
         self._configurable_uids: list[str] = []
         self._uid_set: set[str] = set()
+        self._item_to_presets: defaultdict[str, set[str]] = defaultdict(set)
 
     def rebuild(self, configurable_items: Any) -> None:
         self._current.clear()
@@ -154,6 +156,7 @@ class PresetMatchMatrix:
         self._preset_uids.clear()
         self._configurable_uids.clear()
         self._uid_set.clear()
+        self._item_to_presets.clear()
 
         items: list[Any] = []
         presets: list[Any] = []
@@ -178,13 +181,18 @@ class PresetMatchMatrix:
             puid = p.uid
             self._preset_uids.append(puid)
             payload = p.preset_payload or {}
-            self._all_defaults[puid] = bool(payload.get("__ALL_DEFAULTS__", False))
+            all_def = bool(payload.get("__ALL_DEFAULTS__", False))
+            self._all_defaults[puid] = all_def
             exp: dict[str, str] = {}
             for key_path, raw in payload.items():
                 if key_path == "__ALL_DEFAULTS__":
                     continue
                 exp[key_path] = self._serialize_payload(key_path, raw)
+                self._item_to_presets[key_path].add(puid)
             self._expected[puid] = exp
+            if all_def:
+                for uid in self._configurable_uids:
+                    self._item_to_presets[uid].add(puid)
             self._recompute_preset(puid)
 
     def ingest_items(self, items: Any) -> None:
@@ -205,8 +213,9 @@ class PresetMatchMatrix:
                 self._recompute_preset(puid)
 
     def on_item_changed(self, item: Any) -> None:
-        if item.type_ in ("preset", "action", "menu"):
-            return
+        match item.type_:
+            case "preset" | "action" | "menu":
+                return
 
         uid = item.uid
         new_ser = item.serialize(item.value)
@@ -230,7 +239,8 @@ class PresetMatchMatrix:
         self._current[uid] = new_ser
         self._exists[uid] = new_exists
 
-        for puid in self._preset_uids:
+        affected_presets = self._item_to_presets.get(uid) or self._preset_uids
+        for puid in affected_presets:
             exp = self._expected_for(puid, uid)
             if old_exists and not new_exists:
                 self._totals[puid] = max(0, self._totals.get(puid, 0) - 1)
@@ -323,6 +333,12 @@ def _oklch_to_rgb(L: float, C: float, H: float) -> tuple[int, int, int]:
     return (gam(r), gam(g), gam(b2))
 
 
+_RE_HYPR_HEX = re.compile(r"^rgba?\(([0-9a-fA-F]+)\)$")
+_RE_VAR_CSS = re.compile(r"^var\(--([^)]+)\)$")
+_RE_VAR_MAT = re.compile(r"^\{\{([^}]+)\}\}$")
+
+
+@lru_cache(maxsize=1024)
 def parse_color_format(val: str) -> str:
     val = str(val).strip().lower()
 
@@ -332,7 +348,7 @@ def parse_color_format(val: str) -> str:
     if val.startswith("#"):
         return "hex"
 
-    if re.match(r"rgba?\([0-9a-f]+\)", val):
+    if _RE_HYPR_HEX.match(val):
         return "hypr_hex"
 
     if val.startswith("rgba"):
@@ -353,6 +369,7 @@ def parse_color_format(val: str) -> str:
     return "hex"
 
 
+@lru_cache(maxsize=1024)
 def color_to_rgb(val: str) -> tuple[int, int, int]:
     val = str(val).strip().lower()
 
@@ -368,7 +385,7 @@ def color_to_rgb(val: str) -> tuple[int, int, int]:
                 pass
 
     # Standard hex.
-    if val.startswith("#"):
+    elif val.startswith("#"):
         v = val[1:]
         if len(v) in (3, 4):
             try:
@@ -382,8 +399,7 @@ def color_to_rgb(val: str) -> tuple[int, int, int]:
                 pass
 
     # Hyprland-style rgb/rgba hex.
-    hypr_m = re.match(r"rgba?\(([0-9a-f]+)\)", val)
-    if hypr_m:
+    if hypr_m := _RE_HYPR_HEX.match(val):
         v = hypr_m.group(1)
         if len(v) >= 6:
             try:
@@ -392,13 +408,11 @@ def color_to_rgb(val: str) -> tuple[int, int, int]:
                 pass
 
     # Functional rgb/rgba.
-    m_rgb = _RE_RGB.match(val)
-    if m_rgb:
+    if m_rgb := _RE_RGB.match(val):
         return (int(m_rgb.group(1)), int(m_rgb.group(2)), int(m_rgb.group(3)))
 
     # Functional hsl/hsla.
-    m_hsl = _RE_HSL.match(val)
-    if m_hsl:
+    if m_hsl := _RE_HSL.match(val):
         h = float(m_hsl.group(1)) / 360.0
         s = float(m_hsl.group(2)) / 100.0
         l_ = float(m_hsl.group(3)) / 100.0
@@ -406,24 +420,15 @@ def color_to_rgb(val: str) -> tuple[int, int, int]:
         return (int(r * 255), int(g * 255), int(b * 255))
 
     # OKLCH.
-    m_oklch = _RE_OKLCH.match(val)
-    if m_oklch:
-        l_val = float(m_oklch.group(1))
-        c_val = float(m_oklch.group(2))
-        h_val = float(m_oklch.group(3))
-        r, g, b = _oklch_to_rgb(l_val, c_val, h_val)
+    if m_oklch := _RE_OKLCH.match(val):
+        r, g, b = _oklch_to_rgb(float(m_oklch.group(1)), float(m_oklch.group(2)), float(m_oklch.group(3)))
         return (
             max(0, min(255, int(r))),
             max(0, min(255, int(g))),
             max(0, min(255, int(b)))
         )
 
-    # Named color fallback.
-    named = KNOWN_COLORS_LOWER.get(val)
-    if named is not None:
-        return named
-
-    return (128, 128, 128)
+    return KNOWN_COLORS_LOWER.get(val, (128, 128, 128))
 
 
 def get_color_name(r: int, g: int, b: int) -> str:
