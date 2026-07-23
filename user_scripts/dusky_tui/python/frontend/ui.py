@@ -12,7 +12,7 @@ import copy
 import sys
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from collections import deque
 
 from textual import on, events, work
@@ -2706,6 +2706,7 @@ Tooltip {
     # =========================================================================
     # MOUNT
     # =========================================================================
+    @override
     async def on_mount(self) -> None:
         self._save_lock = asyncio.Lock()
 
@@ -2894,17 +2895,17 @@ Tooltip {
                 self._option_cache.invalidate_presets()
             self._schema_dirty_counter += 1
 
-    def run_deferred_boot(self, *, initial_tab: int = 0) -> None:
+    @work(exclusive=True, group="engine-boot", exit_on_error=False)
+    async def run_deferred_boot(self, *, initial_tab: int = 0) -> None:
         self._init_boot_state()
-        self._load_user_presets()
-        self._rebuild_indexes()
+        await asyncio.to_thread(self._load_user_presets)
 
         need_now = self._engines_for_tab(initial_tab) if self.tabs else set()
         deferred = set(self.engine_pool) - need_now
 
         for ekey in need_now:
             try:
-                self._states[ekey] = self._load_one_engine_sync(ekey)
+                self._states[ekey] = await asyncio.to_thread(self._load_one_engine_sync, ekey)
                 self._loaded_engines.add(ekey)
             except Exception as exc:
                 self._failed_engines[ekey] = f"{type(exc).__name__}: {exc}"
@@ -2915,12 +2916,13 @@ Tooltip {
                 self._apply_states_to_tab(t_idx, self._states)
 
         if self.tabs:
+            await asyncio.sleep(0)
             self._populate_option_list(initial_tab)
             self._populated_tabs.add(initial_tab)
 
         if deferred:
             self._pending_engine_loads |= set(deferred)
-            self._load_engines_async(deferred)
+            await self._load_engines_async(deferred)
         else:
             self._mark_boot_complete_if_done()
 

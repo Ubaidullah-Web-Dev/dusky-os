@@ -16,17 +16,15 @@ import pwd
 import subprocess
 import shlex
 import atexit
-import pathlib
+import tempfile
+import re
 from datetime import datetime
 from pathlib import Path
 
 
 # =============================================================================
-# REAL-USER ENVIRONMENT RECONSTRUCTION (SUDO/PKEXEC SAFETY)
+# REAL-USER ENVIRONMENT RECONSTRUCTION & FAST PERMISSIONS (SUDO/PKEXEC SAFETY)
 # =============================================================================
-# If a user launches the app natively using `sudo main.py`, Path.home() resolves to /root.
-# We must intercept this before ANY path resolution happens to restore their genuine $HOME
-# so that the schemas, backups, and presets always point to the actual user's files.
 if os.geteuid() == 0:
     _real_uid = None
     _real_gid = None
@@ -57,7 +55,7 @@ if os.geteuid() == 0:
             os.environ["HOME"] = _pw.pw_dir
             os.environ["USER"] = _pw.pw_name
 
-            # Extreme Bulletproofing: Guarantee XDG base directories point to the real user.
+            # Guarantee XDG base directories point to the real user.
             for xdg_var, default_suffix in [
                 ("XDG_CONFIG_HOME", ".config"),
                 ("XDG_CACHE_HOME", ".cache"),
@@ -67,99 +65,51 @@ if os.geteuid() == 0:
                 if xdg_var not in os.environ or os.environ[xdg_var].startswith("/root"):
                     os.environ[xdg_var] = os.path.join(_pw.pw_dir, default_suffix)
 
-            def _safe_chown(path: Path, uid: int, gid: int) -> None:
+            def _fast_chown_tree(dir_path: str) -> None:
+                """Zero-allocation tree traversal using raw os.scandir string paths."""
                 try:
-                    os.chown(path, uid, gid, follow_symlinks=False)
-                except (NotImplementedError, OSError):
+                    stat_res = os.lstat(dir_path)
+                    if stat_res.st_uid == 0:
+                        os.chown(dir_path, _real_uid, _real_gid, follow_symlinks=False)
+
+                    with os.scandir(dir_path) as it:
+                        for entry in it:
+                            try:
+                                if entry.stat(follow_symlinks=False).st_uid == 0:
+                                    os.chown(entry.path, _real_uid, _real_gid, follow_symlinks=False)
+                                if entry.is_dir(follow_symlinks=False):
+                                    _fast_chown_tree(entry.path)
+                            except OSError:
+                                pass
+                except OSError:
                     pass
 
             def _fix_permissions():
                 try:
-                    home = Path(_pw.pw_dir)
+                    home = _pw.pw_dir
 
-                    def _xdg_path(var: str, suffix: str) -> Path:
+                    def _xdg_path(var: str, suffix: str) -> str:
                         val = os.environ.get(var, "").strip()
-                        return Path(val).expanduser() if val else home / suffix
-
-                    xdg_config = _xdg_path("XDG_CONFIG_HOME", ".config")
-                    xdg_cache = _xdg_path("XDG_CACHE_HOME", ".cache")
-                    xdg_state = _xdg_path("XDG_STATE_HOME", ".local/state")
-                    xdg_data = _xdg_path("XDG_DATA_HOME", ".local/share")
+                        return os.path.expanduser(val) if val else os.path.join(home, suffix)
 
                     targets = [
-                        xdg_config / "dusky",
-                        xdg_cache / "dusky_tui",
-                        xdg_state / "dusky" / "logs",
-                        xdg_data / "dusky_backups",
-                        home / "Documents" / "logs" / "tui",
-                        home / "Documents" / "dusky_backups" / "tui_reset",
+                        os.path.join(_xdg_path("XDG_CONFIG_HOME", ".config"), "dusky"),
+                        os.path.join(_xdg_path("XDG_CACHE_HOME", ".cache"), "dusky_tui"),
+                        os.path.join(_xdg_path("XDG_STATE_HOME", ".local/state"), "dusky", "logs"),
+                        os.path.join(_xdg_path("XDG_DATA_HOME", ".local/share"), "dusky_backups"),
+                        os.path.join(home, "Documents", "logs", "tui"),
+                        os.path.join(home, "Documents", "dusky_backups", "tui_reset"),
                     ]
 
-                    for target_p in targets:
-                        if not target_p.exists():
-                            continue
-
-                        for root_dir, dirs, files in os.walk(target_p):
-                            for d in dirs:
-                                p = Path(root_dir) / d
-                                try:
-                                    if p.lstat().st_uid == 0:
-                                        _safe_chown(p, _real_uid, _real_gid)
-                                except OSError:
-                                    pass
-
-                            for f in files:
-                                p = Path(root_dir) / f
-                                try:
-                                    if p.lstat().st_uid == 0:
-                                        _safe_chown(p, _real_uid, _real_gid)
-                                except OSError:
-                                    pass
-
-                        try:
-                            if target_p.lstat().st_uid == 0:
-                                _safe_chown(target_p, _real_uid, _real_gid)
-                        except OSError:
-                            pass
+                    for target in targets:
+                        if os.path.exists(target):
+                            _fast_chown_tree(target)
 
                 except Exception:
                     pass
 
             _fix_permissions()
             atexit.register(_fix_permissions)
-
-            _orig_mkdir = pathlib.Path.mkdir
-
-            def _safe_mkdir(self, *args, **kwargs):
-                _orig_mkdir(self, *args, **kwargs)
-
-                try:
-                    resolved_p = self.resolve()
-                    home_p = Path(_pw.pw_dir).resolve()
-
-                    if resolved_p.is_relative_to(home_p):
-                        _safe_chown(resolved_p, _real_uid, _real_gid)
-
-                        if kwargs.get("parents", False):
-                            curr = resolved_p.parent
-
-                            while curr != curr.parent and curr.is_relative_to(home_p):
-                                try:
-                                    curr_stat = curr.lstat()
-                                    if curr_stat.st_uid == _real_uid:
-                                        break
-
-                                    _safe_chown(curr, _real_uid, _real_gid)
-
-                                except Exception:
-                                    break
-
-                                curr = curr.parent
-
-                except Exception:
-                    pass
-
-            pathlib.Path.mkdir = _safe_mkdir
 
         except KeyError:
             pass
@@ -297,6 +247,48 @@ def manage_backup(target_file: Path, action: str, logger: logging.Logger) -> boo
 
         case _:
             return False
+
+
+# =============================================================================
+# LAZY ENGINE POOL FACTORY
+# =============================================================================
+class LazyEnginePool(dict):
+    """
+    Lazy initialization factory dict. Engines are instantiated ONLY on active lookup.
+    """
+    def __init__(self, factory_func):
+        super().__init__()
+        self._factory = factory_func
+        self._registered_keys: set[tuple[str, str]] = set()
+
+    def register(self, e_type: str, config_path: str) -> tuple[str, str]:
+        key = (e_type, config_path)
+        self._registered_keys.add(key)
+        return key
+
+    def __getitem__(self, key: tuple[str, str]):
+        if not super().__contains__(key):
+            self[key] = self._factory(key[0], key[1])
+        return super().__getitem__(key)
+
+    def get(self, key: tuple[str, str], default=None):
+        if super().__contains__(key):
+            return super().__getitem__(key)
+        if key in self._registered_keys:
+            try:
+                return self[key]
+            except Exception:
+                return default
+        return default
+
+    def __contains__(self, key: object) -> bool:
+        return super().__contains__(key) or key in self._registered_keys
+
+    def __iter__(self):
+        return iter(self._registered_keys | set(super().keys()))
+
+    def __len__(self):
+        return len(self._registered_keys | set(super().keys()))
 
 
 # =============================================================================
@@ -511,91 +503,84 @@ EXAMPLES:
             sys.exit(1)
 
     # =========================================================================
-    # --- 2. MULTI-ENGINE ARCHITECTURE & ROUTER BLOCK ---
+    # --- 2. MULTI-ENGINE LAZY POOL & ROUTER BLOCK ---
     # =========================================================================
-    engine_pool = {}
-
-    def get_engine_instance(e_type: str, config_path: str):
-        key = (e_type, config_path)
-
-        if key in engine_pool:
-            return engine_pool[key]
-
+    def _create_engine_instance(e_type: str, config_path: str):
         if e_type == "lua":
             from python.engines.lua import HyprlandLuaEngine
-            engine = HyprlandLuaEngine(config_path=config_path)
+            return HyprlandLuaEngine(config_path=config_path)
 
         elif e_type == "trackpad":
             from python.engines.trackpad import TrackpadLuaEngine
-            engine = TrackpadLuaEngine(config_path=config_path)
+            return TrackpadLuaEngine(config_path=config_path)
 
         elif e_type == "monitor":
             from python.engines.monitor_engine import MonitorLuaEngine
-            engine = MonitorLuaEngine(config_path=config_path)
+            return MonitorLuaEngine(config_path=config_path)
 
         elif e_type == "ini":
             from python.engines.ini import IniConfigEngine
-            engine = IniConfigEngine(config_path=config_path)
+            return IniConfigEngine(config_path=config_path)
 
         elif e_type == "bridged_ini":
             from python.engines.bridged_ini import BridgedIniEngine
-            engine = BridgedIniEngine(config_path=config_path)
+            return BridgedIniEngine(config_path=config_path)
 
         elif e_type == "systemd":
             from python.engines.systemd import SystemdEngine
-            engine = SystemdEngine()
+            return SystemdEngine()
 
         elif e_type == "hyprlang":
             from python.engines.hyprlang import HyprlangEngine
-            engine = HyprlangEngine(config_path=config_path)
+            return HyprlangEngine(config_path=config_path)
 
         elif e_type == "cmdline":
             from python.engines.cmdline import CmdlineEngine
-            engine = CmdlineEngine(config_path=config_path)
+            return CmdlineEngine(config_path=config_path)
 
         elif e_type == "systemd_boot":
             from python.engines.systemd_boot import SystemdBootEngine
-            engine = SystemdBootEngine(config_path=config_path)
+            return SystemdBootEngine(config_path=config_path)
 
         elif e_type == "flatdotconfig":
             from python.engines.flatdotconfig import FlatDotConfigEngine
-            engine = FlatDotConfigEngine(config_path=config_path)
+            return FlatDotConfigEngine(config_path=config_path)
 
         elif e_type == "env":
             from python.engines.environment_variables import ShellEnvEngine
-            engine = ShellEnvEngine(config_path=config_path)
+            return ShellEnvEngine(config_path=config_path)
 
         elif e_type == "shell_fallback":
             from python.engines.shell_fallback import ShellFallbackEngine
-            engine = ShellFallbackEngine(config_path=config_path)
+            return ShellFallbackEngine(config_path=config_path)
 
         elif e_type == "waybar":
             from python.engines.waybar_engine import WaybarEngine
-            engine = WaybarEngine(config_path=config_path)
+            return WaybarEngine(config_path=config_path)
 
         elif e_type == "network":
             from python.engines.network_manager import NetworkManagerEngine
-            engine = NetworkManagerEngine(config_path=config_path)
+            return NetworkManagerEngine(config_path=config_path)
 
         elif e_type == "pkg_throttle":
             from python.engines.pkg_throttle import PkgThrottleEngine
-            engine = PkgThrottleEngine(config_path=config_path)
+            return PkgThrottleEngine(config_path=config_path)
 
         elif e_type == "cpu_core":
             from python.engines.cpu_core import CpuCoreEngine
-            engine = CpuCoreEngine(config_path=config_path)
+            return CpuCoreEngine(config_path=config_path)
 
         elif e_type == "fstab":
             from python.engines.fstab import FstabEngine
-            engine = FstabEngine(config_path=config_path)
+            return FstabEngine(config_path=config_path)
 
         elif e_type == "json":
             from python.engines.json_engine import JsonEngine
-            engine = JsonEngine(config_path=config_path)
+            return JsonEngine(config_path=config_path)
 
         elif e_type == "locale_gen":
             from python.engines.locale_gen import LocaleGenEngine
-            engine = LocaleGenEngine(config_path=config_path)
+            return LocaleGenEngine(config_path=config_path)
 
         else:
             print(f"[-] Fatal: Unknown ENGINE_TYPE '{e_type}' specified in schema '{schema_path.name}'.")
@@ -606,11 +591,9 @@ EXAMPLES:
             )
             sys.exit(1)
 
-        engine_pool[key] = engine
-        return engine
+    engine_pool = LazyEnginePool(_create_engine_instance)
 
-    default_engine_key = (ENGINE_TYPE, str(TARGET_FILE))
-    get_engine_instance(*default_engine_key)
+    default_engine_key = engine_pool.register(ENGINE_TYPE, str(TARGET_FILE))
 
     for tab_idx, items in SCHEMA.items():
         for item in items:
@@ -621,8 +604,7 @@ EXAMPLES:
                     if item.target_file_override
                     else str(TARGET_FILE)
                 )
-
-                get_engine_instance(override_etype, override_tfile)
+                engine_pool.register(override_etype, override_tfile)
 
     # --- 3. PRE-FLIGHT CHECKS (Backups / Restores) ---
     is_headless = any([args.default, args.reset_key, args.set, args.export_state, args.export_docs])
@@ -663,13 +645,14 @@ EXAMPLES:
         if DEFERRED_LOAD:
             DEFERRED_LOAD()
 
-        for eng in engine_pool.values():
-            eng.load_state()
+        for ekey in list(engine_pool):
+            engine_pool[ekey].load_state()
 
         if args.export_state:
             merged_state = {}
 
-            for ekey, eng in engine_pool.items():
+            for ekey in list(engine_pool):
+                eng = engine_pool[ekey]
                 st = eng.cache if hasattr(eng, "cache") else eng.load_state()
 
                 if ekey == default_engine_key:
@@ -861,7 +844,7 @@ EXAMPLES:
         custom_views=CUSTOM_VIEWS
     )
 
-    for engine in engine_pool.values():
+    for engine in list(engine_pool.values()):
         if hasattr(engine, "set_app"):
             engine.set_app(app)
 
