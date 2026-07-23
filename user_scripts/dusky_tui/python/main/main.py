@@ -286,8 +286,25 @@ class LazyEnginePool(dict):
     def __contains__(self, key: object) -> bool:
         return super().__contains__(key) or key in self._registered_keys
 
+    def values(self):
+        for key in list(self._registered_keys):
+            self[key]
+        return super().values()
+
+    def items(self):
+        for key in list(self._registered_keys):
+            self[key]
+        return super().items()
+
+    def keys(self):
+        for key in list(self._registered_keys):
+            self[key]
+        return super().keys()
+
     def __iter__(self):
-        return iter(self._registered_keys | set(super().keys()))
+        for key in list(self._registered_keys):
+            self[key]
+        return super().__iter__()
 
     def __len__(self):
         return len(self._registered_keys | set(super().keys()))

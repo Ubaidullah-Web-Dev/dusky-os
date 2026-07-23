@@ -1503,6 +1503,17 @@ class CustomRichTabWidget(Static):
     within a DuskyTUI tab.
     """
 
+    can_focus = True
+
+    BINDINGS = [
+        Binding("j,down", "scroll_down", "Scroll Down", show=False),
+        Binding("k,up", "scroll_up", "Scroll Up", show=False),
+        Binding("page_down,ctrl+d", "page_down", "Page Down", show=False),
+        Binding("page_up,ctrl+u", "page_up", "Page Up", show=False),
+        Binding("g", "scroll_home", "Top", show=False),
+        Binding("G", "scroll_end", "Bottom", show=False),
+    ]
+
     DEFAULT_CSS = """
     CustomRichTabWidget {
         width: 100%;
@@ -1511,6 +1522,7 @@ class CustomRichTabWidget(Static):
         padding: 0 1;
         overflow-x: auto;
         overflow-y: auto;
+        scrollbar-size: 1 1;
     }
     """
 
@@ -3495,6 +3507,14 @@ Tooltip {
                         if not getattr(opt, "disabled", False):
                             ol.highlighted = i
                             break
+            else:
+                try:
+                    for cw in self.query(CustomRichTabWidget):
+                        if cw.display:
+                            cw.focus()
+                            break
+                except Exception:
+                    pass
 
                 self._update_pagination(ol)
                 self._update_scroll_indicators()
